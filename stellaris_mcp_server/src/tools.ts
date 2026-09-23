@@ -1021,6 +1021,332 @@ export function registerTools(server: McpServer, client: PipeClient) {
       }
     }
   );
+
+  // Tool 30: stellaris_get_ship_designs
+  server.tool(
+    "stellaris_get_ship_designs",
+    "Queries ship designs owned by the player empire (country + 0x1AD0 and CShipDesignManager at base + 0x3112980). Returns full section hierarchy, weapon/defense/aux slot definitions, equipped component templates, and core component loadout (reactor, FTL drive, thrusters, sensors, combat computer).",
+    {
+      design_id: z
+        .number()
+        .int()
+        .optional()
+        .describe("Optional specific ship design ID to query detailed information for. If omitted, returns all empire designs."),
+    },
+    async ({ design_id }) => {
+      try {
+        const result = await client.request("get_ship_designs", { design_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting ship designs: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 31: stellaris_get_ship_design_catalog
+  server.tool(
+    "stellaris_get_ship_design_catalog",
+    "Queries the global component database (CComponentDatabase at base + 0x3156198) and available ship size hulls. Returns component sets, localized names, icons, size variants (small/medium/large/aux/core), and standard hull sizes.",
+    {
+      category: z
+        .string()
+        .optional()
+        .describe("Optional filter category: 'weapon', 'defense', 'utility', 'auxiliary', 'core'."),
+      unlocked_only: z
+        .boolean()
+        .optional()
+        .describe("Whether to only return components currently unlocked by the player empire (default true)."),
+    },
+    async ({ category, unlocked_only }) => {
+      try {
+        const result = await client.request("get_ship_design_catalog", { category, unlocked_only });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting ship design catalog: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 32: stellaris_get_component_details
+  server.tool(
+    "stellaris_get_component_details",
+    "Queries full native in-memory live attributes for a ship component or component set (from Clausewitz CComponentDatabase / CComponentSetTemplate / CComponentTemplate). Matches by component_key (e.g. 'PERDITION_BEAM_ION', 'SMALL_PLASMA_3', 'LARGE_ARMOR_5') or set_key (e.g. 'PERDITION_BEAM', 'PLASMA_3', 'DARK_MATTER_DEFLECTOR'). Returns all size variants in the series (small, medium, large, titanic, aux, etc.) with exact native attributes: min/max damage, range, cooldown, accuracy, tracking, shield/armor/hull multipliers, penetration, windup intervals, power, shield/armor/hull points, regen, evasion/speed modifiers, sensor ranges, ship behavior, and empire tech unlock status.",
+    {
+      key: z
+        .string()
+        .describe("The component_key (e.g. 'PERDITION_BEAM_ION', 'SMALL_PLASMA_3', 'LARGE_ARMOR_5') or set_key (e.g. 'PERDITION_BEAM', 'PLASMA', 'DARK_MATTER_DEFLECTOR')."),
+    },
+    async ({ key }) => {
+      try {
+        const result = await client.request("get_component_details", { key });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting component details: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 33: stellaris_create_ship_design
+  server.tool(
+    "stellaris_create_ship_design",
+    "Creates and registers a brand-new independent ship design in the empire's roster via native engine registration (RegisterDesign at base + 0x266670). Allocates a new unique design_id, adds it to the player country, and optionally initializes customized weapon/defense slots and core components.",
+    {
+      ship_size: z
+        .string()
+        .describe("The customizable hull size for the new ship design (e.g. 'corvette', 'military_station_small', 'destroyer', 'cruiser')."),
+      name: z
+        .string()
+        .optional()
+        .describe("Optional custom name for the new ship design (e.g. 'HUMAN1_SHIP_Cobra')."),
+      slots: z
+        .array(
+          z.object({
+            section_name: z.string().optional().describe("Section name (e.g. 'bow', 'mid', 'stern') to disambiguate slot across sections."),
+            section_index: z.number().int().optional().describe("0-based section index."),
+            slot_index: z.number().int().optional().describe("0-based slot index within the ship's section."),
+            slot_name: z.string().optional().describe("Name of the slot definition (e.g. 'LARGE_GUN_01', 'LARGE_UTILITY_1')."),
+            component_key: z.string().describe("Component template key from catalog (e.g. 'KINETIC_ARTILLERY_2', 'LARGE_ARMOR_5')."),
+          })
+        )
+        .optional()
+        .describe("Optional initial list of slot modifications to equip on the newly created design."),
+      core_components: z
+        .object({
+          reactor: z.string().optional().describe("Component key for reactor (e.g. 'CORVETTE_FISSION_REACTOR')."),
+          ftl: z.string().optional().describe("Component key for FTL drive (e.g. 'HYPER_DRIVE_1')."),
+          thruster: z.string().optional().describe("Component key for thrusters (e.g. 'SHIP_THRUSTER_1')."),
+          sensor: z.string().optional().describe("Component key for sensors (e.g. 'SENSOR_1')."),
+          combat_computer: z.string().optional().describe("Component key for combat computer (e.g. 'COMBAT_COMPUTER_DEFAULT')."),
+          aura: z.string().optional().describe("Component key for titan/station aura (e.g. 'SHIP_AURA_QUANTUM_DESTABILIZER')."),
+        })
+        .optional()
+        .describe("Optional initial core system component replacements."),
+    },
+    async ({ ship_size, name, slots, core_components }) => {
+      try {
+        const result = await client.request("create_ship_design", {
+          ship_size,
+          name,
+          slots,
+          core_components,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error creating ship design: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 33: stellaris_update_ship_design
+  server.tool(
+    "stellaris_update_ship_design",
+    "Customizes an existing ship design in the empire's roster by updating weapon, defense, and auxiliary slots, modifying core components (reactor/FTL/thrusters/sensors/combat computer/aura), or renaming the design.",
+    {
+      design_id: z
+        .number()
+        .int()
+        .describe("The unique ID of the ship design to customize (from stellaris_get_ship_designs)."),
+      name: z
+        .string()
+        .optional()
+        .describe("Optional new custom name for this ship design."),
+      slots: z
+        .array(
+          z.object({
+            section_name: z.string().optional().describe("Section name (e.g. 'bow', 'mid', 'stern') to disambiguate slot across sections."),
+            section_index: z.number().int().optional().describe("0-based section index."),
+            slot_index: z.number().int().optional().describe("0-based slot index within the ship's section."),
+            slot_name: z.string().optional().describe("Name of the slot definition (e.g. 'LARGE_GUN_01', 'LARGE_UTILITY_1')."),
+            component_key: z.string().describe("Component template key from catalog (e.g. 'KINETIC_ARTILLERY_2', 'LARGE_ARMOR_5')."),
+          })
+        )
+        .optional()
+        .describe("List of slot modifications to apply."),
+      core_components: z
+        .object({
+          reactor: z.string().optional().describe("Component key for reactor (e.g. 'CORVETTE_FISSION_REACTOR')."),
+          ftl: z.string().optional().describe("Component key for FTL drive (e.g. 'HYPER_DRIVE_1')."),
+          thruster: z.string().optional().describe("Component key for thrusters (e.g. 'SHIP_THRUSTER_1')."),
+          sensor: z.string().optional().describe("Component key for sensors (e.g. 'SENSOR_1')."),
+          combat_computer: z.string().optional().describe("Component key for combat computer (e.g. 'COMBAT_COMPUTER_DEFAULT')."),
+          aura: z.string().optional().describe("Component key for titan/station aura (e.g. 'SHIP_AURA_QUANTUM_DESTABILIZER')."),
+        })
+        .optional()
+        .describe("Core system component replacements."),
+    },
+    async ({ design_id, name, slots, core_components }) => {
+      try {
+        const result = await client.request("update_ship_design", {
+          design_id,
+          name,
+          slots,
+          core_components,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error updating ship design: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 33: stellaris_upgrade_fleet
+  server.tool(
+    "stellaris_upgrade_fleet",
+    "Orders a military fleet to refit and upgrade to the latest ship designs via native engine command CFleetUpgradeDesignCommand (Opcode 0x2F93). The fleet automatically moves to the nearest available shipyard starbase to carry out refit orders.",
+    {
+      fleet_id: z
+        .number()
+        .int()
+        .describe("The unique ID of the fleet to upgrade (from stellaris_get_fleets)."),
+      starbase_id: z
+        .number()
+        .int()
+        .optional()
+        .describe("Optional specific starbase ID to refit at. Default is 0xFFFFFFFF (nearest available shipyard starbase)."),
+      target_design_id: z
+        .number()
+        .int()
+        .optional()
+        .describe("Optional specific target design ID to upgrade to. Default is 0xFFFFFFFF (upgrade all ship designs in the fleet)."),
+    },
+    async ({ fleet_id, starbase_id, target_design_id }) => {
+      try {
+        const result = await client.request("upgrade_fleet", {
+          fleet_id,
+          starbase_id,
+          target_design_id,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error upgrading fleet: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 34: stellaris_delete_ship_design
+  server.tool(
+    "stellaris_delete_ship_design",
+    "Deletes an obsolete or unused ship design from the empire via native engine command CRemoveShipDesignCommand (Opcode 0x31B2).",
+    {
+      design_id: z
+        .number()
+        .int()
+        .describe("The unique ID of the ship design to delete."),
+    },
+    async ({ design_id }) => {
+      try {
+        const result = await client.request("delete_ship_design", { design_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error deleting ship design: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
 }
 
 

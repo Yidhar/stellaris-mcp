@@ -25,6 +25,16 @@ while True:
     kernel32.CloseHandle(h_proc)
     time.sleep(0.2)
 
+print("[*] Building newly updated DLL...")
+import subprocess
+res = subprocess.run([r"F:\vss\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe", "--build", "build", "--config", "Release"], cwd=r"D:\stellarismcp", capture_output=True, text=True)
+if res.returncode != 0:
+    print("[-] Build failed:")
+    print(res.stdout)
+    print(res.stderr)
+    exit(1)
+print("[+] Build succeeded!")
+
 print("[*] Now injecting newly built DLL...")
 dll_path = r"D:\stellarismcp\build\stellaris_bridge\Release\stellaris_bridge.dll"
 inject.inject_dll(pid, dll_path)

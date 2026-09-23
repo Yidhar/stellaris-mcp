@@ -1,8 +1,11 @@
 import ctypes
 from ctypes import wintypes
 
+import sys
+sys.path.append('scripts')
+import inject
 user32 = ctypes.WinDLL('user32')
-pid = 73956
+pid = inject.find_stellaris_pid()
 
 windows = []
 def enum_cb(hwnd, lparam):

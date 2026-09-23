@@ -26,6 +26,7 @@ struct CoreComponentsInfo {
     std::string thruster;
     std::string sensor;
     std::string combat_computer;
+    std::string aura;
 };
 
 struct ShipDesignInfo {
@@ -60,8 +61,14 @@ public:
     nlohmann::json GetShipDesignsJson(const nlohmann::json& params);
 
     nlohmann::json GetShipDesignCatalogJson(const nlohmann::json& params);
+    nlohmann::json GetComponentDetailsJson(const nlohmann::json& params);
 
     // Actions
+    bool CreateShipDesign(const std::string& ship_size, std::string& name,
+                          const nlohmann::json& slots_json, const nlohmann::json& cores_json,
+                          uint32_t& out_design_id, std::string& out_message);
+    nlohmann::json CreateShipDesignJson(const nlohmann::json& params);
+
     bool UpdateShipDesign(uint32_t design_id, const std::string& new_name,
                           const nlohmann::json& slots_json, const nlohmann::json& cores_json,
                           std::string& out_message);
@@ -73,6 +80,18 @@ public:
 
     bool DeleteShipDesign(uint32_t design_id, std::string& out_message);
     nlohmann::json DeleteShipDesignJson(const nlohmann::json& params);
+
+    using FnSetComponentOnSlot = void (*)(void* pSection, void* pComponentTemplate, void* pSlotDef);
+    using FnStageUpdateResources = void (*)(void* pStage);
+
+    using FnEngineAlloc = void* (*)(size_t size);
+    using FnPostCommand = void (*)(void* pCmd, int flag);
+    using FnRegisterDesign = void* (*)(void* manager_ctx, void* source_design);
+    using FnCountryAddDesign = void (*)(void* country_designs_vec, uint32_t index, void** pp_new_design);
+    using FnCalcLongName = void (*)(void* pDesign);
+    using FnCanBeBuiltBy = bool (*)(void* pComponentTemplate, void* pCountry, int designOwnerType);
+    using FnLocalize = void* (*)(void* out_str, const void* in_key);
+    using FnFreePdxStr = void (*)(void* str);
 
 private:
     ShipDesigner() = default;
@@ -87,11 +106,20 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    using FnEngineAlloc = void* (*)(size_t size);
-    using FnPostCommand = void (*)(void* pCmd, int flag);
-
+    FnSetComponentOnSlot fn_set_component_on_slot_{ nullptr };
+    FnStageUpdateResources fn_stage_update_resources_{ nullptr };
     FnEngineAlloc fn_engine_alloc_{ nullptr };
     FnPostCommand fn_post_command_{ nullptr };
+    FnRegisterDesign fn_register_design_{ nullptr };
+    FnCountryAddDesign fn_country_add_design_{ nullptr };
+    FnCalcLongName fn_calc_long_name_{ nullptr };
+    FnCanBeBuiltBy fn_can_be_built_by_{ nullptr };
+    FnLocalize fn_localize_{ nullptr };
+    FnFreePdxStr fn_free_pdx_str_{ nullptr };
+
+    bool CanCountryUseComponent(void* p_tmpl, void* p_country);
+    std::string LocalizeKey(const std::string& key);
+    bool SetShipDesignName(void* design, const std::string& name);
 
     std::unordered_map<std::string, void*> component_cache_;
     bool component_cache_built_{ false };

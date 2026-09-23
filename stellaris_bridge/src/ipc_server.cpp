@@ -231,6 +231,34 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([params]() {
             return FleetManager::Get().SetFleetTemplateQuotaJson(params);
         });
+    } else if (method == "get_ship_designs") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().GetShipDesignsJson(params);
+        });
+    } else if (method == "get_ship_design_catalog") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().GetShipDesignCatalogJson(params);
+        });
+    } else if (method == "get_component_details") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().GetComponentDetailsJson(params);
+        });
+    } else if (method == "create_ship_design") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().CreateShipDesignJson(params);
+        });
+    } else if (method == "update_ship_design") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().UpdateShipDesignJson(params);
+        });
+    } else if (method == "upgrade_fleet") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().UpgradeFleetJson(params);
+        });
+    } else if (method == "delete_ship_design") {
+        fut = TaskQueue::Get().Enqueue([params]() {
+            return ShipDesigner::Get().DeleteShipDesignJson(params);
+        });
     } else {
         return {
             {"jsonrpc", "2.0"},

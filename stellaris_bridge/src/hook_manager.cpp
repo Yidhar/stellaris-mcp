@@ -46,10 +46,9 @@ bool HookManager::Init() {
     }
 
     LOG("[HOOK] Registering dummy window class...");
-    // Create a dummy window and DXGI swapchain to obtain the Present vtable pointer
     WNDCLASSEXW wc = { sizeof(WNDCLASSEXW), CS_CLASSDC, DefWindowProcW, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"StellarisDummyClass", nullptr };
     RegisterClassExW(&wc);
-    HWND hWnd = CreateWindowExW(0, wc.lpszClassName, L"Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hWnd = CreateWindowExW(0, wc.lpszClassName, L"Dummy", WS_POPUP, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
     if (!hWnd) {
         LOGF("[HOOK] Failed to create dummy window (err: 0x%08X).", GetLastError());
     }
@@ -93,7 +92,7 @@ bool HookManager::Init() {
     pSwapChain->Release();
     if (pContext) pContext->Release();
     if (pDevice) pDevice->Release();
-    DestroyWindow(hWnd);
+    if (hWnd) DestroyWindow(hWnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
     LOGF("[HOOK] Discovered IDXGISwapChain::Present at 0x%llX", (unsigned long long)present_target_);
