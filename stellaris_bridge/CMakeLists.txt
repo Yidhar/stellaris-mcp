@@ -15,6 +15,7 @@ add_library(stellaris_bridge SHARED
     src/leader_manager.cpp
     src/species_manager.cpp
     src/fleet_manager.cpp
+    src/ship_designer.cpp
 )
 
 target_include_directories(stellaris_bridge PRIVATE

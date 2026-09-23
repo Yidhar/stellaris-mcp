@@ -12,6 +12,7 @@
 #include "leader_manager.hpp"
 #include "species_manager.hpp"
 #include "fleet_manager.hpp"
+#include "ship_designer.hpp"
 #include "ipc_server.hpp"
 
 namespace bridge {
@@ -46,6 +47,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
     LeaderManager::Get().Init(base_address);
     SpeciesManager::Get().Init(base_address);
     FleetManager::Get().Init(base_address);
+    ShipDesigner::Get().Init(base_address);
 
     if (!HookManager::Get().Init()) {
         LOG("[INIT_FATAL] Failed to hook DXGI Present. Aborting.");

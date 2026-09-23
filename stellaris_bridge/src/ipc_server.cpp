@@ -12,6 +12,7 @@
 #include "leader_manager.hpp"
 #include "species_manager.hpp"
 #include "fleet_manager.hpp"
+#include "ship_designer.hpp"
 
 namespace bridge {
 
