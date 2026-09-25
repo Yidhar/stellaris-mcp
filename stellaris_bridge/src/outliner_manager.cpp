@@ -1,6 +1,7 @@
 #include "outliner_manager.hpp"
 #include "leader_manager.hpp"
 #include "fleet_manager.hpp"
+#include "species_manager.hpp"
 #include <windows.h>
 #include <cmath>
 #include <algorithm>
@@ -160,10 +161,27 @@ static bool SafeReadPdxString(const void* str_addr, std::string& out_str) {
     return false;
 }
 
+struct CPdxStringView {
+    const char* data;
+    size_t length;
+};
+
+struct PdxLocResult {
+    uint32_t flags{ 0 };
+    uint32_t pad0{ 0 };
+    uint64_t pad1{ 0 };
+    union {
+        char buf[16]{ 0 };
+        char* heap_ptr;
+    };
+    uint64_t size{ 0 };
+    uint64_t capacity{ 15 };
+};
+
 static bool SafeLocalizeCall(OutlinerManager::FnLocalize fn_localize,
                              OutlinerManager::FnFreePdxStr fn_free_pdx,
-                             const RawPdxString* in_key,
-                             RawPdxString* out_str) {
+                             const void* in_key,
+                             PdxLocResult* out_str) {
     __try {
         fn_localize(out_str, in_key);
         return true;
@@ -172,11 +190,9 @@ static bool SafeLocalizeCall(OutlinerManager::FnLocalize fn_localize,
     }
 }
 
-static void SafeFreePdxStr(OutlinerManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
+static void SafeFreePdxStr(OutlinerManager::FnFreePdxStr fn_free_pdx, PdxLocResult* str) {
     __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
+        fn_free_pdx(str);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -318,30 +334,19 @@ std::string OutlinerManager::LocalizeKey(const std::string& key) {
 
     if (!fn_localize_) return key;
 
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
+    CPdxStringView in_key{ key.data(), key.size() };
 
-    RawPdxString out_str{};
+    PdxLocResult out_str{};
     if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
         return key;
     }
 
     std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
+    if (out_str.size > 0 && out_str.size < 65536) {
         if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
+            result.assign(out_str.buf, (size_t)out_str.size);
         } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
+            result.assign(out_str.heap_ptr, (size_t)out_str.size);
         }
     }
 
@@ -1671,6 +1676,20 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         });
     }
 
+    // 10. Planetary Features (Deposits & Blockers details)
+    uint32_t queue_id = GetPlanetQueueId(planet_id);
+    uint32_t country_id = GetPlayerCountryId();
+    nlohmann::json planetary_features = ExtractPlanetaryFeatures(p_obj, cid, queue_id, country_id);
+
+    // 11. Population Breakdown (现有人口)
+    nlohmann::json population_breakdown = ExtractPopulationBreakdown(colony_obj);
+
+    // 12. Monthly Population Summary (每月人口概要)
+    nlohmann::json monthly_population_summary = ExtractMonthlyPopulationSummary(colony_obj);
+
+    // 13. Colony Ascension (殖民地飞升)
+    nlohmann::json colony_ascension = ExtractColonyAscension(colony_obj, cid);
+
     return {
         {"planet_id", planet_id},
         {"colony_id", cid},
@@ -1704,6 +1723,10 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         {"monthly_production", monthly_production},
         {"construction_queue", queue},
         {"blockers", blockers},
+        {"planetary_features", planetary_features},
+        {"population_breakdown", population_breakdown},
+        {"monthly_population_summary", monthly_population_summary},
+        {"colony_ascension", colony_ascension},
         {"status_alerts", alerts_json}
     };
 }
@@ -2486,24 +2509,124 @@ nlohmann::json OutlinerManager::UpgradeBuildingJson(uint32_t planet_id, uint32_t
     };
 }
 
-nlohmann::json OutlinerManager::GetClearableBlockersJson(uint32_t planet_id) {
-    if (!base_address_) {
-        return { {"error", "Base address not initialized"} };
-    }
+std::string OutlinerManager::LocalizeModifierType(uint32_t mod_type_id) {
+    if (!base_address_) return "";
+    void* defs_arr = nullptr;
+    uint32_t defs_cnt = 0;
+    SafeReadPtr((const void*)(base_address_ + 0x2812390), &defs_arr);
+    SafeReadU32((const void*)(base_address_ + 0x281239C), &defs_cnt);
+    if (!defs_arr || mod_type_id >= defs_cnt) return "";
 
-    void* p_obj = FindPlanet(planet_id);
-    if (!p_obj) {
-        return { {"error", "Planet not found: " + std::to_string(planet_id)} };
-    }
+    void* entry = (void*)((uintptr_t)defs_arr + mod_type_id * 0xB0);
+    std::string key;
+    SafeReadPdxString((const void*)((uintptr_t)entry + 0x10), key);
+    if (key.empty()) return "";
 
-    uint32_t cid = 0xFFFFFFFF;
-    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
-    if (cid == 0xFFFFFFFF) {
-        return { {"error", "Planet has no active colony: " + std::to_string(planet_id)} };
-    }
+    std::string loc = LocalizeKey(key);
+    return (loc.empty() || loc == key) ? key : loc;
+}
 
-    uint32_t queue_id = GetPlanetQueueId(planet_id);
-    uint32_t country_id = GetPlayerCountryId();
+static nlohmann::json ReadDepositModifiers(uintptr_t base_address, void* tptr, OutlinerManager* mgr) {
+    nlohmann::json mods_json = nlohmann::json::array();
+    if (!tptr) return mods_json;
+
+    void* p_types = nullptr;
+    uint32_t cnt1 = 0;
+    void* p_vals = nullptr;
+    uint32_t cnt2 = 0;
+
+    SafeReadPtr((const void*)((uintptr_t)tptr + 0x858), &p_types);
+    SafeReadU32((const void*)((uintptr_t)tptr + 0x864), &cnt1);
+    SafeReadPtr((const void*)((uintptr_t)tptr + 0x880), &p_vals);
+    SafeReadU32((const void*)((uintptr_t)tptr + 0x88C), &cnt2);
+
+    if (p_types && p_vals && cnt1 > 0 && cnt1 <= 32) {
+        uint32_t limit = (std::min)(cnt1, cnt2);
+        for (uint32_t m = 0; m < limit; ++m) {
+            uint32_t mtype = 0;
+            int64_t mval = 0;
+            if (SafeReadU32((const void*)((uintptr_t)p_types + m * 4), &mtype) &&
+                SafeReadI64((const void*)((uintptr_t)p_vals + m * 8), &mval)) {
+                double val = (double)mval / 100000.0;
+
+                std::string mod_key;
+                void* defs_arr = nullptr;
+                uint32_t defs_cnt = 0;
+                SafeReadPtr((const void*)(base_address + 0x2812390), &defs_arr);
+                SafeReadU32((const void*)(base_address + 0x281239C), &defs_cnt);
+                if (defs_arr && mtype < defs_cnt) {
+                    void* entry = (void*)((uintptr_t)defs_arr + mtype * 0xB0);
+                    SafeReadPdxString((const void*)((uintptr_t)entry + 0x10), mod_key);
+                }
+
+                std::string mod_name = mgr->LocalizeModifierType(mtype);
+                if (mod_name.empty()) {
+                    mod_name = mod_key.empty() ? ("Modifier 0x" + std::to_string(mtype)) : mod_key;
+                }
+
+                char val_buf[32];
+                if (std::abs(val - std::round(val)) < 0.0001) {
+                    snprintf(val_buf, sizeof(val_buf), "%+d", (int)std::round(val));
+                } else {
+                    snprintf(val_buf, sizeof(val_buf), "%+.2f", val);
+                }
+
+                mods_json.push_back({
+                    {"type_id", mtype},
+                    {"key", mod_key},
+                    {"name", mod_name},
+                    {"value", val},
+                    {"formatted", mod_name + ": " + val_buf}
+                });
+            }
+        }
+    }
+    return mods_json;
+}
+
+static nlohmann::json ReadClearCost(void* tptr) {
+    nlohmann::json cost = nlohmann::json::object();
+    if (!tptr) return cost;
+
+    void* p_econ = nullptr;
+    SafeReadPtr((const void*)((uintptr_t)tptr + 0xA8), &p_econ);
+    if (!p_econ) return cost;
+
+    void* p_res = nullptr;
+    uint32_t res_cnt = 0;
+    SafeReadPtr((const void*)((uintptr_t)p_econ + 0x8), &p_res);
+    SafeReadU32((const void*)((uintptr_t)p_econ + 0x10), &res_cnt);
+    if (!p_res || res_cnt == 0) return cost;
+
+    static const char* kResNames[] = {
+        "energy", "minerals", "food", "physics_research", "society_research",
+        "engineering_research", "influence", "unity", "consumer_goods", "alloys"
+    };
+    size_t kKnownCount = sizeof(kResNames) / sizeof(kResNames[0]);
+
+    for (uint32_t r = 0; r < res_cnt && r < kKnownCount; ++r) {
+        int32_t raw_val = 0;
+        if (SafeReadI32((const void*)((uintptr_t)p_res + r * 4), &raw_val) && raw_val > 0) {
+            cost[kResNames[r]] = (double)raw_val / 100000.0;
+        }
+    }
+    return cost;
+}
+
+nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t cid, uint32_t queue_id, uint32_t country_id) {
+    nlohmann::json features = nlohmann::json::array();
+    if (!p_obj || !base_address_) {
+        return {
+            {"summary", {
+                {"total_features", 0},
+                {"blockers_count", 0},
+                {"natural_features_count", 0},
+                {"clearable_blockers_count", 0},
+                {"queued_blockers_count", 0}
+            }},
+            {"features", features}
+        };
+    }
 
     // 1. Gather all deposit blockers currently queued on this planet
     std::vector<uint32_t> queued_blocker_ids;
@@ -2563,27 +2686,53 @@ nlohmann::json OutlinerManager::GetClearableBlockersJson(uint32_t planet_id) {
     SafeReadU32((const void*)((uintptr_t)p_obj + 0x6C), &dep_count);
     if (!dep_arr || dep_count == 0) {
         return {
-            {"planet_id", planet_id},
-            {"colony_id", cid},
-            {"blockers", nlohmann::json::array()}
+            {"summary", {
+                {"total_features", 0},
+                {"blockers_count", 0},
+                {"natural_features_count", 0},
+                {"clearable_blockers_count", 0},
+                {"queued_blockers_count", 0}
+            }},
+            {"features", features}
         };
     }
 
-    // Deposit database at 0x3112FB0
     void* dep_mgr = nullptr;
     SafeReadPtr((const void*)(base_address_ + 0x3112FB0), &dep_mgr);
     if (!dep_mgr) {
-        return { {"error", "Deposit manager not found"} };
+        return {
+            {"summary", {
+                {"total_features", 0},
+                {"blockers_count", 0},
+                {"natural_features_count", 0},
+                {"clearable_blockers_count", 0},
+                {"queued_blockers_count", 0}
+            }},
+            {"features", features}
+        };
     }
+
     void* dep_db_arr = nullptr;
     uint32_t dep_db_cap = 0;
     SafeReadPtr((const void*)((uintptr_t)dep_mgr + 0x18), &dep_db_arr);
     SafeReadU32((const void*)((uintptr_t)dep_mgr + 0x20), &dep_db_cap);
     if (!dep_db_arr || dep_db_cap == 0) {
-        return { {"error", "Deposit database array empty"} };
+        return {
+            {"summary", {
+                {"total_features", 0},
+                {"blockers_count", 0},
+                {"natural_features_count", 0},
+                {"clearable_blockers_count", 0},
+                {"queued_blockers_count", 0}
+            }},
+            {"features", features}
+        };
     }
 
-    nlohmann::json blockers = nlohmann::json::array();
+    uint32_t blockers_count = 0;
+    uint32_t natural_features_count = 0;
+    uint32_t clearable_blockers_count = 0;
+    uint32_t queued_blockers_count = 0;
 
     for (uint32_t i = 0; i < dep_count; ++i) {
         uint32_t dep_id = 0;
@@ -2606,47 +2755,151 @@ nlohmann::json OutlinerManager::GetClearableBlockersJson(uint32_t planet_id) {
             SafeReadPdxString((const void*)((uintptr_t)cat_ptr + 0x20), cat_key);
         }
 
-        // Only include deposit blockers
-        if (cat_key.rfind("deposit_blockers", 0) != 0 && cat_key.find("blocker") == std::string::npos) {
-            continue;
-        }
+        bool is_blocker = (cat_key.rfind("deposit_blockers", 0) == 0 || cat_key.find("blocker") != std::string::npos);
+        if (is_blocker) blockers_count++;
+        else natural_features_count++;
 
-        bool is_queued = (std::find(queued_blocker_ids.begin(), queued_blocker_ids.end(), dep_id) != queued_blocker_ids.end());
+        bool is_queued = false;
         bool can_clear = false;
+        std::string status_text;
 
-        if (!is_queued && queue_id != 0xFFFFFFFF) {
-            // Construct CBuildableClearDepositBlocker (0x20 bytes) on stack
-            uint8_t action_obj[0x20];
-            memset(action_obj, 0, sizeof(action_obj));
-            *(void**)(action_obj + 0x00) = (void*)(base_address_ + 0x2390F28);
-            *(uint32_t*)(action_obj + 0x08) = dep_id;
-            *(uint32_t*)(action_obj + 0x0C) = cid;
+        if (is_blocker) {
+            is_queued = (std::find(queued_blocker_ids.begin(), queued_blocker_ids.end(), dep_id) != queued_blocker_ids.end());
+            if (is_queued) {
+                queued_blockers_count++;
+                status_text = "这个障碍已经在清除中了。";
+            } else if (queue_id != 0xFFFFFFFF) {
+                uint8_t action_obj[0x20];
+                memset(action_obj, 0, sizeof(action_obj));
+                *(void**)(action_obj + 0x00) = (void*)(base_address_ + 0x2390F28);
+                *(uint32_t*)(action_obj + 0x08) = dep_id;
+                *(uint32_t*)(action_obj + 0x0C) = cid;
 
-            // Construct CAddBuildableToQueueCommand (0x30 bytes) on stack
-            uint8_t cmd_stack[0x30];
-            memset(cmd_stack, 0, sizeof(cmd_stack));
-            *(void**)cmd_stack = (void*)(base_address_ + 0x23C09F8);
-            *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
-            *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
-            *(void**)(cmd_stack + 0x20) = action_obj;
-            *(uint32_t*)(cmd_stack + 0x28) = country_id;
-            *(uint32_t*)(cmd_stack + 0x2C) = queue_id;
+                uint8_t cmd_stack[0x30];
+                memset(cmd_stack, 0, sizeof(cmd_stack));
+                *(void**)cmd_stack = (void*)(base_address_ + 0x23C09F8);
+                *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
+                *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
+                *(void**)(cmd_stack + 0x20) = action_obj;
+                *(uint32_t*)(cmd_stack + 0x28) = country_id;
+                *(uint32_t*)(cmd_stack + 0x2C) = queue_id;
 
-            void** vt = *(void***)cmd_stack;
-            if (vt && vt[8]) {
-                can_clear = SafeValidateCmd(vt[8], cmd_stack);
+                void** vt = *(void***)cmd_stack;
+                if (vt && vt[8]) {
+                    can_clear = SafeValidateCmd(vt[8], cmd_stack);
+                }
+                if (can_clear) {
+                    clearable_blockers_count++;
+                    status_text = "可清理";
+                } else {
+                    status_text = "未满足清理前提条件";
+                }
             }
         }
 
-        blockers.push_back({
+        uint32_t clear_time_val = 0;
+        SafeReadU32((const void*)((uintptr_t)type_ptr + 0xA64), &clear_time_val);
+        int32_t clear_time = (clear_time_val == 0xFFFFFFFF || clear_time_val > 10000) ? 0 : (int32_t)clear_time_val;
+
+        nlohmann::json clear_cost = ReadClearCost(type_ptr);
+        nlohmann::json modifiers = ReadDepositModifiers(base_address_, type_ptr, this);
+
+        // Blocker swap type
+        nlohmann::json swap_json = nullptr;
+        void* swap_type_ptr = nullptr;
+        SafeReadPtr((const void*)((uintptr_t)dep_obj + 0x20), &swap_type_ptr);
+        if (swap_type_ptr) {
+            std::string swap_key;
+            SafeReadPdxString((const void*)((uintptr_t)swap_type_ptr + 0x20), swap_key);
+            if (!swap_key.empty()) {
+                nlohmann::json swap_mods = ReadDepositModifiers(base_address_, swap_type_ptr, this);
+                swap_json = {
+                    {"key", swap_key},
+                    {"name", LocalizeKey(swap_key)},
+                    {"description", LocalizeKey(swap_key + "_desc")},
+                    {"modifiers", swap_mods}
+                };
+            }
+        }
+
+        std::string loc_name = LocalizeKey(key);
+        if (loc_name.empty()) loc_name = key;
+        std::string loc_desc = LocalizeKey(key + "_desc");
+
+        features.push_back({
             {"deposit_id", dep_id},
             {"key", key},
-            {"name", LocalizeKey(key)},
-            {"description", LocalizeKey(key + "_desc")},
+            {"name", loc_name},
+            {"description", loc_desc},
             {"category", cat_key},
+            {"is_blocker", is_blocker},
             {"is_queued", is_queued},
-            {"can_clear", can_clear}
+            {"can_clear", can_clear},
+            {"clear_time", clear_time},
+            {"clear_cost", clear_cost},
+            {"modifiers", modifiers},
+            {"swap_type", swap_json},
+            {"status_text", status_text}
         });
+    }
+
+    return {
+        {"summary", {
+            {"total_features", (uint32_t)features.size()},
+            {"blockers_count", blockers_count},
+            {"natural_features_count", natural_features_count},
+            {"clearable_blockers_count", clearable_blockers_count},
+            {"queued_blockers_count", queued_blockers_count}
+        }},
+        {"features", features}
+    };
+}
+
+nlohmann::json OutlinerManager::GetPlanetaryFeaturesJson(uint32_t planet_id) {
+    if (!base_address_) {
+        return { {"error", "Base address not initialized"} };
+    }
+
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) {
+        return { {"error", "Planet not found: " + std::to_string(planet_id)} };
+    }
+
+    uint32_t cid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
+    uint32_t queue_id = GetPlanetQueueId(planet_id);
+    uint32_t country_id = GetPlayerCountryId();
+
+    return ExtractPlanetaryFeatures(p_obj, cid, queue_id, country_id);
+}
+
+nlohmann::json OutlinerManager::GetClearableBlockersJson(uint32_t planet_id) {
+    if (!base_address_) {
+        return { {"error", "Base address not initialized"} };
+    }
+
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) {
+        return { {"error", "Planet not found: " + std::to_string(planet_id)} };
+    }
+
+    uint32_t cid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
+    if (cid == 0xFFFFFFFF) {
+        return { {"error", "Planet has no active colony: " + std::to_string(planet_id)} };
+    }
+
+    uint32_t queue_id = GetPlanetQueueId(planet_id);
+    uint32_t country_id = GetPlayerCountryId();
+
+    auto features_data = ExtractPlanetaryFeatures(p_obj, cid, queue_id, country_id);
+    nlohmann::json blockers = nlohmann::json::array();
+    if (features_data.contains("features") && features_data["features"].is_array()) {
+        for (const auto& feat : features_data["features"]) {
+            if (feat.value("is_blocker", false)) {
+                blockers.push_back(feat);
+            }
+        }
     }
 
     return {
@@ -2809,6 +3062,324 @@ nlohmann::json OutlinerManager::ClearBlockerJson(uint32_t planet_id, uint32_t de
         {"country_id", country_id},
         {"queue_id", queue_id},
         {"message", "Deposit blocker clearance order successfully queued"}
+    };
+}
+
+nlohmann::json OutlinerManager::ExtractMonthlyPopulationSummary(void* colony_obj) {
+    if (!colony_obj) {
+        return {
+            {"net_change", 0},
+            {"growth", 0},
+            {"migration", 0},
+            {"assembly", 0},
+            {"categories", nlohmann::json::object()},
+            {"demographics", nlohmann::json::array()}
+        };
+    }
+
+    int32_t net_change = 0;
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0xFEC), &net_change);
+
+    // Robin Hood table at colony_obj + 0x1010
+    void* table_entries = nullptr;
+    uint32_t mask = 0;
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1018), &table_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1024), &mask);
+
+    int32_t growth_raw = 0;
+    int32_t decline_raw = 0;
+    int32_t immigration_raw = 0;
+    int32_t emigration_raw = 0;
+    int32_t assembly_raw = 0;
+    nlohmann::json categories = nlohmann::json::object();
+
+    if (table_entries && mask > 0 && mask < 1024) {
+        for (uint32_t i = 0; i <= mask; ++i) {
+            void* entry = (void*)((uintptr_t)table_entries + i * 0x40);
+            uint32_t dist_raw = 0;
+            SafeReadU32((const void*)((uintptr_t)entry + 4), &dist_raw);
+            uint8_t dist = (uint8_t)(dist_raw & 0xFF);
+            if (dist != 0xFF && dist != 0) {
+                std::string cat_k;
+                SafeReadPdxString((const void*)((uintptr_t)entry + 0x18), cat_k);
+                int32_t val = 0;
+                SafeReadI32((const void*)((uintptr_t)entry + 0x38), &val);
+                if (!cat_k.empty()) {
+                    categories[cat_k] = val;
+                    if (cat_k == "GROWTH_CAT_GROWTH") growth_raw = val;
+                    else if (cat_k == "GROWTH_CAT_DECLINE") decline_raw = val;
+                    else if (cat_k == "GROWTH_CAT_IMMIGRATION") immigration_raw = val;
+                    else if (cat_k == "GROWTH_CAT_EMIGRATION") emigration_raw = val;
+                    else if (cat_k == "GROWTH_CAT_ASSEMBLY") assembly_raw = val;
+                }
+            }
+        }
+    }
+
+    int32_t migration = immigration_raw - emigration_raw;
+    int32_t growth = growth_raw - decline_raw;
+    int32_t assembly = assembly_raw;
+
+    // Demographics for pie chart from species array
+    nlohmann::json demographics = nlohmann::json::array();
+    void* sp_arr = nullptr;
+    uint32_t sp_cnt = 0;
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+
+    uint64_t total_pops = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> species_pops; // (species_id, count)
+    if (sp_arr && sp_cnt > 0 && sp_cnt < 256) {
+        for (uint32_t i = 0; i < sp_cnt; ++i) {
+            uint32_t count = 0;
+            uint32_t sp_handle = 0;
+            SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12), &count);
+            SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12 + 8), &sp_handle);
+            uint32_t sid = sp_handle & 0xFFFFFF;
+            species_pops.push_back({ sid, count });
+            total_pops += count;
+        }
+    }
+
+    for (const auto& sp : species_pops) {
+        double share = total_pops > 0 ? ((double)sp.second * 100.0 / (double)total_pops) : 100.0;
+        std::string sp_name = "Species " + std::to_string(sp.first);
+        void* sp_ptr = SpeciesManager::Get().FindSpeciesPtr(sp.first);
+        if (sp_ptr) {
+            std::string raw_name;
+            SafeReadPdxString((const void*)((uintptr_t)sp_ptr + 0x60), raw_name);
+            std::string loc_name = LocalizeKey(raw_name);
+            if (!loc_name.empty()) sp_name = loc_name;
+        }
+        demographics.push_back({
+            {"species_id", sp.first},
+            {"species_name", sp_name},
+            {"count", sp.second},
+            {"share_percent", std::round(share * 10.0) / 10.0}
+        });
+    }
+
+    return {
+        {"net_change", net_change},
+        {"growth", growth},
+        {"migration", migration},
+        {"assembly", assembly},
+        {"categories", categories},
+        {"demographics", demographics}
+    };
+}
+
+nlohmann::json OutlinerManager::ExtractPopulationBreakdown(void* colony_obj) {
+    nlohmann::json breakdown = nlohmann::json::array();
+    if (!colony_obj) return breakdown;
+
+    void* sp_arr = nullptr;
+    uint32_t sp_cnt = 0;
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+    if (!sp_arr || sp_cnt == 0 || sp_cnt > 256) return breakdown;
+
+    // Per-species net change table at colony_obj + 0xFF8
+    std::unordered_map<uint32_t, int32_t> sp_net_map;
+    void* table_sp_entries = nullptr;
+    uint32_t sp_mask = 0;
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xFF8), &table_sp_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1004), &sp_mask);
+    if (table_sp_entries && sp_mask > 0 && sp_mask < 1024) {
+        for (uint32_t i = 0; i <= sp_mask; ++i) {
+            void* entry = (void*)((uintptr_t)table_sp_entries + i * 0x40);
+            uint32_t dist_raw = 0;
+            SafeReadU32((const void*)((uintptr_t)entry + 4), &dist_raw);
+            uint8_t dist = (uint8_t)(dist_raw & 0xFF);
+            if (dist != 0xFF && dist != 0) {
+                uint32_t sp_handle = 0;
+                int32_t net = 0;
+                SafeReadU32((const void*)((uintptr_t)entry + 8), &sp_handle);
+                SafeReadI32((const void*)((uintptr_t)entry + 0x24), &net);
+                uint32_t sid = sp_handle & 0xFFFFFF;
+                if (sid != 0) sp_net_map[sid] = net;
+            }
+        }
+    }
+
+    int32_t colony_net = 0;
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0xFEC), &colony_net);
+
+    uint64_t total_pops = 0;
+    for (uint32_t i = 0; i < sp_cnt; ++i) {
+        uint32_t count = 0;
+        SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12), &count);
+        total_pops += count;
+    }
+
+    for (uint32_t i = 0; i < sp_cnt; ++i) {
+        uint32_t count = 0;
+        uint32_t sp_handle = 0;
+        SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12), &count);
+        SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12 + 8), &sp_handle);
+        uint32_t sid = sp_handle & 0xFFFFFF;
+
+        std::string sp_name = "Species " + std::to_string(sid);
+        std::string portrait = "";
+        void* sp_ptr = SpeciesManager::Get().FindSpeciesPtr(sid);
+        if (sp_ptr) {
+            std::string raw_name;
+            SafeReadPdxString((const void*)((uintptr_t)sp_ptr + 0x60), raw_name);
+            std::string loc_name = LocalizeKey(raw_name);
+            if (!loc_name.empty()) sp_name = loc_name;
+            SafeReadPdxString((const void*)((uintptr_t)sp_ptr + 0x190), portrait);
+        }
+
+        std::string pop_disp;
+        if (count >= 1000) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.1fK", (double)count / 1000.0);
+            pop_disp = buf;
+        } else {
+            pop_disp = std::to_string(count);
+        }
+
+        double share = total_pops > 0 ? ((double)count * 100.0 / (double)total_pops) : 100.0;
+        int32_t net = 0;
+        auto it = sp_net_map.find(sid);
+        if (it != sp_net_map.end()) {
+            net = it->second;
+        } else if (sp_cnt == 1) {
+            net = colony_net;
+        }
+
+        breakdown.push_back({
+            {"species_id", sid},
+            {"species_name", sp_name},
+            {"pop_count", count},
+            {"pop_count_display", pop_disp},
+            {"share_percent", std::round(share * 10.0) / 10.0},
+            {"net_change", net},
+            {"portrait", portrait}
+        });
+    }
+
+    return breakdown;
+}
+
+nlohmann::json OutlinerManager::ExtractColonyAscension(void* colony_obj, uint32_t cid) {
+    if (!colony_obj) {
+        return {
+            {"tier", 0},
+            {"tier_name", "行星尚未飞升。"},
+            {"designation_multiplier_percent", 0.0},
+            {"can_ascend", false},
+            {"description", "提升该殖民地的潜力，为子孙后代铸造一个更加繁荣、稳定、高效的星球。"},
+            {"status_desc", "行星尚未飞升。"}
+        };
+    }
+
+    int32_t tier = 0;
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0x110), &tier);
+    double mult = (double)tier * 25.0;
+
+    bool can_ascend = false;
+    if (base_address_ && cid != 0xFFFFFFFF) {
+        uint8_t cmd_stack[0x28];
+        memset(cmd_stack, 0, sizeof(cmd_stack));
+        *(void**)cmd_stack = (void*)(base_address_ + 0x2390260);
+        *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
+        *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
+        *(uint32_t*)(cmd_stack + 0x14) = 0;
+        *(uint64_t*)(cmd_stack + 0x18) = 0;
+        *(uint32_t*)(cmd_stack + 0x20) = cid;
+
+        void** vt = *(void***)cmd_stack;
+        if (vt && vt[8]) {
+            can_ascend = SafeValidateCmd(vt[8], cmd_stack);
+        }
+    }
+
+    std::string tier_name = (tier <= 0) ? "行星尚未飞升。" : ("飞升等级: " + std::to_string(tier));
+    std::string status_desc = (tier <= 0) ? "行星尚未飞升。" : ("行星已飞升至等级 " + std::to_string(tier) + "，特化效果提升 " + std::to_string((int)mult) + "%。");
+
+    return {
+        {"tier", tier},
+        {"tier_name", tier_name},
+        {"designation_multiplier_percent", mult},
+        {"can_ascend", can_ascend},
+        {"description", "提升该殖民地的潜力，为子孙后代铸造一个更加繁荣、稳定、高效的星球。"},
+        {"status_desc", status_desc}
+    };
+}
+
+nlohmann::json OutlinerManager::AscendColonyJson(uint32_t planet_id) {
+    if (!base_address_ || !fn_post_command_) {
+        return { {"error", "Engine functions or base address not initialized"} };
+    }
+
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) {
+        return { {"error", "Planet not found: " + std::to_string(planet_id)} };
+    }
+
+    uint32_t cid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
+    if (cid == 0xFFFFFFFF) {
+        return { {"error", "Planet has no active colony: " + std::to_string(planet_id)} };
+    }
+
+    void* colony_obj = FindColony(cid);
+    if (!colony_obj) {
+        return { {"error", "Colony object not found: " + std::to_string(cid)} };
+    }
+
+    // 1. Construct CIncreasePlanetaryAscensionTierCommand (0x28 bytes) on stack
+    uint8_t cmd_stack[0x28];
+    memset(cmd_stack, 0, sizeof(cmd_stack));
+    *(void**)cmd_stack = (void*)(base_address_ + 0x2390260); // cmd vtable
+    *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
+    *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
+    *(uint32_t*)(cmd_stack + 0x14) = 0;
+    *(uint64_t*)(cmd_stack + 0x18) = 0;
+    *(uint32_t*)(cmd_stack + 0x20) = cid;
+
+    // 2. Validate command
+    void** vt = *(void***)cmd_stack;
+    if (!vt) {
+        return { {"error", "Constructed command has null vtable"} };
+    }
+
+    uint32_t exc_code = 0;
+    uintptr_t exc_addr = 0, fault_addr = 0;
+    bool is_valid = SafeValidateCmd(vt[8], cmd_stack, &exc_code, &exc_addr, &fault_addr);
+    if (!is_valid) {
+        return {
+            {"success", false},
+            {"is_valid", false},
+            {"planet_id", planet_id},
+            {"colony_id", cid},
+            {"error", "Ascension requirement not met (requires completed tradition trees, available unity, or maximum tier reached)"}
+        };
+    }
+
+    // 3. Clone to heap via [cmd->vtable + 0x60]
+    typedef void* (*FnCloneCmd)(void*);
+    FnCloneCmd fn_clone = (FnCloneCmd)vt[12];
+    void* cloned_cmd = fn_clone(cmd_stack);
+    if (!cloned_cmd) {
+        return { {"error", "Failed to clone ascension command to heap"} };
+    }
+
+    // 4. Post command to game engine
+    fn_post_command_(cloned_cmd, false);
+
+    int32_t current_tier = 0;
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0x110), &current_tier);
+
+    return {
+        {"success", true},
+        {"is_valid", true},
+        {"planet_id", planet_id},
+        {"colony_id", cid},
+        {"previous_tier", current_tier},
+        {"target_tier", current_tier + 1},
+        {"message", "Planetary ascension order successfully posted"}
     };
 }
 

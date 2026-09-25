@@ -444,6 +444,16 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([planet_id]() {
             return OutlinerManager::Get().CancelTerraformingJson(planet_id);
         });
+    } else if (method == "get_planetary_features") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetPlanetaryFeaturesJson(planet_id);
+        });
+    } else if (method == "ascend_colony") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().AscendColonyJson(planet_id);
+        });
     } else {
         return {
             {"jsonrpc", "2.0"},

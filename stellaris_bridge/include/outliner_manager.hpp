@@ -105,6 +105,11 @@ public:
     nlohmann::json BuildBuildingJson(uint32_t planet_id, const std::string& building_key, const std::string& district_type = "", int32_t slot_index = -1);
     nlohmann::json UpgradeBuildingJson(uint32_t planet_id, uint32_t building_id, const std::string& upgrade_to_key = "");
 
+    // Planetary Features & Subpage Operations
+    nlohmann::json GetPlanetaryFeaturesJson(uint32_t planet_id);
+    nlohmann::json AscendColonyJson(uint32_t planet_id);
+    std::string LocalizeModifierType(uint32_t mod_type_id);
+
     // Deposit Blockers
     nlohmann::json GetClearableBlockersJson(uint32_t planet_id);
     nlohmann::json ClearBlockerJson(uint32_t planet_id, uint32_t deposit_id = 0, const std::string& deposit_key = "");
@@ -152,6 +157,11 @@ private:
     std::optional<ConstructionCard> ExtractColonyConstruction(void* colony_obj);
     std::vector<StatusAlertCard> ExtractColonyAlerts(void* colony_obj, uint32_t pops, bool is_capital, bool is_colonizing);
     nlohmann::json ExtractPlanetConstructionQueue(uint32_t planet_id);
+
+    nlohmann::json ExtractPlanetaryFeatures(void* p_obj, uint32_t cid, uint32_t queue_id, uint32_t country_id);
+    nlohmann::json ExtractMonthlyPopulationSummary(void* colony_obj);
+    nlohmann::json ExtractPopulationBreakdown(void* colony_obj);
+    nlohmann::json ExtractColonyAscension(void* colony_obj, uint32_t cid);
 
     void BuildSectorGroups(std::vector<SectorGroup>& out_sectors);
 };

@@ -149,10 +149,27 @@ static bool SafeReadPdxString(const void* pdx_str_addr, std::string& out) {
     return false;
 }
 
+struct CPdxStringView {
+    const char* data;
+    size_t length;
+};
+
+struct PdxLocResult {
+    uint32_t flags{ 0 };
+    uint32_t pad0{ 0 };
+    uint64_t pad1{ 0 };
+    union {
+        char buf[16]{ 0 };
+        char* heap_ptr;
+    };
+    uint64_t size{ 0 };
+    uint64_t capacity{ 15 };
+};
+
 static bool SafeLocalizeCall(SpeciesManager::FnLocalize fn_localize,
                              SpeciesManager::FnFreePdxStr fn_free_pdx,
-                             const RawPdxString* in_key,
-                             RawPdxString* out_str) {
+                             const void* in_key,
+                             PdxLocResult* out_str) {
     __try {
         fn_localize(out_str, in_key);
         return true;
@@ -161,11 +178,9 @@ static bool SafeLocalizeCall(SpeciesManager::FnLocalize fn_localize,
     }
 }
 
-static void SafeFreePdxStr(SpeciesManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
+static void SafeFreePdxStr(SpeciesManager::FnFreePdxStr fn_free_pdx, PdxLocResult* str) {
     __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
+        fn_free_pdx(str);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -264,30 +279,19 @@ uint32_t SpeciesManager::GetCurrentGameHours() {
 std::string SpeciesManager::LocalizeKey(const std::string& key) {
     if (key.empty() || !fn_localize_) return key;
 
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
+    CPdxStringView in_key{ key.data(), key.size() };
 
-    RawPdxString out_str{};
+    PdxLocResult out_str{};
     if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
         return key;
     }
 
     std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
+    if (out_str.size > 0 && out_str.size < 65536) {
         if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
+            result.assign(out_str.buf, (size_t)out_str.size);
         } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
+            result.assign(out_str.heap_ptr, (size_t)out_str.size);
         }
     }
 
@@ -411,7 +415,7 @@ void* SpeciesManager::FindSpeciesPtr(uint32_t species_id) {
         void* ptr = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)arr + direct_slot * 16 + 8), &ptr) && ptr) {
             uint32_t check_id = 0;
-            if (SafeReadU32((const void*)((uintptr_t)ptr + 0x10), &check_id) && check_id == species_id) {
+            if (SafeReadU32((const void*)((uintptr_t)ptr + 0x10), &check_id) && ((check_id & 0xFFFFFF) == (species_id & 0xFFFFFF))) {
                 return ptr;
             }
         }
@@ -421,7 +425,7 @@ void* SpeciesManager::FindSpeciesPtr(uint32_t species_id) {
         void* ptr = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)arr + i * 16 + 8), &ptr) && ptr) {
             uint32_t check_id = 0;
-            if (SafeReadU32((const void*)((uintptr_t)ptr + 0x10), &check_id) && check_id == species_id) {
+            if (SafeReadU32((const void*)((uintptr_t)ptr + 0x10), &check_id) && ((check_id & 0xFFFFFF) == (species_id & 0xFFFFFF))) {
                 return ptr;
             }
         }

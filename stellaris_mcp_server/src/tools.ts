@@ -1914,7 +1914,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 46: stellaris_get_planet_details
   server.tool(
     "stellaris_get_planet_details",
-    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 6.1K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations (e.g. Urban Core, Mixed Industry, Quantum Field Manipulation, Mineral Separation, Nano-active Crops), zone slots, unlock requirements (e.g. Upgraded Planetary Capital), and buildings housed within each zone; 4) Monthly resource net production; 5) Active construction queue with remaining days and progress percentage; 6) Colony status alerts.",
+    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 5.9K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations, zone slots, unlock requirements, and buildings; 4) Monthly resource net production; 5) Active construction queue; 6) Planetary features (all natural deposits and blockers with clear time, clear costs, modifiers, swap unlock types, and queued clearance status); 7) Current population breakdown (species list with pop counts, display '5.9K', share %, net change, portrait); 8) Monthly population summary (net change, growth, migration, assembly, categories, demographic pie chart); 9) Colony ascension (tier 0-10, designation multiplier +25%/tier, can_ascend, status text); 10) Colony status alerts.",
     {
       planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
     },
@@ -2325,6 +2325,70 @@ export function registerTools(server: McpServer, client: PipeClient) {
             {
               type: "text",
               text: `Error cancelling terraforming on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 58: stellaris_get_planetary_features
+  server.tool(
+    "stellaris_get_planetary_features",
+    "Retrieves all planetary features and blockers for a specific planet in Stellaris 4.5.0 Cygnus. Includes complete natural features, deposit blockers, queued clearance orders, clearance times (days), resource clearing costs (e.g. 300 energy), modifier effects (e.g. planet_max_districts_add, generator/mining/farming district capacity bonuses), and on-clear swap replacements (e.g. unlocking Delhi Sprawl).",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_planetary_features", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting planetary features for planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 59: stellaris_ascend_colony
+  server.tool(
+    "stellaris_ascend_colony",
+    "Ascends a colony to the next planetary ascension tier (1-10) using native engine command CIncreasePlanetaryAscensionTierCommand. Increases planetary designation efficiency bonus by +25% per tier. Validates prerequisites (traditions unlocked, unity cost) before dispatching.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to ascend (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("ascend_colony", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error ascending colony on planet ${planet_id}: ${err.message}`,
             },
           ],
         };
