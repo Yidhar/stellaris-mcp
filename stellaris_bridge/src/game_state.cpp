@@ -5,6 +5,10 @@
 #include "leader_manager.hpp"
 #include "species_manager.hpp"
 #include "fleet_manager.hpp"
+#include "market_manager.hpp"
+#include "discoveries_manager.hpp"
+#include "contacts_manager.hpp"
+#include "outliner_manager.hpp"
 #include <cmath>
 
 namespace bridge {
@@ -275,16 +279,16 @@ std::unordered_map<std::string, ResourceDetail> GameState::ReadResources(void* c
     }
 
     // 2. Vector arrays:
-    // Income at Country + 0x1E08
-    // Expense at Country + 0x1E28
-    // Net at Country + 0x1E48
+    // Game native total monthly income at Country + 0x2018 (includes market/all sources)
+    // Game native total monthly expense at Country + 0x2038 (includes trades/maintenance)
+    // Game native true monthly net balance at Country + 0x2058
     void* income_arr = nullptr;
     void* expense_arr = nullptr;
     void* net_arr = nullptr;
 
-    SafeReadPtr((const void*)((uintptr_t)country + 0x1E08), &income_arr);
-    SafeReadPtr((const void*)((uintptr_t)country + 0x1E28), &expense_arr);
-    SafeReadPtr((const void*)((uintptr_t)country + 0x1E48), &net_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + 0x2018), &income_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + 0x2038), &expense_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + 0x2058), &net_arr);
 
     auto round2 = [](double val) -> double {
         return std::round(val * 100.0) / 100.0;
@@ -533,6 +537,10 @@ nlohmann::json GameState::GetStatusJson() {
         root["leaders"] = LeaderManager::Get().GetSummaryJson();
         root["species"] = SpeciesManager::Get().GetSummaryJson();
         root["fleets"] = FleetManager::Get().GetSummaryJson();
+        root["market"] = MarketManager::Get().GetSummaryJson();
+        root["discoveries"] = DiscoveriesManager::Get().GetSummaryJson();
+        root["contacts"] = ContactsManager::Get().GetSummaryJson();
+        root["outliner"] = OutlinerManager::Get().GetOutlinerSummaryJson();
         root["resources"] = res_json;
     }
 

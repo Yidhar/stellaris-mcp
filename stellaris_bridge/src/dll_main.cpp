@@ -13,6 +13,10 @@
 #include "species_manager.hpp"
 #include "fleet_manager.hpp"
 #include "ship_designer.hpp"
+#include "market_manager.hpp"
+#include "discoveries_manager.hpp"
+#include "contacts_manager.hpp"
+#include "outliner_manager.hpp"
 #include "ipc_server.hpp"
 
 namespace bridge {
@@ -48,6 +52,10 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
     SpeciesManager::Get().Init(base_address);
     FleetManager::Get().Init(base_address);
     ShipDesigner::Get().Init(base_address);
+    MarketManager::Get().Init(base_address);
+    DiscoveriesManager::Get().Init(base_address);
+    ContactsManager::Get().Init(base_address);
+    OutlinerManager::Get().Init(base_address);
 
     if (!HookManager::Get().Init()) {
         LOG("[INIT_FATAL] Failed to hook DXGI Present. Aborting.");

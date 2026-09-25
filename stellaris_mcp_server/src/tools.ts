@@ -6,7 +6,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 1: stellaris_get_status
   server.tool(
     "stellaris_get_status",
-    "Retrieves current Stellaris game status (Layer 1 Global Perception in progressive disclosure architecture). Includes session active state, pause state, speed (0-4), date, empire statistics (empire_size, colonies, starbases, naval_capacity), empire resources (stockpile/income/expense/net for all 26 resources), situation_log indicators (situations_count, special_projects_count, anomalies_count), council indicators (ruler_name, active_agenda, agenda_progress, agenda_cost, agenda_ready, councilor_count), society indicators (can_unlock_tradition, next_tradition_cost, adopted_trees_count, unlocked_traditions_count, active_edicts_count, edict_fund), and leaders indicators (total_hired, leader_capacity, pool_count, has_unspent_trait_points).",
+    "Retrieves current Stellaris game status (Layer 1 Global Perception in progressive disclosure architecture). Includes session active state, pause state, speed (0-4), date, empire statistics (empire_size, colonies, starbases, naval_capacity), empire resources (stockpile/income/expense/net for all 26 resources), situation_log indicators, council indicators, society indicators, leaders indicators, market indicators (is_galactic_market, market_fee_percent), discoveries indicators (held_relics_count, can_activate_relic), and contacts indicators (known_empires_count, pending_first_contacts_count).",
     {},
     async () => {
       try {
@@ -899,6 +899,215 @@ export function registerTools(server: McpServer, client: PipeClient) {
     }
   );
 
+  // Tool: stellaris_get_species_modification_info
+  server.tool(
+    "stellaris_get_species_modification_info",
+    "Queries species genetic modification capabilities, points, picks, current traits, and available traits catalog (Layer 2 Detailed Query in progressive disclosure architecture).",
+    {
+      species_id: z
+        .number()
+        .int()
+        .positive()
+        .describe("Species ID to query modification traits, points, and picks for (from stellaris_get_species)."),
+    },
+    async ({ species_id }) => {
+      try {
+        const result = await client.request("get_species_modification_info", { species_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting species modification info: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool: stellaris_create_species_template
+  server.tool(
+    "stellaris_create_species_template",
+    "Creates a new subspecies modification template with custom traits via native engine CCountryCreateSpeciesModTemplate (0x33B1). Implements progressive disclosure (Layer 3 Action Command).",
+    {
+      base_species_id: z
+        .number()
+        .int()
+        .positive()
+        .describe("The base species ID to derive the new subspecies template from."),
+      name: z
+        .string()
+        .optional()
+        .describe("Optional name of the new subspecies template (e.g. 'Homo Sapiens Superior'). If omitted, automatically inherits the base species name."),
+      traits: z
+        .array(z.string())
+        .describe("List of trait keys to assign to this template (e.g. ['trait_intelligent', 'trait_rapid_breeders', 'trait_unruly'])."),
+    },
+    async ({ base_species_id, name, traits }) => {
+      try {
+        const result = await client.request("create_species_template", {
+          base_species_id,
+          name: name || "",
+          traits,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error creating species template: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool: stellaris_modify_species_template
+  server.tool(
+    "stellaris_modify_species_template",
+    "Modifies an existing subspecies modification template with updated name and traits via native engine CCountryUpdateSpeciesModTemplate (0x33B0). Implements progressive disclosure (Layer 3 Action Command).",
+    {
+      template_species_id: z
+        .number()
+        .int()
+        .positive()
+        .describe("The existing subspecies template ID to modify."),
+      name: z
+        .string()
+        .optional()
+        .describe("Optional updated name for the template. If omitted, retains previous name."),
+      traits: z
+        .array(z.string())
+        .describe("Complete updated list of trait keys for this template."),
+    },
+    async ({ template_species_id, name, traits }) => {
+      try {
+        const result = await client.request("modify_species_template", {
+          template_species_id,
+          name: name || "",
+          traits,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error modifying species template: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool: stellaris_delete_species_template
+  server.tool(
+    "stellaris_delete_species_template",
+    "Deletes an existing owned subspecies modification template via native engine CCountryDeleteSpeciesModTemplate (0x33B2). Implements progressive disclosure (Layer 3 Action Command).",
+    {
+      species_id: z
+        .number()
+        .int()
+        .positive()
+        .describe("The subspecies template ID to delete."),
+    },
+    async ({ species_id }) => {
+      try {
+        const result = await client.request("delete_species_template", { species_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error deleting species template: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool: stellaris_apply_species_template
+  server.tool(
+    "stellaris_apply_species_template",
+    "Applies a subspecies modification template to pops on owned colonies, initiating a genetic modification special project via native engine CCreateSpeciesModSpecialProjectCommand (0x4645). Implements progressive disclosure (Layer 3 Action Command).",
+    {
+      template_species_id: z
+        .number()
+        .int()
+        .positive()
+        .describe("The subspecies template ID to apply to population."),
+      colony_ids: z
+        .array(z.number().int().nonnegative())
+        .optional()
+        .describe("Optional list of specific colony IDs to apply this template to. If omitted, applies to all owned colonies with matching base species pops."),
+    },
+    async ({ template_species_id, colony_ids }) => {
+      try {
+        const result = await client.request("apply_species_template", {
+          template_species_id,
+          colony_ids: colony_ids || [],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error applying species template: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
   // Tool 27: stellaris_get_fleets
   server.tool(
     "stellaris_get_fleets",
@@ -1347,7 +1556,781 @@ export function registerTools(server: McpServer, client: PipeClient) {
       }
     }
   );
-}
 
+  // Tool 35: stellaris_get_market
+  server.tool(
+    "stellaris_get_market",
+    "Retrieves current galactic/internal market state (Layer 2 Domain Perception) settled in trade value. Returns galactic market status, current market fee percentage, settlement currency ('trade'), all unlocked tradable commodities (including energy, minerals, food, consumer goods, alloys, and unlocked strategic resources like volatile motes; with stockpiles, batch sizes, unit base price, buy price with fee, and sell price with fee), and active monthly trades.",
+    {},
+    async () => {
+      try {
+        const result = await client.request("get_market");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting market info: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 36: stellaris_market_trade
+  server.tool(
+    "stellaris_market_trade",
+    "Executes an instant spot trade (buy or sell) on the market via native engine command CMarketBuyResourceCommand / CMarketSellResourceCommand.",
+    {
+      resource: z.string().describe("Resource key to trade (e.g., 'minerals', 'food', 'energy', 'consumer_goods', 'alloys', 'volatile_motes', etc.)."),
+      action: z.enum(["buy", "sell"]).describe("Action to perform: 'buy' or 'sell'."),
+      units: z.number().int().optional().describe("Amount of resource units to trade (rounded to resource batch units). Default: 1 batch."),
+    },
+    async ({ resource, action, units }) => {
+      try {
+        const result = await client.request("market_trade", { resource, action, units });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error executing market trade: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 37: stellaris_set_monthly_trade
+  server.tool(
+    "stellaris_set_monthly_trade",
+    "Creates, updates, or cancels a recurring monthly market trade order (Layer 3 Directive Intervention) via native engine command CAddMonthlyTradeCommand / CRemoveMonthlyTradeCommand.",
+    {
+      resource: z.string().describe("Resource key (e.g., 'alloys', 'minerals', 'energy')."),
+      action: z.enum(["buy", "sell"]).describe("Order type: 'buy' or 'sell'."),
+      amount: z.number().describe("Monthly quantity in units (e.g., 10, 50, 100)."),
+      price_limit: z.number().optional().describe("Maximum buy price or minimum sell price per unit. Optional (0 for no limit)."),
+      cancel: z.boolean().optional().describe("Set to true to cancel/remove the monthly trade order. Default: false."),
+    },
+    async ({ resource, action, amount, price_limit, cancel }) => {
+      try {
+        const result = await client.request("set_monthly_trade", {
+          resource,
+          action,
+          amount,
+          price_limit: price_limit ?? 0.0,
+          cancel: cancel ?? false,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting monthly trade: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 38: stellaris_get_discoveries
+  server.tool(
+    "stellaris_get_discoveries",
+    "Retrieves relics, astral actions, and minor artifact actions (Layer 2 Domain Perception). Includes player held relics with passive/triumph descriptions and activation status, all galaxy relics, astral actions, and artifact actions.",
+    {
+      tab: z.enum(["all", "relics", "astral_actions", "artifact_actions"]).optional().describe("Sub-panel to query: 'all', 'relics', 'astral_actions', or 'artifact_actions'. Default: 'all'."),
+    },
+    async ({ tab }) => {
+      try {
+        const result = await client.request("get_discoveries", { tab: tab ?? "all" });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting discoveries: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 39: stellaris_activate_relic
+  server.tool(
+    "stellaris_activate_relic",
+    "Activates the triumph effect of an owned relic (Layer 3 Directive Intervention) via native engine command CActivateRelicCommand (Opcode 0x3CEA).",
+    {
+      relic_key: z.string().describe("Relic key identifier (e.g. 'r_severed_head', 'r_the_surveyor', 'r_galatron')."),
+    },
+    async ({ relic_key }) => {
+      try {
+        const result = await client.request("activate_relic", { relic_key });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error activating relic: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 40: stellaris_get_contacts
+  server.tool(
+    "stellaris_get_contacts",
+    "Retrieves galactic contacts and diplomatic communications (Layer 2 Domain Perception). Lists all known empires, contact flags, diplomatic treaties (commercial pact, research agreement, migration pact), and pending first contact logs. NOTE: Claims (宣称) are excluded.",
+    {
+      mode: z.enum(["all", "empires", "first_contacts"]).optional().describe("Filter mode: 'all', 'empires', or 'first_contacts'. Default: 'all'."),
+    },
+    async ({ mode }) => {
+      try {
+        const result = await client.request("get_contacts", { mode: mode ?? "all" });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting contacts: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 41: stellaris_get_outliner
+  server.tool(
+    "stellaris_get_outliner",
+    "Retrieves the macro summary of the empire's Outliner (Layer 1 Progressive Disclosure). Summarizes counts and KPI indicators across the 4 key categories: Sectors/Colonies (total sectors, total colonies, total pops, capital system, and sector catalog with sector_id/name/KPI), Military Fleets (combat fleets count, total military power), Civilian Fleets (civilian fleets count), and Armies (garrison armies count, transport armies count). NOTE: Uncolonized / colonizing planets without definitive sector assignment are excluded.",
+    {},
+    async () => {
+      try {
+        const result = await client.request("get_outliner");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting outliner summary: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 42: stellaris_get_sectors
+  server.tool(
+    "stellaris_get_sectors",
+    "Expands a specific sector or all sectors to inspect member colonies (Layer 2 Progressive Disclosure). Provide 'sector_id' (e.g. 0 for Core Sector, 1 for Frontier Sector, obtained from stellaris_get_outliner). If omitted, expands all sectors. Returns colony ID, name, system name, population, size, capital status, colonizing progress, current construction (building/district and progress), and planet status alerts (unemployment, upgrade available, blockers, overcrowding, etc.).",
+    {
+      sector_id: z.number().int().optional().describe("Sector ID to expand (e.g. 0 for Core Sector, 1 for Frontier Sector). If omitted, expands all sectors."),
+    },
+    async ({ sector_id }) => {
+      try {
+        const result = await client.request("get_sectors", { sector_id: sector_id !== undefined ? sector_id : -1 });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting sectors: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 43: stellaris_get_military_fleets
+  server.tool(
+    "stellaris_get_military_fleets",
+    "Retrieves detailed list of all military combat fleets (Layer 2 Progressive Disclosure). Includes fleet ID, fleet name, military power rating, current ship count, template quota, reinforcement capability, and current operational status.",
+    {},
+    async () => {
+      try {
+        const result = await client.request("get_military_fleets");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting military fleets: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 44: stellaris_get_civilian_fleets
+  server.tool(
+    "stellaris_get_civilian_fleets",
+    "Retrieves list of all civilian ships and non-combat fleets (Layer 2 Progressive Disclosure). Categorizes science ships, construction ships, and colony ships with fleet ID, ship name, and operational status.",
+    {},
+    async () => {
+      try {
+        const result = await client.request("get_civilian_fleets");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting civilian fleets: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 45: stellaris_get_armies
+  server.tool(
+    "stellaris_get_armies",
+    "Retrieves list of ground armies and transport fleets (Layer 2 Progressive Disclosure). Distinguishes planetary garrison armies from embarked transport fleets, including army ID, type/name, combat strength power, health percentage, and stationed planet ID/name.",
+    {},
+    async () => {
+      try {
+        const result = await client.request("get_armies");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting armies: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 46: stellaris_get_planet_details
+  server.tool(
+    "stellaris_get_planet_details",
+    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 6.1K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations (e.g. Urban Core, Mixed Industry, Quantum Field Manipulation, Mineral Separation, Nano-active Crops), zone slots, unlock requirements (e.g. Upgraded Planetary Capital), and buildings housed within each zone; 4) Monthly resource net production; 5) Active construction queue with remaining days and progress percentage; 6) Colony status alerts.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_planet_details", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting planet details: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 47: stellaris_get_available_district_zones
+  server.tool(
+    "stellaris_get_available_district_zones",
+    "Retrieves available district zone specializations for a planet in Stellaris 4.5.0 Cygnus with strict prerequisite evaluation (e.g. upgraded capital requirement for slot_city_02, technology requirements, deposit prerequisites). Returns available zone specializations per slot.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
+      district_type: z.string().optional().describe("Optional district type filter ('district_city', 'district_generator', 'district_mining', 'district_farming', or empty for all)."),
+    },
+    async ({ planet_id, district_type }) => {
+      try {
+        const result = await client.request("get_available_district_zones", { planet_id, district_type: district_type || "" });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting available district zones: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 48: stellaris_get_buildable_buildings
+  server.tool(
+    "stellaris_get_buildable_buildings",
+    "Retrieves buildable buildings for a planet's district or zone slot under Stellaris 4.5.0 Cygnus rules. Strictly filters by zone specialization matching (building_sets), planetary uniqueness limits, slot saturation, and tech prerequisites.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect."),
+      district_type: z.string().optional().describe("Optional district type filter ('district_city', 'district_generator', 'district_mining', 'district_farming')."),
+      slot_index: z.number().int().optional().describe("Optional slot index filter (0 for government, 1 for urban 1, 2 for urban 2, 63 for energy, 64 for minerals, 65 for food)."),
+    },
+    async ({ planet_id, district_type, slot_index }) => {
+      try {
+        const result = await client.request("get_buildable_buildings", {
+          planet_id,
+          district_type: district_type || "",
+          slot_index: slot_index !== undefined ? slot_index : -1,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting buildable buildings: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 49: stellaris_build_building
+  server.tool(
+    "stellaris_build_building",
+    "Queues construction of a building on a planet in Stellaris 4.5.0 Cygnus via native CBuildableBuilding entity and CAddBuildableToQueueCommand (0x3DE2). Performs engine validation of zone matching, colony ownership, and prerequisite resources before queuing to the main thread.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to construct the building on (e.g. 11 for Earth)."),
+      building_key: z.string().describe("Building definition key (e.g. 'building_energy_grid', 'building_mineral_purification_plant', 'building_food_processing_facility', 'building_autochthon_monument', 'building_biolab_1', 'building_foundry_1')."),
+      district_type: z.string().optional().describe("Optional district type ('district_generator', 'district_mining', 'district_farming', 'district_city')."),
+      slot_index: z.number().int().optional().describe("Optional target slot / zone index (e.g. 63 for energy, 64 for minerals, 65 for food, 0 for government, 1 for urban 1, 2 for urban 2)."),
+    },
+    async ({ planet_id, building_key, district_type, slot_index }) => {
+      try {
+        const result = await client.request("build_building", {
+          planet_id,
+          building_key,
+          district_type: district_type || "",
+          slot_index: slot_index !== undefined ? slot_index : -1,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error building ${building_key}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 50: stellaris_upgrade_building
+  server.tool(
+    "stellaris_upgrade_building",
+    "Upgrades an existing building on a planet in Stellaris 4.5.0 Cygnus via native CBuildableUpgradeBuilding entity and CAddBuildableToQueueCommand. Automatically resolves the building's current slot/zone and target upgrade definition if omitted.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 11 for Earth)."),
+      building_id: z.number().int().describe("Unique instance ID (bid) of the existing building to upgrade (e.g. 2, 3, 16777308, 1)."),
+      upgrade_to_key: z.string().optional().describe("Optional target upgrade building key (e.g. 'building_hyper_entertainment_forum', 'building_commercial_megaplex', 'building_physics_lab_2', 'building_factory_2'). If omitted, will be inferred from the existing building type."),
+    },
+    async ({ planet_id, building_id, upgrade_to_key }) => {
+      try {
+        const result = await client.request("upgrade_building", {
+          planet_id,
+          building_id,
+          upgrade_to_key: upgrade_to_key || "",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error upgrading building ${building_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 51: stellaris_get_clearable_blockers
+  server.tool(
+    "stellaris_get_clearable_blockers",
+    "Retrieves all planetary deposit blockers (e.g. Great Pacific Garbage Patch, Failing Infrastructure, Decrepit Dwellings, Deep Sinkhole) on a specified planet/colony. Evaluates real-time clearance status using native game engine validation (can_clear, is_queued, prerequisites, and resource affordability).",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect blockers for (e.g. 11 or 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_clearable_blockers", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting clearable blockers: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 52: stellaris_clear_blocker
+  server.tool(
+    "stellaris_clear_blocker",
+    "Queues a deposit blocker clearance order on a planet via native CBuildableClearDepositBlocker entity and CAddBuildableToQueueCommand. Enforces strict engine validation of technology prerequisites, resource costs, and queue availability before dispatching to the main thread.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID where the blocker is located (e.g. 11 or 3 for Earth)."),
+      deposit_id: z.number().int().optional().describe("Unique instance ID of the deposit blocker to clear (obtainable from stellaris_get_clearable_blockers, e.g. 309, 310, 311)."),
+      deposit_key: z.string().optional().describe("Blocker definition key (e.g. 'd_great_pacific_garbage_patch', 'd_failing_infrastructure_earth', 'd_decrepit_dwellings'). Can be used instead of deposit_id."),
+    },
+    async ({ planet_id, deposit_id, deposit_key }) => {
+      try {
+        const result = await client.request("clear_blocker", {
+          planet_id,
+          deposit_id: deposit_id !== undefined ? deposit_id : 0,
+          deposit_key: deposit_key || "",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error clearing blocker on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 53: stellaris_get_planetary_decisions
+  server.tool(
+    "stellaris_get_planetary_decisions",
+    "Queries planetary decisions for a given planet or colony. Evaluates native engine enactment preconditions (technologies, resources, cooldowns, planet features) via CEnactDecisionCommand::IsValid, returning the list of available decisions with localized names, durations, and can_enact status.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to query decisions for (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_planetary_decisions", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting planetary decisions for planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 54: stellaris_enact_planetary_decision
+  server.tool(
+    "stellaris_enact_planetary_decision",
+    "Enacts a planetary decision on a colony using native engine command CEnactDecisionCommand. Enforces strict engine validation of conditions, resources, and prerequisites before dispatching to the main thread.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to enact the decision on (e.g. 3 for Earth)."),
+      decision_key: z.string().describe("Key or alias of the decision (e.g. 'decision_planet_luxuries_boost', 'decision_planet_food_boost', 'decision_discourage_growth', 'decision_mastery_of_nature', 'luxuries', 'food')."),
+    },
+    async ({ planet_id, decision_key }) => {
+      try {
+        const result = await client.request("enact_decision", {
+          planet_id,
+          decision_key,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error enacting decision '${decision_key}' on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 55: stellaris_get_terraforming_options
+  server.tool(
+    "stellaris_get_terraforming_options",
+    "Queries the current terraforming state and available terraforming target options for a planet from the global CTerraformDatabase. Returns ongoing terraforming progress (progress days, total days, remaining days, percentage) if active, and all valid target planetary classes with duration and can_terraform readiness.",
+    {
+      planet_id: z.number().int().describe("Planet ID to query terraforming options for (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_terraforming_options", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting terraforming options for planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 56: stellaris_start_terraforming
+  server.tool(
+    "stellaris_start_terraforming",
+    "Initiates planetary terraformation project using native engine command CStartTerraformationCommand. Enforces full prerequisite validation (technologies such as Climate Restoration / Terrestrial Sculpting, energy credits stockpile) before dispatching to the game thread.",
+    {
+      planet_id: z.number().int().describe("Planet ID to terraform (e.g. 3 for Earth)."),
+      target_class: z.string().optional().describe("Target planetary class key or alias (e.g. 'pc_ocean', 'pc_tropical', 'pc_gaia', 'pc_desert', 'ocean', 'gaia')."),
+      link_index: z.number().int().optional().describe("Unique index of the terraforming link from CTerraformDatabase (obtainable from stellaris_get_terraforming_options). Can be provided instead of target_class."),
+    },
+    async ({ planet_id, target_class, link_index }) => {
+      try {
+        const result = await client.request("start_terraforming", {
+          planet_id,
+          target_class: target_class || "",
+          link_index: link_index !== undefined ? link_index : -1,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error starting terraforming on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 57: stellaris_cancel_terraforming
+  server.tool(
+    "stellaris_cancel_terraforming",
+    "Cancels an ongoing planetary terraforming project on a planet using native engine command CCancelTerraformationCommand. Restores energy credits and resets the planetary terraforming state.",
+    {
+      planet_id: z.number().int().describe("Planet ID where terraforming is to be cancelled (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("cancel_terraforming", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error cancelling terraforming on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+}
 
 

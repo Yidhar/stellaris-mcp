@@ -13,6 +13,10 @@
 #include "species_manager.hpp"
 #include "fleet_manager.hpp"
 #include "ship_designer.hpp"
+#include "market_manager.hpp"
+#include "discoveries_manager.hpp"
+#include "contacts_manager.hpp"
+#include "outliner_manager.hpp"
 
 namespace bridge {
 
@@ -219,6 +223,36 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([species_id, category, right_value]() {
             return SpeciesManager::Get().SetSpeciesRight(species_id, category, right_value);
         });
+    } else if (method == "get_species_modification_info") {
+        uint32_t species_id = params.value("species_id", 0);
+        fut = TaskQueue::Get().Enqueue([species_id]() {
+            return SpeciesManager::Get().GetSpeciesModificationInfoJson(species_id);
+        });
+    } else if (method == "create_species_template") {
+        uint32_t base_species_id = params.value("base_species_id", (uint32_t)params.value("species_id", 0));
+        std::string name = params.value("name", "");
+        std::vector<std::string> traits = params.value("traits", std::vector<std::string>{});
+        fut = TaskQueue::Get().Enqueue([base_species_id, name, traits]() {
+            return SpeciesManager::Get().CreateSpeciesTemplateJson(base_species_id, name, traits);
+        });
+    } else if (method == "delete_species_template") {
+        uint32_t species_id = params.value("species_id", 0);
+        fut = TaskQueue::Get().Enqueue([species_id]() {
+            return SpeciesManager::Get().DeleteSpeciesTemplateJson(species_id);
+        });
+    } else if (method == "modify_species_template") {
+        uint32_t template_species_id = params.value("template_species_id", (uint32_t)params.value("species_id", 0));
+        std::string name = params.value("name", "");
+        std::vector<std::string> traits = params.value("traits", std::vector<std::string>{});
+        fut = TaskQueue::Get().Enqueue([template_species_id, name, traits]() {
+            return SpeciesManager::Get().ModifySpeciesTemplateJson(template_species_id, name, traits);
+        });
+    } else if (method == "apply_species_template") {
+        uint32_t template_species_id = params.value("template_species_id", (uint32_t)params.value("species_id", 0));
+        std::vector<uint32_t> colony_ids = params.value("colony_ids", std::vector<uint32_t>{});
+        fut = TaskQueue::Get().Enqueue([template_species_id, colony_ids]() {
+            return SpeciesManager::Get().ApplySpeciesTemplateJson(template_species_id, colony_ids);
+        });
     } else if (method == "get_fleets") {
         fut = TaskQueue::Get().Enqueue([params]() {
             return FleetManager::Get().GetFleetsJson(params);
@@ -258,6 +292,157 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     } else if (method == "delete_ship_design") {
         fut = TaskQueue::Get().Enqueue([params]() {
             return ShipDesigner::Get().DeleteShipDesignJson(params);
+        });
+    } else if (method == "get_market") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return MarketManager::Get().GetMarketInfo();
+        });
+    } else if (method == "market_trade") {
+        std::string resource = params.value("resource", "");
+        std::string action = params.value("action", "buy");
+        uint32_t units = params.value("units", (uint32_t)params.value("amount", 0));
+        fut = TaskQueue::Get().Enqueue([resource, action, units]() {
+            std::string msg;
+            bool ok = MarketManager::Get().ExecuteInstantTrade(resource, action, units, msg);
+            return nlohmann::json{
+                {"success", ok},
+                {"message", msg}
+            };
+        });
+    } else if (method == "set_monthly_trade") {
+        std::string resource = params.value("resource", "");
+        std::string action = params.value("action", "buy");
+        double amount = params.value("amount", 0.0);
+        double price_limit = params.value("price_limit", 0.0);
+        bool cancel = params.value("cancel", false);
+        fut = TaskQueue::Get().Enqueue([resource, action, amount, price_limit, cancel]() {
+            std::string msg;
+            bool ok = MarketManager::Get().SetMonthlyTrade(resource, action, amount, price_limit, cancel, msg);
+            return nlohmann::json{
+                {"success", ok},
+                {"message", msg}
+            };
+        });
+    } else if (method == "get_discoveries") {
+        std::string tab = params.value("tab", "all");
+        fut = TaskQueue::Get().Enqueue([tab]() {
+            return DiscoveriesManager::Get().GetDiscoveriesInfo(tab);
+        });
+    } else if (method == "activate_relic") {
+        std::string relic_key = params.value("relic_key", params.value("relic", ""));
+        fut = TaskQueue::Get().Enqueue([relic_key]() {
+            std::string msg;
+            bool ok = DiscoveriesManager::Get().ActivateRelic(relic_key, msg);
+            return nlohmann::json{
+                {"success", ok},
+                {"message", msg}
+            };
+        });
+    } else if (method == "get_contacts") {
+        std::string mode = params.value("mode", "all");
+        fut = TaskQueue::Get().Enqueue([mode]() {
+            return ContactsManager::Get().GetContactsInfo(mode);
+        });
+    } else if (method == "get_outliner") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return OutlinerManager::Get().GetOutlinerSummaryJson();
+        });
+    } else if (method == "get_sectors") {
+        int32_t sector_id = params.value("sector_id", -1);
+        fut = TaskQueue::Get().Enqueue([sector_id]() {
+            return OutlinerManager::Get().GetSectorsJson(sector_id);
+        });
+    } else if (method == "get_military_fleets") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return OutlinerManager::Get().GetMilitaryFleetsJson();
+        });
+    } else if (method == "get_civilian_fleets") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return OutlinerManager::Get().GetCivilianFleetsJson();
+        });
+    } else if (method == "get_armies") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return OutlinerManager::Get().GetArmiesJson();
+        });
+    } else if (method == "get_planet_details") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetPlanetDetailsJson(planet_id);
+        });
+    } else if (method == "get_available_district_zones") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string district_type = params.value("district_type", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, district_type]() {
+            return OutlinerManager::Get().GetAvailableDistrictZonesJson(planet_id, district_type);
+        });
+    } else if (method == "get_buildable_buildings") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string district_type = params.value("district_type", "");
+        int32_t slot_index = params.value("slot_index", -1);
+        fut = TaskQueue::Get().Enqueue([planet_id, district_type, slot_index]() {
+            return OutlinerManager::Get().GetBuildableBuildingsJson(planet_id, district_type, slot_index);
+        });
+    } else if (method == "build_building") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string building_key = params.value("building_key", "");
+        std::string district_type = params.value("district_type", "");
+        int32_t slot_index = params.value("slot_index", -1);
+        if (district_type == "upgrade" || params.contains("building_id")) {
+            uint32_t building_id = params.value("building_id", (uint32_t)slot_index);
+            fut = TaskQueue::Get().Enqueue([planet_id, building_id, building_key]() {
+                return OutlinerManager::Get().UpgradeBuildingJson(planet_id, building_id, building_key);
+            });
+        } else {
+            fut = TaskQueue::Get().Enqueue([planet_id, building_key, district_type, slot_index]() {
+                return OutlinerManager::Get().BuildBuildingJson(planet_id, building_key, district_type, slot_index);
+            });
+        }
+    } else if (method == "upgrade_building") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        uint32_t building_id = params.value("building_id", 0);
+        std::string upgrade_to_key = params.value("upgrade_to_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, building_id, upgrade_to_key]() {
+            return OutlinerManager::Get().UpgradeBuildingJson(planet_id, building_id, upgrade_to_key);
+        });
+    } else if (method == "get_clearable_blockers") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetClearableBlockersJson(planet_id);
+        });
+    } else if (method == "clear_blocker") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        uint32_t deposit_id = params.value("deposit_id", 0);
+        std::string deposit_key = params.value("deposit_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, deposit_id, deposit_key]() {
+            return OutlinerManager::Get().ClearBlockerJson(planet_id, deposit_id, deposit_key);
+        });
+    } else if (method == "get_planetary_decisions") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetPlanetaryDecisionsJson(planet_id);
+        });
+    } else if (method == "enact_decision" || method == "enact_planetary_decision") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string decision_key = params.value("decision_key", params.value("decision", ""));
+        fut = TaskQueue::Get().Enqueue([planet_id, decision_key]() {
+            return OutlinerManager::Get().EnactDecisionJson(planet_id, decision_key);
+        });
+    } else if (method == "get_terraforming_options") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetTerraformingOptionsJson(planet_id);
+        });
+    } else if (method == "start_terraforming") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string target_class = params.value("target_class", params.value("target_planet_class", ""));
+        int32_t link_index = params.value("link_index", -1);
+        fut = TaskQueue::Get().Enqueue([planet_id, target_class, link_index]() {
+            return OutlinerManager::Get().StartTerraformingJson(planet_id, target_class, link_index);
+        });
+    } else if (method == "cancel_terraforming") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().CancelTerraformingJson(planet_id);
         });
     } else {
         return {

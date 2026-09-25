@@ -1,0 +1,17 @@
+source_path = r"d:\stellarismcp\source\stellaris_4.5_source.cpp"
+
+def search_text(pattern, max_results=5):
+    import re
+    print(f"=== Searching for: {pattern} ===")
+    regex = re.compile(pattern.encode('utf-8'))
+    count = 0
+    with open(source_path, 'rb') as f:
+        for line_num, line in enumerate(f, 1):
+            if regex.search(line):
+                print(f"Line {line_num}: {line.decode('utf-8', errors='ignore').strip()[:140]}")
+                count += 1
+                if count >= max_results:
+                    break
+
+search_text(r"CalcTable<\(NEconomicUnitTable::EEconomicUnitTableType\)0>")
+search_text(r"CStandardEconomicUnit<CDepositType,CColony")

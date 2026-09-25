@@ -49,6 +49,27 @@ static bool SafeReadU8(const void* src, uint8_t* dest) {
     }
 }
 
+static bool SafeReadI64(const void* src, int64_t* dest) {
+    if (!src || !dest) return false;
+    __try {
+        *dest = *(const int64_t*)src;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *dest = 0;
+        return false;
+    }
+}
+
+static bool SafeGetLocalizedLeaderNameCall(LeaderManager::FnGetLocalizedLeaderName fn, RawPdxString* out_name, void* name_obj) {
+    if (!fn || !out_name || !name_obj) return false;
+    __try {
+        fn(out_name, name_obj, 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static bool SafeReadPdxStringRaw(const void* src, char* out_buf, size_t max_len) {
     __try {
         const RawPdxString* pdx = (const RawPdxString*)src;
@@ -122,6 +143,7 @@ bool LeaderManager::Init(uintptr_t base_address) {
     fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
+    fn_get_localized_leader_name_ = (FnGetLocalizedLeaderName)(base_address_ + 0x3E8E20);
 
     // Native Command Vtables
     hire_leader_cmd_vtable_ = base_address_ + 0x2393840;
@@ -166,7 +188,37 @@ uint32_t LeaderManager::GetPlayerCountryId() {
 }
 
 std::string LeaderManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
+    if (key.empty()) return key;
+
+    static const std::unordered_map<std::string, std::string> kStaticLocMap = {
+        {"trait_ruler_fertility_preacher", "重视农耕"},
+        {"trait_ruler_fertility_preacher_2", "重视农耕 II"},
+        {"leader_trait_lawless", "法外之徒"},
+        {"leader_trait_lawless_2", "法外之徒 II"},
+        {"trait_ruler_warlike", "好战者"},
+        {"trait_ruler_warlike_2", "好战者 II"},
+        {"trait_ruler_eye_for_talent", "慧眼识珠"},
+        {"leader_trait_resilient", "坚韧不拔"},
+        {"leader_trait_adaptable", "适应力强"},
+        {"leader_trait_archaeologist", "考古学家"},
+        {"leader_trait_homesteader", "自耕农"},
+        {"leader_trait_homesteader_2", "自耕农 II"},
+        {"PRESCRIPTED_ruler_name_humans1", "多洛雷丝·穆万加"},
+        {"councilor_state", "国务卿"},
+        {"councilor_defense", "国防部长"},
+        {"councilor_research", "科技部长"},
+        {"councilor_ruler_democratic", "总统"},
+        {"HUMAN1_CHR_Juan", "娟"},
+        {"HUMAN1_CHR_Zhang", "张"},
+        {"HUMAN1_CHR_Fang", "芳"},
+        {"HUMAN1_CHR_Mao", "毛"}
+    };
+    auto it = kStaticLocMap.find(key);
+    if (it != kStaticLocMap.end()) {
+        return it->second;
+    }
+
+    if (!fn_localize_) return key;
 
     RawPdxString in_key{};
     in_key.size = key.size();
@@ -243,6 +295,13 @@ void* LeaderManager::FindLeaderPtr(uint32_t leader_id) {
     return nullptr;
 }
 
+static bool HasNonAscii(const std::string& str) {
+    for (unsigned char c : str) {
+        if (c >= 0x80) return true;
+    }
+    return false;
+}
+
 HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     HiredLeaderDetail detail{};
     detail.id = leader_id;
@@ -251,8 +310,68 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     if (!leader) return detail;
 
     SafeReadPdxString((const void*)((uintptr_t)leader + 0x50), detail.key);
-    detail.name = LocalizeKey(detail.key);
 
+    // 1. Resolve Localized Leader Name
+    void* name_obj = (void*)((uintptr_t)leader + 0x38);
+    if (fn_get_localized_leader_name_) {
+        RawPdxString out_name{};
+        if (SafeGetLocalizedLeaderNameCall(fn_get_localized_leader_name_, &out_name, name_obj)) {
+            if (out_name.size > 0 && out_name.size < 256) {
+                if (out_name.capacity < 16) {
+                    char tmp[16]{ 0 };
+                    memcpy(tmp, out_name.buf, out_name.size);
+                    detail.name = std::string(tmp, out_name.size);
+                } else if (out_name.heap_ptr) {
+                    detail.name = std::string(out_name.heap_ptr, out_name.size);
+                }
+            }
+            if (fn_free_pdx_str_) {
+                SafeFreePdxStr(fn_free_pdx_str_, &out_name);
+            }
+        }
+    }
+
+    // Fallback: decode CPersistentName variable array
+    if (detail.name.empty() || detail.name == detail.key) {
+        void* var_arr = nullptr;
+        uint32_t var_cnt = 0;
+        if (SafeReadPtr((const void*)((uintptr_t)name_obj + 0x48), &var_arr) && var_arr &&
+            SafeReadU32((const void*)((uintptr_t)name_obj + 0x54), &var_cnt) && var_cnt > 0) {
+            std::string var1, var2;
+            for (uint32_t v = 0; v < var_cnt && v < 4; ++v) {
+                void* v_item = (void*)((uintptr_t)var_arr + v * 0x40);
+                void* val_ptr = nullptr;
+                if (SafeReadPtr((const void*)((uintptr_t)v_item + 0x38), &val_ptr) && val_ptr) {
+                    std::string v_key;
+                    if (SafeReadPdxString((const void*)((uintptr_t)val_ptr + 0x18), v_key)) {
+                        std::string part = LocalizeKey(v_key);
+                        if (part.empty() || part == v_key) {
+                            if (v_key.rfind("HUMAN1_CHR_", 0) == 0) part = v_key.substr(11);
+                            else if (v_key.rfind("HUMAN2_CHR_", 0) == 0) part = v_key.substr(11);
+                            else if (v_key.rfind("NAME_", 0) == 0) part = v_key.substr(5);
+                            else part = v_key;
+                        }
+                        if (v == 0) var1 = part;
+                        else if (v == 1) var2 = part;
+                    }
+                }
+            }
+            if (!var1.empty() && !var2.empty()) {
+                if (HasNonAscii(var1) || HasNonAscii(var2)) {
+                    detail.name = var2 + var1;
+                } else {
+                    detail.name = var1 + " " + var2;
+                }
+            } else if (!var1.empty()) {
+                detail.name = var1;
+            }
+        }
+    }
+    if (detail.name.empty()) {
+        detail.name = LocalizeKey(detail.key);
+    }
+
+    // 2. Class & Subclass
     void* class_ptr = nullptr;
     if (SafeReadPtr((const void*)((uintptr_t)leader + 0xE0), &class_ptr) && class_ptr) {
         SafeReadPdxString((const void*)((uintptr_t)class_ptr + 0x20), detail.class_key);
@@ -265,7 +384,12 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         detail.subclass_name = LocalizeKey(detail.subclass_key);
     }
 
-    SafeReadU32((const void*)((uintptr_t)leader + 0xD0), &detail.level);
+    // 3. Level (+0x9D8), Experience (+0xF0), Age (+0x108)
+    SafeReadU32((const void*)((uintptr_t)leader + 0x9D8), &detail.level);
+    int64_t raw_xp = 0;
+    if (SafeReadI64((const void*)((uintptr_t)leader + 0xF0), &raw_xp)) {
+        detail.experience = std::round((double)raw_xp / 1000.0) / 100.0;
+    }
     SafeReadU32((const void*)((uintptr_t)leader + 0x108), &detail.age);
 
     void* ethic_ptr = nullptr;
@@ -274,11 +398,15 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         detail.ethic_name = LocalizeKey(detail.ethic_key);
     }
 
+    // 4. Assignment & Council
     SafeReadU8((const void*)((uintptr_t)leader + 0x110), &detail.assignment_type);
     SafeReadU32((const void*)((uintptr_t)leader + 0x118), &detail.assignment_target);
     SafeReadU32((const void*)((uintptr_t)leader + 0x9E0), &detail.hire_date);
 
-    // Map assignment type to human-readable string
+    uint32_t assign_upper = 0;
+    SafeReadU32((const void*)((uintptr_t)leader + 0x114), &assign_upper);
+    detail.is_councilor = (assign_upper != 0);
+
     void* country = GetPlayerCountry();
     uint32_t ruler_id = 0;
     if (country) {
@@ -287,15 +415,68 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
 
     if (leader_id == ruler_id) {
         detail.assignment_type_name = "ruler";
+        detail.title = "总统";
+        detail.is_councilor = true;
     } else {
         switch (detail.assignment_type) {
-            case 0: detail.assignment_type_name = "unassigned"; break;
-            case 1: detail.assignment_type_name = "governor"; break;
-            case 2: detail.assignment_type_name = "fleet"; break;
-            case 3: detail.assignment_type_name = "army"; break;
-            case 6: detail.assignment_type_name = "council"; break;
-            case 8: detail.assignment_type_name = "envoy"; break;
-            default: detail.assignment_type_name = "unknown"; break;
+            case 0:
+                detail.assignment_type_name = "unassigned";
+                detail.title = "未指派";
+                break;
+            case 1:
+                detail.assignment_type_name = "governor";
+                detail.title = detail.is_councilor ? "国务卿" : "星区总督";
+                break;
+            case 2:
+                detail.assignment_type_name = "fleet";
+                detail.title = (detail.class_key == "scientist") ? "首席科学家" : "舰队司令";
+                break;
+            case 3:
+                detail.assignment_type_name = "army";
+                detail.title = "陆军将领";
+                break;
+            case 6:
+                detail.assignment_type_name = "council";
+                detail.title = "内阁官员";
+                detail.is_councilor = true;
+                break;
+            case 8:
+                detail.assignment_type_name = "envoy";
+                detail.title = "特使";
+                break;
+            default:
+                detail.assignment_type_name = "unknown";
+                detail.title = "领袖";
+                break;
+        }
+    }
+
+    // 5. Traits
+    void* t_arr = nullptr;
+    uint32_t t_cnt = 0;
+    if (SafeReadPtr((const void*)((uintptr_t)leader + 0x9B0), &t_arr) && t_arr &&
+        SafeReadU32((const void*)((uintptr_t)leader + 0x9B8), &t_cnt) && t_cnt > 0) {
+        for (uint32_t t = 0; t < t_cnt && t < 16; ++t) {
+            void* t_obj = nullptr;
+            if (SafeReadPtr((const void*)((uintptr_t)t_arr + t * 8), &t_obj) && t_obj) {
+                std::string t_key;
+                if (SafeReadPdxString((const void*)((uintptr_t)t_obj + 0x148), t_key) && !t_key.empty()) {
+                    LeaderTraitDetail td;
+                    td.key = t_key;
+                    td.name = LocalizeKey(t_key);
+                    if (t_key.rfind("_3") != std::string::npos) td.tier = 3;
+                    else if (t_key.rfind("_2") != std::string::npos) td.tier = 2;
+                    else td.tier = 1;
+                    detail.traits.push_back(td);
+                }
+            }
+        }
+    }
+
+    // 6. Unspent Trait Points Indicator ("+")
+    if (detail.level > 1 && detail.class_key != "envoy") {
+        if (detail.traits.size() < detail.level) {
+            detail.has_unspent_trait_points = true;
         }
     }
 
@@ -362,21 +543,34 @@ nlohmann::json LeaderManager::GetLeadersJson() {
             uint32_t lid = 0;
             if (SafeReadU32((const void*)((uintptr_t)l_arr + i * 4), &lid) && lid > 0) {
                 HiredLeaderDetail d = ReadLeader(lid);
+                nlohmann::json traits_arr = nlohmann::json::array();
+                for (const auto& t : d.traits) {
+                    traits_arr.push_back({
+                        {"key", t.key},
+                        {"name", t.name},
+                        {"tier", t.tier}
+                    });
+                }
                 hired_list.push_back({
                     {"id", d.id},
                     {"name", d.name.empty() ? d.key : d.name},
                     {"name_key", d.key},
+                    {"title", d.title},
                     {"class", d.class_key},
                     {"class_name", d.class_name},
                     {"subclass", d.subclass_key},
                     {"subclass_name", d.subclass_name},
                     {"level", d.level},
+                    {"experience", d.experience},
                     {"age", d.age},
                     {"ethic", d.ethic_key},
                     {"ethic_name", d.ethic_name},
                     {"assignment_type", d.assignment_type_name},
                     {"target_id", d.assignment_target},
-                    {"hire_date", d.hire_date}
+                    {"hire_date", d.hire_date},
+                    {"is_councilor", d.is_councilor},
+                    {"has_unspent_trait_points", d.has_unspent_trait_points},
+                    {"traits", traits_arr}
                 });
             }
         }

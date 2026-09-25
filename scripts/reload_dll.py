@@ -43,33 +43,41 @@ def find_module(pid, module_name):
     return found_handle
 
 def eject_dll(pid, module_name="stellaris_bridge.dll"):
-    h_mod = find_module(pid, module_name)
-    if not h_mod:
-        print(f"[*] Module {module_name} not currently loaded in PID {pid}")
-        return True
-
-    print(f"[*] Found module {module_name} at 0x{h_mod:X}. Calling FreeLibrary...")
-    h_proc = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
-    if not h_proc:
-        print(f"[-] Failed to open process: {kernel32.GetLastError()}")
-        return False
-
     h_k32 = kernel32.GetModuleHandleW("kernel32.dll")
     pfn_free_library = kernel32.GetProcAddress(h_k32, b"FreeLibrary")
 
-    h_thread = kernel32.CreateRemoteThread(
-        h_proc, None, 0, pfn_free_library, ctypes.c_void_p(h_mod), 0, None
-    )
-    if not h_thread:
-        print(f"[-] Failed to create remote thread: {kernel32.GetLastError()}")
-        kernel32.CloseHandle(h_proc)
-        return False
+    count = 0
+    while True:
+        h_mod = find_module(pid, module_name)
+        if not h_mod:
+            if count == 0:
+                print(f"[*] Module {module_name} not currently loaded in PID {pid}")
+            else:
+                print(f"[+] Module {module_name} completely unloaded after {count} FreeLibrary calls.")
+            return True
 
-    kernel32.WaitForSingleObject(h_thread, INFINITE)
-    kernel32.CloseHandle(h_thread)
-    kernel32.CloseHandle(h_proc)
-    print("[+] FreeLibrary completed successfully.")
-    return True
+        count += 1
+        print(f"[*] Found module {module_name} at 0x{h_mod:X} (attempt {count}). Calling FreeLibrary...")
+        h_proc = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+        if not h_proc:
+            print(f"[-] Failed to open process: {kernel32.GetLastError()}")
+            return False
+
+        h_thread = kernel32.CreateRemoteThread(
+            h_proc, None, 0, pfn_free_library, ctypes.c_void_p(h_mod), 0, None
+        )
+        if not h_thread:
+            print(f"[-] Failed to create remote thread: {kernel32.GetLastError()}")
+            kernel32.CloseHandle(h_proc)
+            return False
+
+        kernel32.WaitForSingleObject(h_thread, INFINITE)
+        kernel32.CloseHandle(h_thread)
+        kernel32.CloseHandle(h_proc)
+        time.sleep(0.1)
+        if count > 25:
+            print(f"[-] Failed to completely unload module after {count} attempts")
+            return False
 
 def main():
     import inject

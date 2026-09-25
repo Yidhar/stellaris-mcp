@@ -69,6 +69,10 @@ public:
     using FnEngineAlloc = void* (*)(size_t size);
     using FnPostCommand = void (*)(void* cmd, int unk);
     using FnSetSpeciesRightCmdCtor = void*(__fastcall*)(void* this_ptr, void* pCountry, void* pSpecies, const void* pRights, uint8_t is_specific);
+    using FnSpeciesCopyCtor = void*(__fastcall*)(void* dest_species, const void* src_species);
+    using FnSpeciesDtor = void(__fastcall*)(void* species);
+    using FnTraitSetSetTraits = void(__fastcall*)(void* trait_set_ptr, void* p_pdx_array_traits);
+    using FnCStringAssign = void(__fastcall*)(void* p_str, const char* src, size_t len);
 
     static SpeciesManager& Get();
 
@@ -80,6 +84,13 @@ public:
 
     // Layer 3: Set species rights
     nlohmann::json SetSpeciesRight(uint32_t species_id, const std::string& category, const std::string& right_value);
+
+    // Species modification & template operations
+    nlohmann::json GetSpeciesModificationInfoJson(uint32_t species_id);
+    nlohmann::json CreateSpeciesTemplateJson(uint32_t base_species_id, const std::string& name, const std::vector<std::string>& trait_keys);
+    nlohmann::json DeleteSpeciesTemplateJson(uint32_t species_id);
+    nlohmann::json ModifySpeciesTemplateJson(uint32_t template_species_id, const std::string& name, const std::vector<std::string>& trait_keys);
+    nlohmann::json ApplySpeciesTemplateJson(uint32_t template_species_id, const std::vector<uint32_t>& colony_ids);
 
     void* FindSpeciesPtr(uint32_t species_id);
     void* GetSpeciesRightType(const std::string& category, const std::string& key);
@@ -102,12 +113,23 @@ private:
     FnPostCommand fn_post_command_{ nullptr };
     FnSetSpeciesRightCmdCtor fn_set_species_right_cmd_ctor_{ nullptr };
 
+    FnSpeciesCopyCtor fn_species_copy_ctor_{ nullptr };
+    FnSpeciesDtor fn_species_dtor_{ nullptr };
+    FnTraitSetSetTraits fn_trait_set_set_traits_{ nullptr };
+    FnCStringAssign fn_cstring_assign_{ nullptr };
+
     // 9 Rights Databases caches: category -> map<key, void*>
     std::unordered_map<std::string, std::unordered_map<std::string, void*>> rights_cache_;
     std::unordered_map<std::string, std::vector<RightOption>> rights_catalog_;
 
+    // Traits cache
+    std::unordered_map<std::string, TraitInfo> traits_catalog_;
+    std::unordered_map<std::string, void*> trait_objects_;
+    std::unordered_map<std::string, int32_t> trait_costs_;
+
     void EnsureDatabasesLoaded();
     void LoadRightDatabase(const std::string& category, uintptr_t db_rva);
+    void EnsureTraitsLoaded();
 
     SpeciesRights ReadRights(void* pRightsMgr, void* pSpecies);
     std::vector<TraitInfo> ReadTraits(void* pSpecies);

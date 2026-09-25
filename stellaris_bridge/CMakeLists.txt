@@ -16,6 +16,10 @@ add_library(stellaris_bridge SHARED
     src/species_manager.cpp
     src/fleet_manager.cpp
     src/ship_designer.cpp
+    src/market_manager.cpp
+    src/discoveries_manager.cpp
+    src/contacts_manager.cpp
+    src/outliner_manager.cpp
 )
 
 target_include_directories(stellaris_bridge PRIVATE

@@ -13,15 +13,23 @@ struct LeaderSummary {
     bool has_unspent_trait_points{ false };
 };
 
+struct LeaderTraitDetail {
+    std::string key;
+    std::string name;
+    uint32_t tier{ 1 };
+};
+
 struct HiredLeaderDetail {
     uint32_t id{ 0 };
     std::string key;
     std::string name;
+    std::string title;
     std::string class_key;
     std::string class_name;
     std::string subclass_key;
     std::string subclass_name;
     uint32_t level{ 0 };
+    double experience{ 0.0 };
     uint32_t age{ 0 };
     std::string ethic_key;
     std::string ethic_name;
@@ -29,7 +37,9 @@ struct HiredLeaderDetail {
     std::string assignment_type_name;
     uint32_t assignment_target{ 0 };
     uint32_t hire_date{ 0 };
-    std::vector<std::string> traits;
+    std::vector<LeaderTraitDetail> traits;
+    bool has_unspent_trait_points{ false };
+    bool is_councilor{ false };
 };
 
 struct CandidateDetail {
@@ -51,6 +61,7 @@ public:
     using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
+    using FnGetLocalizedLeaderName = void (*)(void* out_str, void* name_obj, int mode);
 
     static LeaderManager& Get();
 
@@ -81,6 +92,7 @@ private:
     FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
+    FnGetLocalizedLeaderName fn_get_localized_leader_name_{ nullptr };
 
     uintptr_t hire_leader_cmd_vtable_{ 0 };
     uintptr_t fire_leader_cmd_vtable_{ 0 };

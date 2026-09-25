@@ -1,0 +1,6 @@
+vt_cmd = 0x11B725C + 0x12619fc
+vt_20 = 0x11B7266 + 0x117d59a
+vt_28 = 0x11B7271 + 0x117d5c7
+print(f"Vtable for command: 0x{vt_cmd:X}")
+print(f"Vtable for +0x20: 0x{vt_20:X}")
+print(f"Vtable for +0x28: 0x{vt_28:X}")

@@ -27,7 +27,7 @@ while True:
 
 print("[*] Building newly updated DLL...")
 import subprocess
-res = subprocess.run([r"F:\vss\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe", "--build", "build", "--config", "Release"], cwd=r"D:\stellarismcp", capture_output=True, text=True)
+res = subprocess.run([r"F:\vss\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe", "--build", "build", "--config", "Release"], cwd=r"D:\stellarismcp", capture_output=True, text=True, encoding="utf-8", errors="replace")
 if res.returncode != 0:
     print("[-] Build failed:")
     print(res.stdout)
