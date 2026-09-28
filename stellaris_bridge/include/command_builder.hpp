@@ -96,6 +96,16 @@ public:
     // reason = nullptr passes a null CString*, which such predicates accept.
     bool CallPredicate(uintptr_t fn_rva, void* self, void* a, void* b, std::string* reason);
 
+    // Runs `call(ctx, out)` under the SEH/purecall guard, where `out` is an engine CString that
+    // the engine function fills (return slot or append target), and returns its text with
+    // rich-text markup stripped. `call` forwards to the engine function with its own argument
+    // order; keep it free of C++ objects with destructors.
+    using FnTextCall = void (*)(void* ctx, void* out_cstring);
+    bool CallForText(FnTextCall call, void* ctx, std::string* text);
+    // Runs `call(ctx, nullptr)` under the same guard, for engine queries whose result `call`
+    // stores into ctx itself. Returns false if the engine call raised.
+    bool CallGuarded(FnTextCall call, void* ctx);
+
     // Engine operator new; memory handed to engine-owned objects must come from here.
     void* EngineAlloc(size_t n) const;
 

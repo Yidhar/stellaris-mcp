@@ -119,6 +119,52 @@ static inline void RawFreeCall(void* fn_free, void* out_str) {
     }
 }
 
+// Renders the engine's rich-text markup (as returned by localization and text-building functions)
+// as plain text. 0x13 starts an icon name; a second 0x13 or, for framed icons ("energy|1 -500"),
+// the next space or control byte ends it. Icons become "[energy]" without the "|frame" suffix.
+// Other control bytes start a colour code whose one-letter key ('Y', 'R', ... or '!' to close)
+// follows and is dropped with it.
+inline std::string RenderPdxMarkup(const char* p, size_t n) {
+    std::string out;
+    out.reserve(n);
+    bool in_icon = false, icon_frame = false;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)p[i];
+        if (in_icon) {
+            if (c == 0x13 || c == ' ' || c < 0x20) {
+                in_icon = false;
+                out.push_back(']');
+                if (c == 0x13) {
+                    unsigned char next = i + 1 < n ? (unsigned char)p[i + 1] : ' ';
+                    if (next != ' ' && next != 0x0A) out.push_back(' ');
+                    continue;
+                }
+                // the terminating byte is ordinary text or markup: fall through
+            } else {
+                if (c == '|') icon_frame = true;
+                if (!icon_frame) out.push_back((char)c);
+                continue;
+            }
+        }
+        if (c == 0x13) {
+            in_icon = true;
+            icon_frame = false;
+            out.push_back('[');
+        } else if (c >= 0x20 || c == 0x0A) {
+            out.push_back((char)c);
+        } else if (i + 1 < n) {
+            unsigned char k = (unsigned char)p[i + 1];
+            if (k == '!' || (k >= 'A' && k <= 'Z') || (k >= 'a' && k <= 'z')) ++i;
+        }
+    }
+    if (in_icon) out.push_back(']');
+    return out;
+}
+
+inline std::string RenderPdxMarkup(const std::string& s) {
+    return RenderPdxMarkup(s.data(), s.size());
+}
+
 inline std::string SafeLocalize(uintptr_t base_address, const std::string& key) {
     if (key.empty() || !base_address) return key;
 
@@ -145,7 +191,7 @@ inline std::string SafeLocalize(uintptr_t base_address, const std::string& key) 
         RawFreeCall(fn_free, &out_str);
     }
 
-    return result.empty() ? key : result;
+    return result.empty() ? key : RenderPdxMarkup(result);
 }
 
 } // namespace bridge

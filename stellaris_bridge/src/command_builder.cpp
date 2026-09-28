@@ -158,6 +158,18 @@ bool CallPredicate4(uintptr_t fn, void* a, void* b, void* c, void* d, bool* out)
     return ok;
 }
 
+bool CallTextGuarded(CommandBuilder::FnTextCall call, void* ctx, void* out) {
+    bool ok = true;
+    ++t_engine_call_depth;
+    __try {
+        call(ctx, out);
+    } __except (RecordException(GetExceptionCode())) {
+        ok = false;
+    }
+    --t_engine_call_depth;
+    return ok;
+}
+
 void* CallAlloc(uintptr_t fn, size_t n) {
     __try {
         return ((FnEngineAlloc)fn)(n);
@@ -350,29 +362,42 @@ NativeCommand& NativeCommand::SetString(std::ptrdiff_t off, const std::string& v
 }
 
 // Copies an engine CString reason out (rich-text markup stripped) and frees its heap buffer.
-static void TakeReasonText(RawCString& text, std::string* reason) {
-    if (reason && text.str.size > 0 && text.str.size < 4096) {
+static void TakeReasonText(RawCString& text, std::string* reason, uint64_t max_size = 4096) {
+    if (reason && text.str.size > 0 && text.str.size < max_size) {
         const char* p = text.str.capacity > 15 ? text.str.heap_ptr : text.str.buf;
         if (p) {
-            // Strip the engine's rich-text markup. 0x13 wraps icon names (trigger_yes / trigger_no,
-            // kept: callers read them); other control bytes start a colour code whose one-letter
-            // key ('Y', 'R', ... or '!' to close) follows and is dropped with it.
-            reason->clear();
-            const size_t n = (size_t)text.str.size;
-            for (size_t i = 0; i < n; ++i) {
-                unsigned char c = (unsigned char)p[i];
-                if (c >= 0x20 || c == 0x0A) {
-                    reason->push_back((char)c);
-                } else if (c != 0x13 && i + 1 < n) {
-                    unsigned char k = (unsigned char)p[i + 1];
-                    if (k == '!' || (k >= 'A' && k <= 'Z') || (k >= 'a' && k <= 'z')) ++i;
-                }
-            }
+            *reason = RenderPdxMarkup(p, (size_t)text.str.size);
         }
     }
     if (text.str.capacity > 15) {
         CallFreePdxString(CommandBuilder::Get().Base() + kRvaFreePdxString, &text);
     }
+}
+
+bool CommandBuilder::CallGuarded(FnTextCall call, void* ctx) {
+    if (!base_ || !sdk_matches_) {
+        return false;
+    }
+    if (!CallTextGuarded(call, ctx, nullptr)) {
+        LOGF("[CMD_BUILDER] engine call failed: %s", LastExceptionText().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool CommandBuilder::CallForText(FnTextCall call, void* ctx, std::string* text) {
+    if (!base_ || !sdk_matches_) {
+        return false;
+    }
+    // The callee constructs the CString in place (return slot) or appends to it.
+    RawCString out{};
+    out.str.capacity = 15;
+    if (!CallTextGuarded(call, ctx, &out)) {
+        LOGF("[CMD_BUILDER] engine text call failed: %s", LastExceptionText().c_str());
+        return false;
+    }
+    TakeReasonText(out, text, 1u << 20);
+    return true;
 }
 
 bool CommandBuilder::CallPredicate(uintptr_t fn_rva, void* self, void* a, void* b, std::string* reason) {

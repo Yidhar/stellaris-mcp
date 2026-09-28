@@ -1,5 +1,7 @@
 #include "event_manager.hpp"
 #include "game_state.hpp"
+#include "command_builder.hpp"
+#include "sdk/stellaris_sdk.hpp"
 
 namespace bridge {
 
@@ -129,7 +131,7 @@ bool EventManager::Init(uintptr_t base_address) {
 
     // Updated RVAs for Stellaris 4.5.0 Cygnus
     fn_find_child_ = nullptr;
-    fn_select_option_ = (FnSelectOption)(base_address_ + 0x107BA70);
+    fn_select_option_ = (FnSelectOption)(base_address_ + sdk::fn::CEventWindow_PostEventOptionSelection);
     fn_start_screen_dismiss_ = (FnStartScreenDismiss)(base_address_ + 0x12D1FA0);
     fn_anomaly_dismiss_ = (FnAnomalyDismiss)(base_address_ + 0x11AFA90);
     fn_anomaly_research_ = nullptr;
@@ -145,18 +147,7 @@ bool EventManager::Init(uintptr_t base_address) {
 }
 
 static std::string CleanPdxString(const std::string& input) {
-    std::string result;
-    result.reserve(input.size());
-    for (size_t i = 0; i < input.size(); ++i) {
-        if (input[i] == '\x11') {
-            if (i + 1 < input.size()) {
-                ++i; // skip format char (e.g. Y, !, W, R, etc.)
-            }
-            continue;
-        }
-        result += input[i];
-    }
-    return result;
+    return RenderPdxMarkup(input);
 }
 
 std::string EventManager::ExtractPdxString(void* ptr) {
@@ -229,6 +220,111 @@ void* EventManager::FindChildByName(void* container, const char* name) {
     }
 
     return nullptr;
+}
+
+// ---- data behind a standard event window -------------------------------------------------
+// CEventWindow (as listed at [idler + 0x170]): +0xA1C id of its COpenPlayerEvent (Setup reads it
+// for CGameState::GetOpenPlayerEvent). CGameState: +0x180 COpenPlayerEvent* array, +0x18C count.
+// COpenPlayerEvent: +0x8 CEventHandle* (-> CEvent*), +0x10 CEventScope (sdk::ent).
+// CEvent: +0x10 CString script id, +0x5E0 CPdxArray of options, +0x590 pointer whose CEffect at
+// +0x60 is passed with the option (both as CEventWindow::GetToolTip passes them).
+constexpr std::ptrdiff_t kWinOpenEventId = 0xA1C;
+constexpr std::ptrdiff_t kGsOpenEvents = 0x180;
+constexpr std::ptrdiff_t kGsOpenEventCount = 0x18C;
+constexpr std::ptrdiff_t kEventKey = 0x10 + 0x10;  // CString header, then its std::string
+constexpr std::ptrdiff_t kEventOptions = 0x5E0;
+constexpr std::ptrdiff_t kEventOptionEffectOwner = 0x590;
+constexpr std::ptrdiff_t kEffectInOwner = 0x60;
+
+struct EventTextCtx {
+    uintptr_t fn;
+    void* event;
+    void* scope;
+    void* options;
+    int index;
+    void* effect;
+};
+
+static void CallEventTitle(void* c, void* out) {
+    auto* x = (EventTextCtx*)c;
+    ((void* (*)(void*, void*, void*))x->fn)(x->event, out, x->scope);
+}
+
+static void CallEventDesc(void* c, void* out) {
+    auto* x = (EventTextCtx*)c;
+    ((void* (*)(void*, void*, void*))x->fn)(out, x->event, x->scope);
+}
+
+static void CallOptionEffects(void* c, void* out) {
+    auto* x = (EventTextCtx*)c;
+    ((void* (*)(void*, void*, bool, void*, int, void*, bool))x->fn)(out, x->scope, false, x->options, x->index,
+                                                                    x->effect, true);
+}
+
+static void* FindOpenPlayerEvent(uintptr_t base, uint32_t id) {
+    void* gs = nullptr;
+    void** arr = nullptr;
+    int count = 0;
+    if (!SafeReadPtr((const void*)(base + sdk::glob::g_CurrentGameState), &gs) || !gs ||
+        !SafeReadPtr((const void*)((uintptr_t)gs + kGsOpenEvents), (void**)&arr) || !arr ||
+        !SafeReadInt((const void*)((uintptr_t)gs + kGsOpenEventCount), &count) || count <= 0 || count > 512) {
+        return nullptr;
+    }
+    for (int i = 0; i < count; ++i) {
+        void* ope = nullptr;
+        uint32_t ope_id = 0xFFFFFFFF;
+        if (SafeReadPtr(&arr[i], &ope) && ope &&
+            SafeReadU32((const void*)((uintptr_t)ope + sdk::ent::COpenPlayerEvent::id), &ope_id) && ope_id == id) {
+            return ope;
+        }
+    }
+    return nullptr;
+}
+
+// Fills title, description, script id and per-option effects of a standard event window from the
+// event and scope it was opened with, through the engine functions the window itself uses.
+void EventManager::ReadEventData(void* win, EventInfo& info) {
+    uint32_t open_id = 0xFFFFFFFF;
+    if (!SafeReadU32((const void*)((uintptr_t)win + kWinOpenEventId), &open_id)) {
+        return;
+    }
+    void* ope = FindOpenPlayerEvent(base_address_, open_id);
+    void* handle = nullptr;
+    void* event = nullptr;
+    if (!ope || !SafeReadPtr((const void*)((uintptr_t)ope + sdk::ent::COpenPlayerEvent::event), &handle) || !handle ||
+        !SafeReadPtr(handle, &event) || !event) {
+        return;
+    }
+    info.open_event_id = open_id;
+    info.event_key = ExtractPdxString((void*)((uintptr_t)event + kEventKey));
+
+    auto& cb = CommandBuilder::Get();
+    EventTextCtx ctx{};
+    ctx.event = event;
+    ctx.scope = (void*)((uintptr_t)ope + sdk::ent::COpenPlayerEvent::scope);
+    std::string text;
+    ctx.fn = base_address_ + sdk::fn::CEvent_GetTitle;
+    if (cb.CallForText(&CallEventTitle, &ctx, &text) && !text.empty()) {
+        info.title = CleanPdxString(text);
+    }
+    text.clear();
+    ctx.fn = base_address_ + sdk::fn::NEventWindowUtil_GetEventWindowDesc;
+    if (cb.CallForText(&CallEventDesc, &ctx, &text) && !text.empty()) {
+        info.description = CleanPdxString(text);
+    }
+
+    void* effect_owner = nullptr;
+    SafeReadPtr((const void*)((uintptr_t)event + kEventOptionEffectOwner), &effect_owner);
+    ctx.fn = base_address_ + sdk::fn::CEventOption_GetDescForOptionAtIndex;
+    ctx.options = (void*)((uintptr_t)event + kEventOptions);
+    ctx.effect = effect_owner ? (void*)((uintptr_t)effect_owner + kEffectInOwner) : nullptr;
+    for (auto& opt : info.options) {
+        text.clear();
+        ctx.index = opt.index;
+        if (cb.CallForText(&CallOptionEffects, &ctx, &text)) {
+            opt.effects = CleanPdxString(text);
+        }
+    }
 }
 
 std::vector<EventInfo> EventManager::GetActiveEvents() {
@@ -499,6 +595,7 @@ std::vector<EventInfo> EventManager::GetActiveEvents() {
             node = next_node;
         }
 
+        ReadEventData(win, info);
         events.push_back(info);
     }
 
@@ -512,19 +609,23 @@ nlohmann::json EventManager::GetActiveEventsJson() {
     for (const auto& ev : events) {
         nlohmann::json opt_arr = nlohmann::json::array();
         for (const auto& opt : ev.options) {
-            opt_arr.push_back({
+            nlohmann::json o = {
                 {"index", opt.index},
                 {"text", opt.text},
                 {"is_valid", opt.is_valid}
-            });
+            };
+            if (!opt.effects.empty()) o["effects"] = opt.effects;
+            opt_arr.push_back(o);
         }
 
-        arr.push_back({
+        nlohmann::json e = {
             {"window_id", ev.window_id},
             {"title", ev.title},
             {"description", ev.description},
             {"options", opt_arr}
-        });
+        };
+        if (!ev.event_key.empty()) e["event_key"] = ev.event_key;
+        arr.push_back(e);
     }
 
     return arr;
@@ -756,6 +857,27 @@ nlohmann::json EventManager::ResolveEvent(uint32_t window_id, int option_index) 
             {"error", {
                 {"code", -32007},
                 {"message", "fn_select_option_ is null"}
+            }}
+        };
+    }
+
+    // PostEventOptionSelection does not check the index, so only accept an option the window shows
+    // (hidden options fail their potential trigger and must not be picked).
+    bool option_shown = false;
+    std::string shown;
+    for (const auto& ev : GetActiveEvents()) {
+        if (ev.window_id != window_id) continue;
+        for (const auto& opt : ev.options) {
+            option_shown |= opt.index == option_index;
+            shown += (shown.empty() ? "" : ", ") + std::to_string(opt.index);
+        }
+    }
+    if (!option_shown) {
+        return {
+            {"error", {
+                {"code", -32009},
+                {"message", "Option " + std::to_string(option_index) + " is not shown in event window " +
+                                std::to_string(window_id) + " (available: " + shown + ")"}
             }}
         };
     }

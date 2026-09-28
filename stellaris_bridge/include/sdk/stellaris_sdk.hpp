@@ -128,14 +128,34 @@ namespace db {
 // ============================== functions =============================
 // Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).
 namespace fn {
+    // CArmyType::CalcMorale(CModifier const*) const  --  int64_t* (*)(const void* army_type, int64_t* out, const void* modifier)
+    inline constexpr uintptr_t CArmyType_CalcMorale = 0x42EF40;
+    // CArmy::CalcMilitaryPower() const  --  int64_t* (*)(const void* army, int64_t* out)
+    inline constexpr uintptr_t CArmy_CalcMilitaryPower = 0x812E20;
     // CCouncilAgenda::GetCost(CCountry const*, CString*) const  --  int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason)
     inline constexpr uintptr_t CCouncilAgenda_GetCost = 0x4AC180;
+    // CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)  --  void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)
+    inline constexpr uintptr_t CEventOption_GetDescForOptionAtIndex = 0xA22E00;
+    // CEventWindow::PostEventOptionSelection(int)  --  void (*)(void* event_window, int option_index)
+    inline constexpr uintptr_t CEventWindow_PostEventOptionSelection = 0x107BA70;
+    // CEvent::GetTitle(CEventScope const&) const  --  void* (*)(void* event, void* out_cstring, void* scope)
+    inline constexpr uintptr_t CEvent_GetTitle = 0x8E61F0;
+    // CFleet::BuildOrdersString(bool, bool) const  --  void* (*)(const void* fleet, void* out_cstring, bool, bool)
+    inline constexpr uintptr_t CFleet_BuildOrdersString = 0xC74BA0;
+    // COutlinerPlanetStatusController::ShouldShowStatusFrame(EOutlinerPlanetStatusFrame, CColony const&, TPdxRef<CCountry>, EPlanetBuildingOwnerType)  --  bool (*)(void* controller, int frame, void* colony, uint32_t country, int owner_type)
+    inline constexpr uintptr_t COutlinerPlanetStatusController_ShouldShowStatusFrame = 0x14D98B0;
+    // CPersistentName::BuildString() const  --  void* (*)(const void* persistent_name, void* out_cstring)
+    inline constexpr uintptr_t CPersistentName_BuildString = 0x33B360;
     // __cxa_pure_virtual (MSVC: _purecall)  --  void (*)()  -- calls the registered purecall handler, then abort()
     inline constexpr uintptr_t CRT_purecall = 0x2023540;
     // CSpeciesRightBase::IsAllowed(CCountry const*, CSpecies const*, CString*) const  --  bool (*)(void* right_base, void* country, void* species, void* reason_cstring)
     inline constexpr uintptr_t CSpeciesRightBase_IsAllowed = 0x39CBB0;
     // CSpeciesRightBase::IsPotential(CCountry const*, CSpecies const*) const  --  bool (*)(void* right_base, void* country, void* species)
     inline constexpr uintptr_t CSpeciesRightBase_IsPotential = 0x39BF30;
+    // NEventWindowUtil::GetEventWindowDesc(CEvent const&, CEventScope const&)  --  void* (*)(void* out_cstring, void* event, void* scope)
+    inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077830;
+    // PdxLocalize<char const(&)[N], CString const&>(key, param_name, value)  --  void* (*)(void* out_cstring, const void* key_view, const char* param, const void* value_cstring)
+    inline constexpr uintptr_t PdxLocalize_OneParam = 0x326F30;
 }  // namespace fn
 
 // ============================== entities ==============================

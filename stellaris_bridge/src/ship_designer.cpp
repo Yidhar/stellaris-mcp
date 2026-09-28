@@ -1,4 +1,5 @@
 #include "ship_designer.hpp"
+#include "fleet_access.hpp"
 #include "common.hpp"
 #include "command_builder.hpp"
 #include "game_state.hpp"
@@ -267,25 +268,7 @@ void* ShipDesigner::FindShipDesign(uint32_t design_id) {
 }
 
 void* ShipDesigner::FindFleet(uint32_t fleet_id) {
-    if (!base_address_) return nullptr;
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114008), &mgr) || !mgr) return nullptr;
-    void* arr = nullptr;
-    uint32_t cap = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &cap)) return nullptr;
-
-    uint32_t idx = fleet_id & 0xFFFFFF;
-    if (idx >= cap) return nullptr;
-
-    void* candidate = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)arr + idx * 16 + 8), &candidate) || !candidate) return nullptr;
-
-    uint32_t actual_id = 0;
-    if (SafeReadU32((const void*)((uintptr_t)candidate + 0x08), &actual_id) && actual_id == fleet_id) {
-        return candidate;
-    }
-    return nullptr;
+    return fleets::Find(base_address_, fleet_id);
 }
 
 void ShipDesigner::BuildComponentIndexIfNeeded() {

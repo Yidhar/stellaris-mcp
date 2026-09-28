@@ -369,7 +369,7 @@ void* SpeciesManager::GetSpeciesRightType(const std::string& category, const std
 }
 
 void* SpeciesManager::FindSpeciesPtr(uint32_t species_id) {
-    if (!base_address_ || species_id == 0) return nullptr;
+    if (!base_address_ || species_id == 0xFFFFFFFF) return nullptr;
 
     void* smgr = nullptr;
     if (!SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr) || !smgr || (uintptr_t)smgr < 0x10000) {

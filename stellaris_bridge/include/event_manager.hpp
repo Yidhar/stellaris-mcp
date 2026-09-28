@@ -8,12 +8,15 @@ struct EventOptionInfo {
     int index{ 0 };
     std::string text;
     bool is_valid{ true };
+    std::string effects;  // the option's effect tooltip, as the game shows it on hover
 };
 
 struct EventInfo {
     uint32_t window_id{ 0 };
     std::string title;
     std::string description;
+    std::string event_key;                 // script id, e.g. "colony.1"
+    uint32_t open_event_id{ 0xFFFFFFFF };  // COpenPlayerEvent id behind a standard event window
     std::vector<EventOptionInfo> options;
 };
 
@@ -33,6 +36,10 @@ public:
 
     // Call on main thread to resolve an event choice
     nlohmann::json ResolveEvent(uint32_t window_id, int option_index);
+
+private:
+    void ReadEventData(void* win, EventInfo& info);
+public:
 
     using FnFindChild = void*(*)(void* container, void* pdx_string);
     using FnSelectOption = void(*)(void* event_window, int option_index);

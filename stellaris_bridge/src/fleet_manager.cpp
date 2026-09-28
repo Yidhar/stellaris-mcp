@@ -1,4 +1,5 @@
 #include "fleet_manager.hpp"
+#include "fleet_access.hpp"
 #include "task_queue.hpp"
 #include "command_builder.hpp"
 #include "game_state.hpp"
@@ -168,34 +169,7 @@ void* FleetManager::FindFleetTemplate(uint32_t template_id) {
 }
 
 void* FleetManager::FindFleet(uint32_t fleet_id) {
-    if (!base_address_) return nullptr;
-
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114008), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
-        return nullptr;
-    }
-    if (!mgr || (uintptr_t)mgr < 0x10000) {
-        return nullptr;
-    }
-
-    void* arr = nullptr;
-    uint32_t cap = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &cap) || cap == 0) {
-        return nullptr;
-    }
-
-    uint32_t slot = fleet_id & 0xFFFFFF;
-    if (slot < cap) {
-        void* ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)arr + slot * 16 + 8), &ptr) && ptr) {
-            uint32_t check_id = 0;
-            if (SafeReadU32((const void*)((uintptr_t)ptr + 8), &check_id) && check_id == fleet_id) {
-                return ptr;
-            }
-        }
-    }
-    return nullptr;
+    return fleets::Find(base_address_, fleet_id);
 }
 
 FleetSummary FleetManager::GetFleetSummary() {
@@ -212,24 +186,9 @@ FleetSummary FleetManager::GetFleetSummary() {
 
     void* country = GetPlayerCountry();
     if (country) {
-        void* phys_vec_ptr = nullptr;
-        uint32_t phys_vec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)country + 0x3ab8 + 8), &phys_vec_ptr) && phys_vec_ptr &&
-            SafeReadU32((const void*)((uintptr_t)country + 0x3ab8 + 0x14), &phys_vec_cnt)) {
-            for (uint32_t p = 0; p < phys_vec_cnt; ++p) {
-                uint32_t fid = 0;
-                if (SafeReadU32((const void*)((uintptr_t)phys_vec_ptr + p * 4), &fid)) {
-                    void* flt = FindFleet(fid);
-                    if (flt) {
-                        bool is_military = false;
-                        for (const auto& mf : fleets) {
-                            if (mf.fleet_id == fid) { is_military = true; break; }
-                        }
-                        if (!is_military) {
-                            summary.civilian_fleets_count++;
-                        }
-                    }
-                }
+        for (uint32_t fid : fleets::Owned(country)) {
+            if (fleets::IsCivilianShip(fleets::ClassOf(FindFleet(fid)))) {
+                summary.civilian_fleets_count++;
             }
         }
     }
@@ -272,17 +231,11 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
         // Try reading fleet name
         void* fleet_obj = FindFleet(associated_fleet_id);
         if (fleet_obj) {
-            std::string custom_name;
-            if (SafeReadPdxString((const void*)((uintptr_t)fleet_obj + 0xA8), custom_name) && !custom_name.empty()) {
-                info.name = custom_name;
-            } else {
+            info.name = fleets::Name(fleet_obj);
+            if (info.name.empty()) {
                 info.name = "第 " + std::to_string(i + 1) + " 舰队";
             }
-
-            uint32_t raw_power = 0;
-            if (SafeReadU32((const void*)((uintptr_t)fleet_obj + 0x100), &raw_power)) {
-                info.military_power = (double)raw_power / 1000.0;
-            }
+            info.military_power = fleets::MilitaryPower(fleet_obj);
         } else {
             info.name = "舰队模板 #" + std::to_string(template_id);
         }
@@ -333,37 +286,23 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
     }
 
     if (include_civilian) {
-        void* phys_vec_ptr = nullptr;
-        uint32_t phys_vec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)country + 0x3ab8 + 8), &phys_vec_ptr) && phys_vec_ptr &&
-            SafeReadU32((const void*)((uintptr_t)country + 0x3ab8 + 0x14), &phys_vec_cnt)) {
-            for (uint32_t p = 0; p < phys_vec_cnt; ++p) {
-                uint32_t fid = 0;
-                if (!SafeReadU32((const void*)((uintptr_t)phys_vec_ptr + p * 4), &fid)) continue;
-                void* flt = FindFleet(fid);
-                if (!flt) continue;
-                bool is_military = false;
-                for (const auto& mf : result) {
-                    if (mf.fleet_id == fid) { is_military = true; break; }
-                }
-                if (is_military) continue;
-                if (specific_fleet_id != 0xFFFFFFFF && fid != specific_fleet_id) continue;
+        for (uint32_t fid : fleets::Owned(country)) {
+            void* flt = FindFleet(fid);
+            if (!fleets::IsCivilianShip(fleets::ClassOf(flt))) continue;
+            if (specific_fleet_id != 0xFFFFFFFF && fid != specific_fleet_id) continue;
 
-                FleetInfo civ_info{};
-                civ_info.fleet_id = fid;
-                civ_info.template_id = 0xFFFFFFFF;
-                std::string custom_name;
-                if (SafeReadPdxString((const void*)((uintptr_t)flt + 0xA8), custom_name) && !custom_name.empty()) {
-                    civ_info.name = custom_name;
-                } else {
-                    civ_info.name = "民用船队 #" + std::to_string(fid);
-                }
-                civ_info.military_power = 0.0;
-                civ_info.total_ships = 1;
-                civ_info.total_quota = 1;
-                civ_info.can_reinforce = false;
-                result.push_back(civ_info);
+            FleetInfo civ_info{};
+            civ_info.fleet_id = fid;
+            civ_info.template_id = 0xFFFFFFFF;
+            civ_info.name = fleets::Name(flt);
+            if (civ_info.name.empty()) {
+                civ_info.name = "民用船队 #" + std::to_string(fid);
             }
+            civ_info.military_power = 0.0;
+            civ_info.total_ships = 1;
+            civ_info.total_quota = 1;
+            civ_info.can_reinforce = false;
+            result.push_back(civ_info);
         }
     }
 

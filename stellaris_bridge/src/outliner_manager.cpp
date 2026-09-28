@@ -1,5 +1,8 @@
 #include "outliner_manager.hpp"
 #include "command_builder.hpp"
+#include "fleet_access.hpp"
+#include "army_access.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "leader_manager.hpp"
 #include "fleet_manager.hpp"
 #include "species_manager.hpp"
@@ -319,31 +322,7 @@ std::string OutlinerManager::LocalizeKey(const std::string& key) {
 }
 
 void* OutlinerManager::FindFleet(uint32_t fleet_id) {
-    if (!base_address_) return nullptr;
-
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114008), &mgr) || !mgr) {
-        return nullptr;
-    }
-
-    void* arr = nullptr;
-    uint32_t cap = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &cap) || cap == 0) {
-        return nullptr;
-    }
-
-    uint32_t slot = fleet_id & 0xFFFFFF;
-    if (slot < cap) {
-        void* ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)arr + slot * 16 + 8), &ptr) && ptr) {
-            uint32_t check_id = 0;
-            if (SafeReadU32((const void*)((uintptr_t)ptr + 8), &check_id) && check_id == fleet_id) {
-                return ptr;
-            }
-        }
-    }
-    return nullptr;
+    return fleets::Find(base_address_, fleet_id);
 }
 
 void* OutlinerManager::FindColony(uint32_t colony_id) {
@@ -591,48 +570,244 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
     return card;
 }
 
-std::vector<StatusAlertCard> OutlinerManager::ExtractColonyAlerts(void* colony_obj, uint32_t pops, bool is_capital, bool is_colonizing) {
+// ---- colony status alerts -------------------------------------------------------------------
+// The alerts the game's outliner shows for a colony, from the engine's own decisions:
+//  * status frames from COutlinerPlanetStatusController::ShouldShowStatusFrame(frame, colony,
+//    country, owner type). Only frame 1 (clearable blocker) uses the controller (a growth-data
+//    cache), so frames 0/2/5/6/7/10 are asked with a dummy controller and frame 1 comes from the
+//    planet's clearable, not yet queued blockers.
+//  * crisis icons of COutlinerMemberPlanet::UpdateEntry: blockaded = the carrier is being
+//    bombarded (CPlanet::IsBeingBombarded(false): a real ground support stance at
+//    CPlanet::ground_support_stance), occupied = controller differs from owner.
+namespace {
+
+struct StatusFrameCtx {
+    uintptr_t fn;
+    void* controller;
+    int frame;
+    void* colony;
+    uint32_t country;
+    bool result;
+};
+
+void CallShouldShowStatusFrame(void* c, void*) {
+    auto* x = (StatusFrameCtx*)c;
+    x->result = ((bool (*)(void*, int, void*, uint32_t, int))x->fn)(x->controller, x->frame, x->colony, x->country, 0);
+}
+
+// TPdxNullObject-style references: vtable slot 1 reports whether the pointee is a real object.
+struct ValidCtx {
+    void* obj;
+    bool result;
+};
+
+void CallIsValidObject(void* c, void*) {
+    auto* x = (ValidCtx*)c;
+    x->result = (*(bool (**)(void*))(*(uintptr_t*)x->obj + 8))(x->obj);
+}
+
+bool IsRealObject(void* obj) {
+    if (!obj) return false;
+    ValidCtx ctx{ obj, false };
+    return CommandBuilder::Get().CallGuarded(&CallIsValidObject, &ctx) && ctx.result;
+}
+
+// PdxLocalize with one named parameter ("$NAME$" / "$NAME|fmt$" in the text), as the outliner
+// tooltips build "OUTLINER_PLANET_BLOCKADED" with BLOCKADER. The value is an engine CString that
+// the function only reads, so it can borrow our buffer.
+struct LocParamCtx {
+    uintptr_t fn;
+    const char* key;
+    int32_t key_len;
+    const char* param;
+    const void* value;
+};
+
+void CallLocalizeParam(void* c, void* out) {
+    auto* x = (LocParamCtx*)c;
+    struct KeyView {
+        const char* ptr;
+        int32_t len;
+        uint8_t flag;
+        uint8_t pad[3];
+    } key{ x->key, x->key_len, 0, {} };
+    ((void* (*)(void*, const void*, const char*, const void*))x->fn)(out, &key, x->param, x->value);
+}
+
+std::string LocalizeWithParam(uintptr_t base, const std::string& key, const char* param, const std::string& value) {
+    struct BorrowedCString {
+        uint8_t header[16];
+        union {
+            char buf[16];
+            const char* heap_ptr;
+        };
+        uint64_t size;
+        uint64_t capacity;
+    } v{};
+    if (value.size() < 16) {
+        memcpy(v.buf, value.c_str(), value.size() + 1);
+        v.capacity = 15;
+    } else {
+        v.heap_ptr = value.c_str();
+        v.capacity = value.size();
+    }
+    v.size = value.size();
+    LocParamCtx ctx{ base + sdk::fn::PdxLocalize_OneParam, key.c_str(), (int32_t)key.size(), param, &v };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText(&CallLocalizeParam, &ctx, &text) || text.empty()) {
+        return SafeLocalize(base, key);
+    }
+    return text;
+}
+
+// NDefines::NGameplay::LOW_PLANET_STABILITY, read through the frame-10 case of
+// ShouldShowStatusFrame: `mov rax, [rip + d]` followed by `cmp [rdi + stability], rax`.
+double LowPlanetStabilityDefine(uintptr_t fn) {
+    const uint8_t* p = (const uint8_t*)fn;
+    for (int i = 0; i < 0x300; ++i) {
+        uint8_t b[10];
+        if (!SafeCopyChars((char*)b, (const char*)p + i, sizeof(b))) return -1;
+        if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x05 && b[7] == 0x48 && b[8] == 0x39 && b[9] == 0x87) {
+            int32_t disp = 0;
+            memcpy(&disp, b + 3, sizeof(disp));
+            int64_t raw = 0;
+            if (SafeCopyChars((char*)&raw, (const char*)p + i + 7 + disp, sizeof(raw))) return raw / 100000.0;
+            return -1;
+        }
+    }
+    return -1;
+}
+
+}  // namespace
+
+std::string OutlinerManager::CountryDisplayName(uint32_t country_id) {
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t cap = 0;
+    void* country = nullptr;
+    uint32_t check = 0xFFFFFFFF;
+    if (country_id == 0xFFFFFFFF || !SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x18), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x20), &cap) || (country_id & 0xFFFFFF) >= cap ||
+        !SafeReadPtr((const void*)((uintptr_t)arr + (country_id & 0xFFFFFF) * 16 + 8), &country) || !country ||
+        !SafeReadU32((const void*)((uintptr_t)country + 0x20), &check) || check != country_id) {
+        return "";
+    }
+    // The display name the outliner tooltips pass for $BLOCKADER$ etc. (a CString at +0x14F0).
+    std::string name;
+    SafeReadPdxString((const void*)((uintptr_t)country + 0x14F0 + 0x10), name);
+    return name.empty() ? "" : LocalizeKey(name);
+}
+
+std::vector<StatusAlertCard> OutlinerManager::ReadColonyStatus(void* colony_obj, void* planet_obj, uint32_t planet_id) {
     std::vector<StatusAlertCard> alerts;
-    if (!colony_obj || is_colonizing) return alerts;
+    if (!colony_obj || !planet_obj) return alerts;
 
-    // 1. Unemployment / Pop warning (Case 5 in game Outliner)
-    uint32_t pop_flag = 0;
-    uint32_t unemployed = 0;
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1088), &pop_flag);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfd0), &unemployed);
-    if (pops > 0) {
-        alerts.push_back({
-            "unemployed_pops",
-            "失业人口 (Unemployed Pops)",
-            "此殖民地拥有不会自动迁移至其他殖民地的闲置人口，他们正在等待被分配工作。"
-        });
+    auto add = [&](const std::string& id, const std::string& key, std::string name, std::string desc) {
+        if (name.empty()) name = LocalizeKey(key);
+        if (desc.empty()) {
+            desc = LocalizeKey(key + "_DESC");
+            if (desc == key + "_DESC") desc.clear();
+        }
+        alerts.push_back({ id, name, desc });
+    };
+
+    // -- crisis states --------------------------------------------------------------------
+    void* stance = nullptr;
+    SafeReadPtr((const void*)((uintptr_t)planet_obj + sdk::ent::CPlanet::ground_support_stance), &stance);
+    if (IsRealObject(stance)) {
+        // Blockader, as the CColonyCarrier slot the tooltip calls picks it: among the fleets in
+        // orbit (planet +0x490, count +0x49C) with a real bombardment stance (+0x458), the one
+        // with the highest bombardment power (+0x1288); its controller is at +0x448.
+        uint32_t blockader = 0xFFFFFFFF;
+        int64_t best = INT64_MIN;
+        void* orbit_ids = nullptr;
+        int orbit_count = 0;
+        void* fleet_db = nullptr;
+        void* fleet_arr = nullptr;
+        uint32_t fleet_cap = 0;
+        if (SafeReadPtr((const void*)((uintptr_t)planet_obj + 0x490), &orbit_ids) && orbit_ids &&
+            SafeReadU32((const void*)((uintptr_t)planet_obj + 0x49C), (uint32_t*)&orbit_count) && orbit_count > 0 && orbit_count < 4096 &&
+            SafeReadPtr((const void*)(base_address_ + sdk::db::CFleet), &fleet_db) && fleet_db &&
+            SafeReadPtr((const void*)((uintptr_t)fleet_db + 0x18), &fleet_arr) && fleet_arr &&
+            SafeReadU32((const void*)((uintptr_t)fleet_db + 0x20), &fleet_cap)) {
+            for (int i = 0; i < orbit_count; ++i) {
+                uint32_t fid = 0xFFFFFFFF, check = 0xFFFFFFFF, fleet_controller = 0xFFFFFFFF;
+                void* fleet = nullptr;
+                void* fleet_stance = nullptr;
+                int64_t power = 0;
+                if (!SafeReadU32((const void*)((uintptr_t)orbit_ids + i * 4), &fid) || (fid & 0xFFFFFF) >= fleet_cap ||
+                    !SafeReadPtr((const void*)((uintptr_t)fleet_arr + (fid & 0xFFFFFF) * 16 + 8), &fleet) || !fleet ||
+                    !SafeReadU32((const void*)((uintptr_t)fleet + 0x30), &check) || check != fid) {
+                    continue;
+                }
+                SafeReadPtr((const void*)((uintptr_t)fleet + 0x458), &fleet_stance);
+                SafeCopyChars((char*)&power, (const char*)((uintptr_t)fleet + 0x1288), sizeof(power));
+                SafeReadU32((const void*)((uintptr_t)fleet + 0x448), &fleet_controller);
+                if (IsRealObject(fleet_stance) && power > best) {
+                    best = power;
+                    blockader = fleet_controller;
+                }
+            }
+        }
+        std::string who = CountryDisplayName(blockader);
+        std::string name = LocalizeWithParam(base_address_, "OUTLINER_PLANET_BLOCKADED", "BLOCKADER", who.empty() ? "?" : who);
+        // The bombardment stance in use (CBombardmentStance: key at +0x20), e.g. "indiscriminate".
+        std::string stance_key, desc;
+        SafeReadPdxString((const void*)((uintptr_t)stance + 0x20), stance_key);
+        if (!stance_key.empty()) {
+            desc = LocalizeKey("bombardment_" + stance_key);
+            std::string stance_desc = LocalizeKey("bombardment_" + stance_key + "_desc");
+            if (stance_desc != "bombardment_" + stance_key + "_desc") desc += "\n" + stance_desc;
+        }
+        add("blockaded", "OUTLINER_PLANET_BLOCKADED", name, desc);
     }
 
-    // 2. Capital building upgrade available (Case 2 in game Outliner)
-    if (is_capital || pops >= 10) {
-        alerts.push_back({
-            "upgrade_available",
-            "有新的首府建筑升级 (Upgrade Available)",
-            "此殖民地的首府建筑可以升级了。"
-        });
+    uint32_t owner = 0xFFFFFFFF, controller = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)planet_obj + sdk::ent::CPlanet::owner), &owner);
+    SafeReadU32((const void*)((uintptr_t)planet_obj + sdk::ent::CPlanet::controller), &controller);
+    if (owner != 0xFFFFFFFF && controller != 0xFFFFFFFF && controller != owner) {
+        std::string who = CountryDisplayName(controller);
+        add("occupied", "OUTLINER_PLANET_OCCUPIED",
+            LocalizeWithParam(base_address_, "OUTLINER_PLANET_OCCUPIED", "OCCUPIER", who.empty() ? "?" : who), "");
     }
 
-    // 3. Clearable Blockers (Case 1 in game Outliner)
-    if (is_capital || pops > 0) {
-        alerts.push_back({
-            "blocker_available",
-            "可清除的障碍 (Clearable Blocker)",
-            "此殖民地有阻碍资源开发的障碍可以被清除了。"
-        });
+    // -- outliner status frames -------------------------------------------------------------
+    struct Frame { int frame; const char* id; const char* key; };
+    static const Frame kFrames[] = {
+        { 0, "construction_available", "OUTLINER_PLANET_CONSTRUCTION_AVAILABLE" },
+        { 2, "upgrade_available", "OUTLINER_PLANET_UPGRADE_AVAILABLE" },
+        { 5, "unemployment", "OUTLINER_PLANET_UNEMPLOYMENT_PRESENT" },
+        { 6, "excess_civilians", "OUTLINER_PLANET_AUTOM_MIGRATION_PRESENT" },
+        { 7, "overcrowding", "OUTLINER_PLANET_OVERCROWDING_PRESENT" },
+        { 10, "low_stability", "OUTLINER_PLANET_LOW_STABILITY" },
+    };
+    alignas(16) uint8_t dummy_controller[0x80]{};
+    StatusFrameCtx ctx{ base_address_ + sdk::fn::COutlinerPlanetStatusController_ShouldShowStatusFrame,
+                        dummy_controller, 0, colony_obj, GetPlayerCountryId(), false };
+    for (const auto& f : kFrames) {
+        ctx.frame = f.frame;
+        ctx.result = false;
+        if (!CommandBuilder::Get().CallGuarded(&CallShouldShowStatusFrame, &ctx) || !ctx.result) continue;
+        std::string desc;
+        if (f.frame == 10) {
+            double min = LowPlanetStabilityDefine(ctx.fn);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%g", min);
+            desc = LocalizeWithParam(base_address_, std::string(f.key) + "_DESC", "STABILITY_MIN", min >= 0 ? buf : "?");
+        }
+        add(f.id, f.key, "", desc);
     }
 
-    // 4. Overcrowding / Housing Shortage (Case 7 in game Outliner)
-    alerts.push_back({
-        "overcrowding",
-        "人口拥挤 (Overcrowding / Housing Shortage)",
-        "此殖民地缺乏足够的住房容纳所有人口。"
-    });
-
+    auto blockers = GetClearableBlockersJson(planet_id);
+    if (blockers.contains("blockers") && blockers["blockers"].is_array()) {
+        for (const auto& b : blockers["blockers"]) {
+            if (b.value("can_clear", false) && !b.value("is_queued", false)) {
+                add("blocker_available", "OUTLINER_PLANET_BLOCKER_AVAILABLE", "", "");
+                break;
+            }
+        }
+    }
     return alerts;
 }
 
@@ -679,7 +854,8 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         if (!p_obj) continue;
 
         ColonyCard card{};
-        card.colony_id = planet_id; // Primary handle for planet queries
+        card.colony_id = cid;
+        card.planet_id = planet_id;  // handle for the planet queries
 
         // Planet size at +0x150
         SafeReadU32((const void*)((uintptr_t)p_obj + 0x150), &card.size);
@@ -740,7 +916,7 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         }
 
         card.current_construction = ExtractColonyConstruction(colony_obj);
-        card.status_alerts = ExtractColonyAlerts(colony_obj, card.pops, card.is_capital, card.is_colonizing);
+        if (!card.is_colonizing) card.status_alerts = ReadColonyStatus(colony_obj, p_obj, planet_id);
 
         colony_card_map[cid] = card;
     }
@@ -785,7 +961,7 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
 
             uint32_t cap_cid = 0xFFFFFFFF;
             SafeReadU32((const void*)((uintptr_t)sec_ptr + 0x16C), &cap_cid);
-            group.capital_planet_id = (cap_cid != 0xFFFFFFFF && colony_card_map.count(cap_cid)) ? colony_card_map[cap_cid].colony_id : 0;
+            group.capital_planet_id = (cap_cid != 0xFFFFFFFF && colony_card_map.count(cap_cid)) ? colony_card_map[cap_cid].planet_id : 0xFFFFFFFF;
             group.capital_planet_name = (cap_cid != 0xFFFFFFFF && colony_card_map.count(cap_cid)) ? colony_card_map[cap_cid].name : "";
             group.focus_type = group.is_core ? "core_focus" : "balanced";
 
@@ -857,6 +1033,7 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
         for (const auto& c : s.colonies) {
             col_summary.push_back({
                 {"colony_id", c.colony_id},
+                {"planet_id", c.planet_id},
                 {"name", c.name},
                 {"is_capital", c.is_capital},
                 {"is_colonizing", c.is_colonizing},
@@ -910,12 +1087,7 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
                         SafeReadU32((const void*)((uintptr_t)ft_obj + 0x88), &fid);
                         if (fid != 0 && fid != 0xFFFFFFFF) {
                             military_fleet_ids.push_back(fid);
-                            void* flt = FindFleet(fid);
-                            if (flt) {
-                                uint32_t raw_pwr = 0;
-                                SafeReadU32((const void*)((uintptr_t)flt + 0x100), &raw_pwr);
-                                total_military_power += (double)raw_pwr / 1000.0;
-                            }
+                            total_military_power += fleets::MilitaryPower(FindFleet(fid));
                         }
                     }
                 }
@@ -923,22 +1095,19 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
         }
     }
 
-    // 3. Civilian fleets summary
-    void* phys_ptr = nullptr;
-    uint32_t phys_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x3AB8 + 8), &phys_ptr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x3AB8 + 0x14), &phys_cnt);
+    // Armies: stationed on a colony vs embarked on transports
+    uint32_t garrison_army_cnt = 0, transport_army_cnt = 0;
+    for (void* army_obj : armies::Owned(base_address_, GetPlayerCountryId())) {
+        uint32_t ship = 0xFFFFFFFF;
+        SafeReadU32((const void*)((uintptr_t)army_obj + sdk::ent::CArmy::ship), &ship);
+        (ship != 0xFFFFFFFF ? transport_army_cnt : garrison_army_cnt)++;
+    }
 
+    // 3. Civilian fleets summary: owned fleets of civilian ship classes
     uint32_t civilian_cnt = 0;
-    if (phys_ptr && phys_cnt > 0) {
-        for (uint32_t i = 0; i < phys_cnt; ++i) {
-            uint32_t fid = 0;
-            if (SafeReadU32((const void*)((uintptr_t)phys_ptr + i * 4), &fid)) {
-                bool is_mil = (std::find(military_fleet_ids.begin(), military_fleet_ids.end(), fid) != military_fleet_ids.end());
-                if (!is_mil) {
-                    civilian_cnt++;
-                }
-            }
+    for (uint32_t fid : fleets::Owned(country)) {
+        if (fleets::IsCivilianShip(fleets::ClassOf(FindFleet(fid)))) {
+            civilian_cnt++;
         }
     }
 
@@ -958,8 +1127,8 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
             {"civilian_fleets_count", civilian_cnt}
         }},
         {"armies_summary", {
-            {"garrison_armies_count", total_colonies > 0 ? 2 : 0},
-            {"transport_armies_count", 0}
+            {"garrison_armies_count", garrison_army_cnt},
+            {"transport_armies_count", transport_army_cnt}
         }}
     };
 }
@@ -981,8 +1150,8 @@ nlohmann::json OutlinerManager::GetSectorsJson(int32_t sector_id) {
     auto build_colony_json = [](const ColonyCard& c) -> nlohmann::json {
         nlohmann::json j = {
             {"colony_id", c.colony_id},
-            {"id", c.colony_id},
-            {"planet_id", c.colony_id},
+            {"id", c.planet_id},
+            {"planet_id", c.planet_id},
             {"name", c.name},
             {"system_name", c.system_name},
             {"pops", c.pops},
@@ -1099,7 +1268,7 @@ nlohmann::json OutlinerManager::GetMilitaryFleetsJson() {
             {"total_ships", f.total_ships},
             {"total_quota", f.total_quota},
             {"can_reinforce", f.can_reinforce},
-            {"status", "在轨道待命 (In Orbit)"}
+            {"status", bridge::fleets::OrdersText(FindFleet(f.fleet_id))}
         });
     }
 
@@ -1115,19 +1284,6 @@ nlohmann::json OutlinerManager::GetMilitaryFleetsJson() {
 nlohmann::json OutlinerManager::GetCivilianFleetsJson() {
     void* country = GetPlayerCountry();
     if (!country) return { {"error", "Player country not available"} };
-
-    // Get all physical fleets
-    void* phys_ptr = nullptr;
-    uint32_t phys_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x3AB8 + 8), &phys_ptr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x3AB8 + 0x14), &phys_cnt);
-
-    // Get military fleet IDs to exclude
-    auto mil_fleets = FleetManager::Get().GetFleets(false);
-    std::vector<uint32_t> mil_ids;
-    for (const auto& mf : mil_fleets) {
-        mil_ids.push_back(mf.fleet_id);
-    }
 
     // Read leaders to map scientist assignments
     void* l_arr = nullptr;
@@ -1152,40 +1308,28 @@ nlohmann::json OutlinerManager::GetCivilianFleetsJson() {
     nlohmann::json construction_ships = nlohmann::json::array();
     nlohmann::json colony_ships = nlohmann::json::array();
 
-    if (phys_ptr && phys_cnt > 0) {
-        for (uint32_t i = 0; i < phys_cnt; ++i) {
-            uint32_t fid = 0;
-            if (!SafeReadU32((const void*)((uintptr_t)phys_ptr + i * 4), &fid)) continue;
+    nlohmann::json transport_fleets = nlohmann::json::array();
+    for (uint32_t fid : fleets::Owned(country)) {
+        void* flt = FindFleet(fid);
+        const fleets::ShipClass cls = fleets::ClassOf(flt);
+        if (!fleets::IsCivilianShip(cls)) continue;
 
-            if (std::find(mil_ids.begin(), mil_ids.end(), fid) != mil_ids.end()) {
-                continue; // Skip military
-            }
-
-            void* flt = FindFleet(fid);
-            if (!flt) continue;
-
-            std::string c_name;
-            SafeReadPdxString((const void*)((uintptr_t)flt + 0xA8), c_name);
-
-            // Check if scientist assigned
-            if (fleet_leader_map.count(fid)) {
-                const auto& leader = fleet_leader_map[fid];
-                std::string s_name = c_name.empty() ? ("科研船 (Science Ship) #" + std::to_string(fid)) : c_name;
-                science_ships.push_back({
-                    {"fleet_id", fid},
-                    {"name", s_name},
-                    {"scientist_name", leader.name},
-                    {"scientist_level", leader.level},
-                    {"status", "星系勘探中 / 待命中"}
-                });
-            } else {
-                std::string s_name = c_name.empty() ? ("工程船 (Construction Ship) #" + std::to_string(fid)) : c_name;
-                construction_ships.push_back({
-                    {"fleet_id", fid},
-                    {"name", s_name},
-                    {"status", "太空工程建造中 / 待命中"}
-                });
-            }
+        nlohmann::json entry = {
+            {"fleet_id", fid},
+            {"name", fleets::Name(flt)},
+            {"ship_class", fleets::ShipClassKey(cls)},
+            {"status", fleets::OrdersText(flt)}
+        };
+        auto leader = fleet_leader_map.find(fid);
+        if (leader != fleet_leader_map.end()) {
+            entry["leader_name"] = leader->second.name;
+            entry["leader_level"] = leader->second.level;
+        }
+        switch (cls) {
+            case fleets::ShipClass::ScienceShip: science_ships.push_back(entry); break;
+            case fleets::ShipClass::Constructor: construction_ships.push_back(entry); break;
+            case fleets::ShipClass::Colonizer: colony_ships.push_back(entry); break;
+            default: transport_fleets.push_back(entry); break;
         }
     }
 
@@ -1195,7 +1339,9 @@ nlohmann::json OutlinerManager::GetCivilianFleetsJson() {
         {"construction_ships_count", construction_ships.size()},
         {"construction_ships", construction_ships},
         {"colony_ships_count", colony_ships.size()},
-        {"colony_ships", colony_ships}
+        {"colony_ships", colony_ships},
+        {"transport_fleets_count", transport_fleets.size()},
+        {"transport_fleets", transport_fleets}
     };
 }
 
@@ -1208,27 +1354,29 @@ nlohmann::json OutlinerManager::GetArmiesJson() {
 
     nlohmann::json garrison_armies = nlohmann::json::array();
     nlohmann::json transport_armies = nlohmann::json::array();
-
-    // Default garrison on Capital
-    garrison_armies.push_back({
-        {"army_id", 1},
-        {"name", "行星守备防卫军 (Planetary Defense Force)"},
-        {"army_type", "defense"},
-        {"planet_id", 11},
-        {"planet_name", "地球 (Earth)"},
-        {"power", 60.0},
-        {"health_percent", 100.0}
-    });
-
-    garrison_armies.push_back({
-        {"army_id", 2},
-        {"name", "执法官治安卫队 (Enforcer Security Corps)"},
-        {"army_type", "defense"},
-        {"planet_id", 11},
-        {"planet_name", "地球 (Earth)"},
-        {"power", 40.0},
-        {"health_percent", 100.0}
-    });
+    for (void* army_obj : armies::Owned(base_address_, GetPlayerCountryId())) {
+        armies::ArmyInfo army;
+        if (!armies::Read(army_obj, army)) continue;
+        nlohmann::json j = armies::ToJson(army);
+        j["species_name"] = SpeciesName(army.species);
+        if (army.ship != 0xFFFFFFFF) {
+            transport_armies.push_back(j);
+            continue;
+        }
+        // stationed: the colony's planet (CColony +0xF78)
+        uint32_t planet_id = 0xFFFFFFFF;
+        if (void* colony = FindColony(army.colony)) {
+            SafeReadU32((const void*)((uintptr_t)colony + 0xF78), &planet_id);
+        }
+        j["colony_id"] = army.colony;
+        j["planet_id"] = planet_id;
+        std::string raw_pname;
+        if (void* planet = FindPlanet(planet_id)) {
+            SafeReadPdxString((const void*)((uintptr_t)planet + 0x108), raw_pname);
+        }
+        j["planet_name"] = raw_pname.empty() ? "" : LocalizeKey(raw_pname);
+        garrison_armies.push_back(j);
+    }
 
     return {
         {"total_armies", garrison_armies.size() + transport_armies.size()},
@@ -1327,8 +1475,8 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
                 {"title", gov.title},
                 {"class_key", gov.class_key},
                 {"class_name", gov.class_name},
-                {"subclass_key", gov.subclass_key},
-                {"subclass_name", gov.subclass_name},
+                {"background_job", gov.background_job_key},
+                {"background_job_name", gov.background_job_name},
                 {"level", gov.level},
                 {"experience", gov.experience},
                 {"age", gov.age},
@@ -1578,35 +1726,10 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         blockers = blockers_data["blockers"];
     }
 
-    // 9. Status Alerts
+    // 9. Status Alerts: what the game's outliner shows for this colony
     nlohmann::json alerts_json = nlohmann::json::array();
-    if (!is_capital && unemployed_val > 0) {
-        alerts_json.push_back({
-            {"id", "unemployed_pops"},
-            {"name", "失业人口 (Unemployed Pops)"},
-            {"desc", "该殖民地拥有 " + std::to_string(unemployed_val) + " 名失业人口组正在等待岗位分配。"}
-        });
-    } else if (is_capital) {
-        alerts_json.push_back({
-            {"id", "upgrade_available"},
-            {"name", "首府升级可用 (Upgrade Available)"},
-            {"desc", "行星首府满足升级至行星行政核心的要求。"}
-        });
-    }
-
-    bool has_clearable_blocker = false;
-    for (const auto& b : blockers) {
-        if (b.value("can_clear", false) && !b.value("is_queued", false)) {
-            has_clearable_blocker = true;
-            break;
-        }
-    }
-    if (has_clearable_blocker) {
-        alerts_json.push_back({
-            {"id", "blocker_available"},
-            {"name", "可清除障碍 (Clearable Blocker)"},
-            {"desc", "该行星有可清除的自然地貌障碍。"}
-        });
+    for (const auto& al : ReadColonyStatus(colony_obj, p_obj, planet_id)) {
+        alerts_json.push_back({ {"id", al.id}, {"name", al.name}, {"desc", al.desc} });
     }
 
     // 10. Planetary Features (Deposits & Blockers details)
@@ -2253,9 +2376,6 @@ nlohmann::json OutlinerManager::UpgradeBuildingJson(uint32_t planet_id, uint32_t
 
     // Planet ID -> Colony ID & Queue ID
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"error", "Planet with ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -2959,7 +3079,7 @@ nlohmann::json OutlinerManager::ExtractMonthlyPopulationSummary(void* colony_obj
             uint32_t sp_handle = 0;
             SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12), &count);
             SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12 + 8), &sp_handle);
-            uint32_t sid = sp_handle & 0xFFFFFF;
+            uint32_t sid = sp_handle;  // full species id, as get_species and the species commands use it
             species_pops.push_back({ sid, count });
             total_pops += count;
         }
@@ -3020,7 +3140,7 @@ nlohmann::json OutlinerManager::ExtractPopulationBreakdown(void* colony_obj) {
                 int32_t net = 0;
                 SafeReadU32((const void*)((uintptr_t)entry + 8), &sp_handle);
                 SafeReadI32((const void*)((uintptr_t)entry + 0x24), &net);
-                uint32_t sid = sp_handle & 0xFFFFFF;
+                uint32_t sid = sp_handle;  // full species id, as get_species and the species commands use it
                 if (sid != 0) sp_net_map[sid] = net;
             }
         }
@@ -3041,7 +3161,7 @@ nlohmann::json OutlinerManager::ExtractPopulationBreakdown(void* colony_obj) {
         uint32_t sp_handle = 0;
         SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12), &count);
         SafeReadU32((const void*)((uintptr_t)sp_arr + i * 12 + 8), &sp_handle);
-        uint32_t sid = sp_handle & 0xFFFFFF;
+        uint32_t sid = sp_handle;  // full species id, as get_species and the species commands use it
 
         std::string sp_name = "Species " + std::to_string(sid);
         std::string portrait = "";
@@ -4363,6 +4483,33 @@ nlohmann::json OutlinerManager::SetJobWorkforceLimitJson(uint32_t planet_id, con
 // Planet Armies Subpage (Layer 1 Macro Summary & Layer 2 Deep Dive)
 // -------------------------------------------------------------
 
+std::string OutlinerManager::SpeciesName(uint32_t species_id) {
+    std::string raw;
+    if (void* sp = SpeciesManager::Get().FindSpeciesPtr(species_id)) {
+        SafeReadPdxString((const void*)((uintptr_t)sp + 0x60), raw);
+    }
+    return raw.empty() ? "" : LocalizeKey(raw);
+}
+
+std::vector<armies::ArmyInfo> OutlinerManager::ReadColonyArmies(void* colony_obj) {
+    std::vector<armies::ArmyInfo> out;
+    void* list = nullptr;
+    uint32_t count = 0;
+    if (!colony_obj || !SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xD0), &list) || !list ||
+        !SafeReadU32((const void*)((uintptr_t)colony_obj + 0xDC), &count) || count > 1000) {
+        return out;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = 0xFFFFFFFF;
+        armies::ArmyInfo info;
+        if (SafeReadU32((const void*)((uintptr_t)list + i * 4), &id) &&
+            armies::Read(armies::Find(base_address_, id), info)) {
+            out.push_back(info);
+        }
+    }
+    return out;
+}
+
 nlohmann::json OutlinerManager::ExtractArmiesSummary(void* p_obj, void* colony_obj) {
     if (!colony_obj) {
         return {
@@ -4378,56 +4525,17 @@ nlohmann::json OutlinerManager::ExtractArmiesSummary(void* p_obj, void* colony_o
         };
     }
 
-    void* armies_arr = nullptr;
-    uint32_t armies_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xD0), &armies_arr);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xDC), &armies_cnt);
-
-    void* army_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113F60), &army_db);
-    void* army_db_arr = nullptr;
-    uint32_t army_db_cap = 0;
-    if (army_db && (uintptr_t)army_db > 0x10000) {
-        SafeReadPtr((const void*)((uintptr_t)army_db + 0x18), &army_db_arr);
-        SafeReadU32((const void*)((uintptr_t)army_db + 0x20), &army_db_cap);
-    }
-
     uint32_t defense_cnt = 0;
     uint32_t assault_cnt = 0;
     double garrison_power = 0.0;
     double assault_power = 0.0;
-
-    if (armies_arr && army_db_arr && armies_cnt > 0 && armies_cnt < 1000) {
-        for (uint32_t i = 0; i < armies_cnt; ++i) {
-            uint32_t h = 0xFFFFFFFF;
-            SafeReadU32((const void*)((uintptr_t)armies_arr + i * 4), &h);
-            if (h == 0xFFFFFFFF) continue;
-            uint32_t slot = h & 0xFFFFFF;
-            if (slot >= army_db_cap) continue;
-
-            void* p_army = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)army_db_arr + slot * 16 + 8), &p_army);
-            if (!p_army) continue;
-
-            void* p_type = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_army + 0x138), &p_type);
-            uint8_t def_flag = 0;
-            if (p_type) {
-                SafeReadU8((const void*)((uintptr_t)p_type + 0x350), &def_flag);
-            }
-            bool is_defense = (def_flag & 1) != 0;
-
-            int64_t raw_hp = 0;
-            SafeReadI64((const void*)((uintptr_t)p_army + 0x140), &raw_hp);
-            double cur_hp = (double)raw_hp / 100000.0;
-
-            if (is_defense) {
-                defense_cnt++;
-                garrison_power += (cur_hp > 0.0 ? (cur_hp * 0.0625) : 25.0);
-            } else {
-                assault_cnt++;
-                assault_power += (cur_hp > 0.0 ? (cur_hp * 0.135) : 50.0);
-            }
+    for (const auto& army : ReadColonyArmies(colony_obj)) {
+        if (army.defensive) {
+            defense_cnt++;
+            garrison_power += army.power;
+        } else {
+            assault_cnt++;
+            assault_power += army.power;
         }
     }
 
@@ -4487,9 +4595,6 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
     }
 
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"success", false}, {"error", "Planet ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -4510,96 +4615,10 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
 
     // 1. Stationed Armies
     nlohmann::json stationed_armies = nlohmann::json::array();
-    void* armies_arr = nullptr;
-    uint32_t armies_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xD0), &armies_arr);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xDC), &armies_cnt);
-
-    void* army_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113F60), &army_db);
-    void* army_db_arr = nullptr;
-    uint32_t army_db_cap = 0;
-    if (army_db && (uintptr_t)army_db > 0x10000) {
-        SafeReadPtr((const void*)((uintptr_t)army_db + 0x18), &army_db_arr);
-        SafeReadU32((const void*)((uintptr_t)army_db + 0x20), &army_db_cap);
-    }
-
-    if (armies_arr && army_db_arr && armies_cnt > 0 && armies_cnt < 1000) {
-        for (uint32_t i = 0; i < armies_cnt; ++i) {
-            uint32_t h = 0xFFFFFFFF;
-            SafeReadU32((const void*)((uintptr_t)armies_arr + i * 4), &h);
-            if (h == 0xFFFFFFFF) continue;
-            uint32_t slot = h & 0xFFFFFF;
-            if (slot >= army_db_cap) continue;
-
-            void* p_army = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)army_db_arr + slot * 16 + 8), &p_army);
-            if (!p_army) continue;
-
-            void* p_type = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_army + 0x138), &p_type);
-            std::string type_key;
-            uint8_t def_flag = 0;
-            if (p_type) {
-                SafeReadPdxString((const void*)((uintptr_t)p_type + 0x20), type_key);
-                SafeReadU8((const void*)((uintptr_t)p_type + 0x350), &def_flag);
-            }
-            bool is_defense = (def_flag & 1) != 0;
-
-            int64_t raw_hp = 0, raw_max_hp = 0;
-            SafeReadI64((const void*)((uintptr_t)p_army + 0x140), &raw_hp);
-            SafeReadI64((const void*)((uintptr_t)p_army + 0x148), &raw_max_hp);
-            double cur_hp = (double)raw_hp / 100000.0;
-            double max_hp = (double)raw_max_hp / 100000.0;
-
-            int64_t raw_morale = 0, raw_max_morale = 0;
-            SafeReadI64((const void*)((uintptr_t)p_army + 0x158), &raw_morale);
-            SafeReadI64((const void*)((uintptr_t)p_army + 0x160), &raw_max_morale);
-            double cur_morale = (double)raw_morale / 100000.0;
-            double max_morale = (double)raw_max_morale / 100000.0;
-
-            uint32_t species_h = 0xFFFFFFFF;
-            SafeReadU32((const void*)((uintptr_t)p_army + 0x168), &species_h);
-            std::string species_name;
-            if (species_h != 0xFFFFFFFF) {
-                void* sp_ptr = SpeciesManager::Get().FindSpeciesPtr(species_h & 0xFFFFFF);
-                if (sp_ptr) {
-                    std::string raw_sp_name;
-                    SafeReadPdxString((const void*)((uintptr_t)sp_ptr + 0x60), raw_sp_name);
-                    species_name = LocalizeKey(raw_sp_name);
-                }
-            }
-
-            std::string custom_name;
-            SafeReadPdxString((const void*)((uintptr_t)p_army + 0xF8), custom_name);
-            std::string display_name = LocalizeKey(type_key);
-            if (display_name.empty()) display_name = type_key;
-            if (!custom_name.empty() && custom_name.front() != '%') {
-                display_name = custom_name;
-            } else if (!species_name.empty()) {
-                display_name += " (" + species_name + ")";
-            }
-
-            double pwr = is_defense ? (cur_hp * 0.0625) : (cur_hp * 0.135);
-            if (pwr <= 0.0) pwr = is_defense ? 25.0 : 50.0;
-
-            stationed_armies.push_back({
-                {"army_id", slot},
-                {"army_handle", h},
-                {"name", display_name},
-                {"type_key", type_key},
-                {"is_defense", is_defense},
-                {"power", std::round(pwr * 10.0) / 10.0},
-                {"health", std::round(cur_hp * 10.0) / 10.0},
-                {"max_health", std::round(max_hp * 10.0) / 10.0},
-                {"health_percent", max_hp > 0.0 ? std::round((cur_hp * 100.0 / max_hp) * 10.0) / 10.0 : 100.0},
-                {"morale", std::round(cur_morale * 10.0) / 10.0},
-                {"max_morale", std::round(max_morale * 10.0) / 10.0},
-                {"morale_percent", max_morale > 0.0 ? std::round((cur_morale * 100.0 / max_morale) * 10.0) / 10.0 : 100.0},
-                {"species_id", species_h != 0xFFFFFFFF ? (species_h & 0xFFFFFF) : 0},
-                {"species_name", species_name}
-            });
-        }
+    for (const auto& army : ReadColonyArmies(colony_obj)) {
+        nlohmann::json j = armies::ToJson(army);
+        j["species_name"] = SpeciesName(army.species);
+        stationed_armies.push_back(j);
     }
 
     // 2. Recruitable Armies Catalog
@@ -4617,9 +4636,11 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
                 SafeReadPtr((const void*)((uintptr_t)type_arr + ti * 8), &p_type);
                 if (!p_type) continue;
 
-                uint8_t def_flag = 0;
-                SafeReadU8((const void*)((uintptr_t)p_type + 0x350), &def_flag);
-                if (def_flag & 1) continue; // Skip defense armies
+                // CArmyType (ReadMember): +0x352 defensive, +0x358 build time, +0x360 health,
+                // +0x368 morale, +0x370 damage, +0x378 morale damage multipliers.
+                uint8_t defensive = 0;
+                SafeReadU8((const void*)((uintptr_t)p_type + 0x352), &defensive);
+                if (defensive) continue;  // defense armies are not recruited
 
                 int64_t build_time_raw = 0;
                 SafeReadI64((const void*)((uintptr_t)p_type + 0x358), &build_time_raw);
@@ -4633,21 +4654,20 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
                 std::string loc_name = LocalizeKey(a_key);
                 if (loc_name.empty()) loc_name = a_key;
 
-                double base_power = 35.0;
-                if (a_key == "assault_army") base_power = 35.0;
-                else if (a_key == "clone_army") base_power = 25.0;
-                else if (a_key == "gene_warrior_army") base_power = 100.0;
-                else if (a_key == "xenomorph_army") base_power = 85.0;
-                else if (a_key == "psionic_army") base_power = 75.0;
-                else if (a_key == "robot_army") base_power = 40.0;
-                else if (a_key == "android_army") base_power = 60.0;
+                auto mult = [&](std::ptrdiff_t off) {
+                    int64_t raw = 0;
+                    SafeReadI64((const void*)((uintptr_t)p_type + off), &raw);
+                    return std::round(raw / 1000.0) / 100.0;
+                };
 
                 recruitable_armies.push_back({
                     {"key", a_key},
                     {"name", loc_name},
                     {"build_time_days", build_days},
-                    {"base_power", base_power},
-                    {"is_defense", false}
+                    {"health_mult", mult(0x360)},
+                    {"damage_mult", mult(0x370)},
+                    {"morale_mult", mult(0x368)},
+                    {"morale_damage_mult", mult(0x378)}
                 });
             }
         }
@@ -4702,7 +4722,7 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
                             SafeReadPtr((const void*)((uintptr_t)item_obj + 0x18), &action_obj);
 
                             std::string item_key;
-                            uint32_t sp_id = 0;
+                            uint32_t sp_id = 0xFFFFFFFF;
                             if (action_obj) {
                                 void* p_t = nullptr;
                                 SafeReadPtr((const void*)((uintptr_t)action_obj + 8), &p_t);
@@ -4737,7 +4757,7 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
                                 {"total_days", norm_tot},
                                 {"progress_percent", tot > 0 ? std::round(((double)prog * 100.0 / (double)tot) * 10.0) / 10.0 : 0.0},
                                 {"remaining_days", norm_rem},
-                                {"species_id", sp_id != 0xFFFFFFFF ? (sp_id & 0xFFFFFF) : 0},
+                                {"species_id", sp_id},
                                 {"species_name", sp_name}
                             });
                         }
@@ -4765,9 +4785,6 @@ nlohmann::json OutlinerManager::SetPlanetArmySettingsJson(uint32_t planet_id, st
     }
 
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"success", false}, {"error", "Planet ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -4837,9 +4854,6 @@ nlohmann::json OutlinerManager::EmbarkAllArmiesJson(uint32_t planet_id) {
     }
 
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"success", false}, {"error", "Planet ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -4880,9 +4894,9 @@ nlohmann::json OutlinerManager::EmbarkAllArmiesJson(uint32_t planet_id) {
 
             void* p_type = nullptr;
             SafeReadPtr((const void*)((uintptr_t)p_army + 0x138), &p_type);
-            uint8_t def_flag = 0;
-            if (p_type) SafeReadU8((const void*)((uintptr_t)p_type + 0x350), &def_flag);
-            if (!(def_flag & 1)) {
+            uint8_t defensive = 0;  // CArmyType +0x352 "defensive"
+            if (p_type) SafeReadU8((const void*)((uintptr_t)p_type + 0x352), &defensive);
+            if (!defensive) {
                 assault_handles.push_back(h);
             }
         }
@@ -4924,9 +4938,6 @@ nlohmann::json OutlinerManager::DisbandArmyJson(uint32_t planet_id, uint32_t arm
     }
 
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"success", false}, {"error", "Planet ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -4993,9 +5004,6 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
     }
 
     void* p_obj = FindPlanet(planet_id);
-    if (!p_obj && (planet_id == 0 || planet_id == 11)) {
-        p_obj = FindPlanet(11);
-    }
     if (!p_obj) {
         return { {"success", false}, {"error", "Planet ID " + std::to_string(planet_id) + " not found"} };
     }
@@ -5049,9 +5057,9 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
         return { {"success", false}, {"error", "Army type '" + army_key + "' not found in catalog"} };
     }
 
-    uint8_t def_flag = 0;
-    SafeReadU8((const void*)((uintptr_t)target_p_type + 0x350), &def_flag);
-    if (def_flag & 1) {
+    uint8_t defensive = 0;  // CArmyType +0x352 "defensive"
+    SafeReadU8((const void*)((uintptr_t)target_p_type + 0x352), &defensive);
+    if (defensive) {
         return { {"success", false}, {"error", "Defense armies cannot be recruited directly"} };
     }
 
@@ -5097,7 +5105,7 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
         {"colony_id", cid},
         {"army_key", q_key},
         {"queue_id", army_queue_id},
-        {"species_id", target_species != 0xFFFFFFFF ? (target_species & 0xFFFFFF) : 0},
+        {"species_id", target_species},
         {"message", "Army recruitment queued successfully"}
     };
 }

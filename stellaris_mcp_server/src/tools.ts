@@ -105,7 +105,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 4: stellaris_get_active_events
   server.tool(
     "stellaris_get_active_events",
-    "Retrieves all currently active pending event windows in the game session, including event ID, title, description, and available option choices with their validity status.",
+    "Retrieves all currently active pending event windows: window_id, event_key (script id), title, description, and the shown options. Each option carries `effects`, the effect tooltip the game shows on hover (icons rendered as [energy] etc.); options without immediate effects have none. Hidden options are not listed.",
     {},
     async () => {
       try {
@@ -138,7 +138,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
     "Resolves an active event choice natively on the main game thread by window ID and option index, applying the decision and closing the event dialog.",
     {
       window_id: z.number().int().describe("The unique window ID of the event window (from stellaris_get_active_events)."),
-      option_index: z.number().int().describe("The index of the option to choose (0-based, must be valid/enabled)."),
+      option_index: z.number().int().describe("The `index` of one of the options listed for this window by stellaris_get_active_events (indexes are not contiguous when some options are hidden; others are refused)."),
     },
     async ({ window_id, option_index }) => {
       try {
@@ -728,7 +728,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 21: stellaris_get_leaders
   server.tool(
     "stellaris_get_leaders",
-    "Retrieves full leader and recruitment pool details (Layer 2 Domain Deep-Dive in progressive disclosure architecture). Returns summary counts, list of all hired leaders (id, localized name, class, subclass, level, age, ethic, assignment_type, target_id, hire_date), and candidate recruitment pool (id, name, class, level, age, hire_cost, ethic).",
+    "Retrieves full leader and recruitment pool details (Layer 2 Domain Deep-Dive in progressive disclosure architecture). Returns summary counts, list of all hired leaders (id, localized name, class, background_job (job held before recruitment), level, age, ethic, assignment_type, target_id, hire_date), and candidate recruitment pool (id, name, class, level, age, hire_cost, ethic).",
     {},
     async () => {
       try {
@@ -1859,7 +1859,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 42: stellaris_get_sectors
   server.tool(
     "stellaris_get_sectors",
-    "Expands a specific sector or all sectors to inspect member colonies (Layer 2 Progressive Disclosure). Provide 'sector_id' (e.g. 0 for Core Sector, 1 for Frontier Sector, obtained from stellaris_get_outliner). If omitted, expands all sectors. Returns colony ID, name, system name, population, size, capital status, colonizing progress, current construction (building/district and progress), and planet status alerts (unemployment, upgrade available, blockers, overcrowding, etc.).",
+    "Expands a specific sector or all sectors to inspect member colonies (Layer 2 Progressive Disclosure). Provide 'sector_id' (e.g. 0 for Core Sector, 1 for Frontier Sector, obtained from stellaris_get_outliner). If omitted, expands all sectors. Returns colony_id (the colony) and planet_id/id (use it for planet tools), name, system name, population, size, capital status, colonizing progress, current construction (building/district and progress), and the planet status alerts the game's outliner shows: crisis states (blockaded = under orbital bombardment, with the blockading empire and its bombardment stance; occupied) and notices (construction slot, capital upgrade, unemployment, excess civilians, overcrowding, low stability, clearable blocker).",
     {
       sector_id: z.number().int().optional().describe("Sector ID to expand (e.g. 0 for Core Sector, 1 for Frontier Sector). If omitted, expands all sectors."),
     },
@@ -1981,7 +1981,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 46: stellaris_get_planet_details
   server.tool(
     "stellaris_get_planet_details",
-    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 5.9K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations, zone slots, unlock requirements, and buildings; 4) Monthly resource net production; 5) Active construction queue; 6) Planetary features (all natural deposits and blockers with clear time, clear costs, modifiers, swap unlock types, and queued clearance status); 7) Current population breakdown (species list with pop counts, display '5.9K', share %, net change, portrait); 8) Monthly population summary (net change, growth, migration, assembly, categories, demographic pie chart); 9) Colony ascension (tier 0-10, designation multiplier +25%/tier, can_ascend, status text); 10) Colony status alerts.",
+    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 5.9K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations, zone slots, unlock requirements, and buildings; 4) Monthly resource net production; 5) Active construction queue; 6) Planetary features (all natural deposits and blockers with clear time, clear costs, modifiers, swap unlock types, and queued clearance status); 7) Current population breakdown (species list with pop counts, display '5.9K', share %, net change, portrait); 8) Monthly population summary (net change, growth, migration, assembly, categories, demographic pie chart); 9) Colony ascension (tier 0-10, designation multiplier +25%/tier, can_ascend, status text); 10) Colony status alerts, identical to the outliner: blockaded (orbital bombardment; name carries the blockader, desc the bombardment stance), occupied, construction_available, upgrade_available, unemployment, excess_civilians, overcrowding, low_stability, blocker_available. Species ids are the full ids used by the species tools.",
     {
       planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
     },
@@ -2565,7 +2565,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 63: stellaris_get_planet_armies
   server.tool(
     "stellaris_get_planet_armies",
-    "Retrieves complete army information for a planet/colony in Stellaris 4.5.0 Cygnus (Layer 2 Progressive Disclosure). Returns overview (stationed armies count, garrison power, assault power, deploy_in_orbit, include_in_builder), stationed armies list (army_id, name, type_key, is_defense, power, health/max_health, morale/max_morale, species), recruitable assault army types catalog, and current army recruitment queue.",
+    "Retrieves complete army information for a planet/colony in Stellaris 4.5.0 Cygnus (Layer 2 Progressive Disclosure). Returns overview (stationed armies count, garrison power, assault power, deploy_in_orbit, include_in_builder), stationed armies list (army_id = full id accepted by disband, engine-rendered name, type_key, is_defense, is_occupation, power as computed by the game, health/max_health, morale/max_morale for types with morale, species), recruitable army types catalog (build time and the type's health/damage/morale/morale-damage multipliers), and current army recruitment queue.",
     {
       planet_id: z.number().int().describe("Planet / Colony ID to inspect (e.g. 3 for Earth)."),
     },

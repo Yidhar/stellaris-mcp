@@ -1,4 +1,5 @@
 #include "leader_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "command_builder.hpp"
 #include <algorithm>
 #include "alert_manager.hpp"
@@ -337,10 +338,13 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         detail.class_name = LocalizeKey(detail.class_key);
     }
 
-    void* subclass_ptr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0x6D0), &subclass_ptr) && subclass_ptr) {
-        SafeReadPdxString((const void*)((uintptr_t)subclass_ptr + 0x20), detail.subclass_key);
-        detail.subclass_name = LocalizeKey(detail.subclass_key);
+    // The job the leader held before recruitment (save token "job"; 4.5 has no leader subclasses).
+    void* job_ptr = nullptr;
+    if (SafeReadPtr((const void*)((uintptr_t)leader + sdk::ent::CLeader::job), &job_ptr) && job_ptr) {
+        SafeReadPdxString((const void*)((uintptr_t)job_ptr + 0x20), detail.background_job_key);
+        if (!detail.background_job_key.empty()) {
+            detail.background_job_name = LocalizeKey("job_" + detail.background_job_key);
+        }
     }
 
     // 3. Level (+0x9D8), Experience (+0xF0), Age (+0x108)
@@ -523,8 +527,8 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                     {"title", d.title},
                     {"class", d.class_key},
                     {"class_name", d.class_name},
-                    {"subclass", d.subclass_key},
-                    {"subclass_name", d.subclass_name},
+                    {"background_job", d.background_job_key},
+                    {"background_job_name", d.background_job_name},
                     {"level", d.level},
                     {"experience", d.experience},
                     {"age", d.age},

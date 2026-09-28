@@ -6,6 +6,8 @@ add_library(stellaris_bridge SHARED
     src/game_state.cpp
     src/commands.cpp
     src/command_builder.cpp
+    src/fleet_access.cpp
+    src/army_access.cpp
     src/event_manager.cpp
     src/notification_manager.cpp
     src/alert_manager.cpp

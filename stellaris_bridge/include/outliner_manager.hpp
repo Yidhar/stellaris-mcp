@@ -8,6 +8,8 @@
 
 #include <optional>
 
+#include "army_access.hpp"
+
 namespace bridge {
 
 class NativeCommand;
@@ -21,13 +23,15 @@ struct ConstructionCard {
 };
 
 struct StatusAlertCard {
-    std::string id;              // "unemployed_pops", "upgrade_available", "blocker_available", "overcrowding"
+    std::string id;              // blockaded, occupied, construction_available, upgrade_available, unemployment,
+                                 // excess_civilians, overcrowding, low_stability, blocker_available
     std::string name;            // Localized alert title
     std::string desc;            // Detailed description / tooltip
 };
 
 struct ColonyCard {
-    uint32_t colony_id{ 0 };
+    uint32_t colony_id{ 0xFFFFFFFF };
+    uint32_t planet_id{ 0xFFFFFFFF };
     std::string name;
     std::string system_name;
     uint32_t pops{ 0 };
@@ -175,7 +179,12 @@ private:
     uint32_t GetPlanetQueueId(uint32_t planet_id);
 
     std::optional<ConstructionCard> ExtractColonyConstruction(void* colony_obj);
-    std::vector<StatusAlertCard> ExtractColonyAlerts(void* colony_obj, uint32_t pops, bool is_capital, bool is_colonizing);
+    // The colony alerts the game's outliner shows (status frames and crisis icons).
+    std::vector<StatusAlertCard> ReadColonyStatus(void* colony_obj, void* planet_obj, uint32_t planet_id);
+    std::string CountryDisplayName(uint32_t country_id);
+    // Armies stationed at a colony (its army list), read through bridge::armies.
+    std::vector<armies::ArmyInfo> ReadColonyArmies(void* colony_obj);
+    std::string SpeciesName(uint32_t species_id);
     nlohmann::json ExtractPlanetConstructionQueue(uint32_t planet_id);
 
     nlohmann::json ExtractPlanetaryFeatures(void* p_obj, uint32_t cid, uint32_t queue_id, uint32_t country_id);

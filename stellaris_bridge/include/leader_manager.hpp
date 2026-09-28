@@ -29,8 +29,8 @@ struct HiredLeaderDetail {
     std::string title;
     std::string class_key;
     std::string class_name;
-    std::string subclass_key;
-    std::string subclass_name;
+    std::string background_job_key;   // job held before becoming a leader
+    std::string background_job_name;
     uint32_t level{ 0 };
     double experience{ 0.0 };
     uint32_t age{ 0 };
