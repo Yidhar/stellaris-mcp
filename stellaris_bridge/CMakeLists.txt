@@ -5,6 +5,7 @@ add_library(stellaris_bridge SHARED
     src/ipc_server.cpp
     src/game_state.cpp
     src/commands.cpp
+    src/command_builder.cpp
     src/event_manager.cpp
     src/notification_manager.cpp
     src/alert_manager.cpp

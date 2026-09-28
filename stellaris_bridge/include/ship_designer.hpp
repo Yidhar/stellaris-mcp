@@ -85,7 +85,6 @@ public:
     using FnStageUpdateResources = void (*)(void* pStage);
 
     using FnEngineAlloc = void* (*)(size_t size);
-    using FnPostCommand = void (*)(void* pCmd, int flag);
     using FnRegisterDesign = void* (*)(void* manager_ctx, void* source_design);
     using FnCountryAddDesign = void (*)(void* country_designs_vec, uint32_t index, void** pp_new_design);
     using FnCalcLongName = void (*)(void* pDesign);
@@ -109,7 +108,6 @@ private:
     FnSetComponentOnSlot fn_set_component_on_slot_{ nullptr };
     FnStageUpdateResources fn_stage_update_resources_{ nullptr };
     FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnRegisterDesign fn_register_design_{ nullptr };
     FnCountryAddDesign fn_country_add_design_{ nullptr };
     FnCalcLongName fn_calc_long_name_{ nullptr };

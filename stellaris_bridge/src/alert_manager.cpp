@@ -61,8 +61,8 @@ AlertManager& AlertManager::Get() {
 bool AlertManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    // RVA: CAlertIconsWindow::OnAlertClick = 0x9E31E0
-    fn_on_alert_click_ = (FnOnAlertClick)(base_address_ + 0x9E31E0);
+    // RVA: CAlertIconsWindow::OnAlertClick = 0x9E2EB0 (4.5.0 Cygnus)
+    fn_on_alert_click_ = (FnOnAlertClick)(base_address_ + 0x9E2EB0);
 
     LOGF("[ALERT_MGR] Initialized: Base=0x%llX, OnAlertClick=0x%llX",
         (unsigned long long)base_address_,

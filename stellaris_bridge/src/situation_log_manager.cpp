@@ -1,4 +1,5 @@
 #include "situation_log_manager.hpp"
+#include "command_builder.hpp"
 #include <cstring>
 
 namespace bridge {
@@ -111,15 +112,6 @@ static void SafeFreePdxStr(SituationLogManager::FnFreePdxStr fn_free_pdx, RawPdx
     }
 }
 
-static bool SafePostCommand(SituationLogManager::FnPostCommand fn_post, void* cmd) {
-    __try {
-        fn_post(cmd, 1);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 SituationLogManager& SituationLogManager::Get() {
     static SituationLogManager instance;
     return instance;
@@ -128,29 +120,23 @@ SituationLogManager& SituationLogManager::Get() {
 bool SituationLogManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
     fn_pdx_string_assign_ = (FnPdxStringAssign)(base_address_ + 0x15BA40);
 
-    command_vtable_ = base_address_ + 0x2391B28;
+    LOGF("[SITUATION_LOG] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
 
-    LOGF("[SITUATION_LOG] Initialized (Base: 0x%llX, CmdVT: 0x%llX, Alloc: 0x%llX, PostCmd: 0x%llX, Assign: 0x%llX)",
-        (unsigned long long)base_address_,
-        (unsigned long long)command_vtable_,
-        (unsigned long long)fn_engine_alloc_,
-        (unsigned long long)fn_post_command_,
-        (unsigned long long)fn_pdx_string_assign_);
-
-    return fn_engine_alloc_ != nullptr && fn_post_command_ != nullptr;
+    return true;
 }
 
 void* SituationLogManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -175,40 +161,7 @@ uint32_t SituationLogManager::GetPlayerCountryId() {
 }
 
 std::string SituationLogManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 SituationLogSummary SituationLogManager::GetSummary() {
@@ -219,7 +172,7 @@ SituationLogSummary SituationLogManager::GetSummary() {
 
     // 1. Situations count for player empire from global entity manager
     void* sit_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113060), &sit_mgr) && sit_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
         void* arr = nullptr;
         uint32_t cap = 0;
         if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -240,7 +193,7 @@ SituationLogSummary SituationLogManager::GetSummary() {
 
     // 2. Special projects and anomalies count from player CSituationLog
     void* sit_log = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x31130A0), &sit_log) && sit_log) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x31140A0), &sit_log) && sit_log) {
         uint32_t sp_cnt = 0;
         SafeReadU32((const void*)((uintptr_t)sit_log + 0x3C), &sp_cnt);
         summary.special_projects_count = sp_cnt;
@@ -262,7 +215,7 @@ FullSituationLogState SituationLogManager::GetSituationLogState(bool player_only
 
     // 1. Extract Situations from Global Situation EntityManager
     void* sit_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113060), &sit_mgr) && sit_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
         void* arr = nullptr;
         uint32_t cap = 0;
         if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -318,7 +271,7 @@ FullSituationLogState SituationLogManager::GetSituationLogState(bool player_only
 
     // 2. Extract Special Projects from player CSituationLog if any exist
     void* sit_log = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x31130A0), &sit_log) && sit_log) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x31140A0), &sit_log) && sit_log) {
         void* sp_arr = nullptr;
         uint32_t sp_cnt = 0;
         if (SafeReadPtr((const void*)((uintptr_t)sit_log + 0x30), &sp_arr) && sp_arr &&
@@ -403,7 +356,7 @@ nlohmann::json SituationLogManager::SetSituationApproach(uint32_t situation_id, 
     // If situation_id is specified, find it to verify ownership
     if (situation_id != 0) {
         void* sit_mgr = nullptr;
-        if (SafeReadPtr((const void*)(base_address_ + 0x3113060), &sit_mgr) && sit_mgr) {
+        if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
             void* arr = nullptr;
             uint32_t cap = 0;
             if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -430,65 +383,27 @@ nlohmann::json SituationLogManager::SetSituationApproach(uint32_t situation_id, 
         }
     }
 
-    if (!fn_engine_alloc_ || !command_vtable_ || !fn_pdx_string_assign_ || !fn_post_command_) {
-        return {
-            {"error", {
-                {"code", -32051},
-                {"message", "Native command dispatch functions not initialized"}
-            }}
-        };
-    }
-
     // Retrieve tick timestamp from date manager (+0xC0)
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[SITUATION_LOG] Posting CSetSituationApproachCommand for country %u, approach '%s', tick %u...",
         target_country_id, approach_key.c_str(), tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x60);
-    if (!cmd) {
-        return {
-            {"error", {
-                {"code", -32052},
-                {"message", "Engine allocator returned null for CSetSituationApproachCommand"}
-            }}
-        };
-    }
-
-    memset(cmd, 0, 0x60);
-    *(void**)cmd = (void*)command_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)((uintptr_t)cmd + 0x0C) = 0;
-    *(uint16_t*)((uintptr_t)cmd + 0x10) = 0xFFFF;
-    *(uint16_t*)((uintptr_t)cmd + 0x12) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x15) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = target_country_id;
-
-    // Initialize RawPdxString at cmd + 0x28 matching Clone (0x7125A0) exactly
-    void* str_ptr = (void*)((uintptr_t)cmd + 0x28);
-    *(uint32_t*)str_ptr = 0;
-    *(uint64_t*)((uintptr_t)str_ptr + 0x08) = 0;
-    *(uint64_t*)((uintptr_t)str_ptr + 0x10) = 0;
-    *(uint64_t*)((uintptr_t)str_ptr + 0x20) = 0;
-    *(uint64_t*)((uintptr_t)str_ptr + 0x28) = 0xF;
-    fn_pdx_string_assign_(str_ptr, approach_key.data(), approach_key.size());
-
-    *(uint32_t*)((uintptr_t)cmd + 0x58) = tick_timestamp;
-    *(uint32_t*)((uintptr_t)cmd + 0x5C) = 0;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[SITUATION_LOG] Exception occurred executing PostCommand for CSetSituationApproachCommand!");
+    // The engine serializes only the situation and the approach key; the owning country is
+    // derived from the situation, so it is not part of the payload.
+    namespace approach = sdk::cmd::set_situation_approach_command;
+    auto cmd = CommandBuilder::Get().Create(approach::kSpec);
+    cmd.Set<uint32_t>(approach::situation, situation_id)
+       .SetString(approach::key, approach_key);
+    if (!cmd.Post()) {
         return {
             {"error", {
                 {"code", -32053},
-                {"message", "Exception occurred executing PostCommand for CSetSituationApproachCommand"}
+                {"message", cmd.error()}
             }}
         };
     }

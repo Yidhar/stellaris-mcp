@@ -113,9 +113,9 @@ std::vector<NotificationItem> NotificationManager::GetNotifications() {
 
     if (!base_address_) return items;
 
-    // Global NotificationManager pointer at [base + 0x3112A08]
+    // Global NotificationManager pointer at [base + 0x3113A08]
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112A08), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &mgr) || !mgr) {
         return items;
     }
 
@@ -193,7 +193,7 @@ nlohmann::json NotificationManager::OpenNotification(uint32_t index) {
     }
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112A08), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &mgr) || !mgr) {
         return {
             {"error", {
                 {"code", -32021},

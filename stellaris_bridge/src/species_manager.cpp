@@ -1,4 +1,6 @@
 #include "species_manager.hpp"
+#include "command_builder.hpp"
+#include "common.hpp"
 #include <cstring>
 #include <algorithm>
 #include <unordered_set>
@@ -149,67 +151,61 @@ static bool SafeReadPdxString(const void* pdx_str_addr, std::string& out) {
     return false;
 }
 
-struct CPdxStringView {
-    const char* data;
-    size_t length;
-};
 
-struct PdxLocResult {
-    uint32_t flags{ 0 };
-    uint32_t pad0{ 0 };
-    uint64_t pad1{ 0 };
-    union {
-        char buf[16]{ 0 };
-        char* heap_ptr;
-    };
-    uint64_t size{ 0 };
-    uint64_t capacity{ 15 };
-};
 
-static bool SafeLocalizeCall(SpeciesManager::FnLocalize fn_localize,
-                             SpeciesManager::FnFreePdxStr fn_free_pdx,
-                             const void* in_key,
-                             PdxLocResult* out_str) {
-    __try {
-        fn_localize(out_str, in_key);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(SpeciesManager::FnFreePdxStr fn_free_pdx, PdxLocResult* str) {
-    __try {
-        fn_free_pdx(str);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
-static void* SafeGetSpeciesRightsCall(SpeciesManager::FnGetSpeciesRights fn_get, void* pRightsMgr, void* pSpecies, uint8_t* out_is_specific) {
-    __try {
-        return fn_get(pRightsMgr, pSpecies, out_is_specific);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+// Direct-read port of CSpeciesRightsModule::CalcSpeciesRights (the Windows layout matches the
+// module writer at 0x7F6BC0). Module: +0x10 country, +0x20 founder rights, +0xE8 rights of the
+// secondary (built) species, +0x1B0 default rights, and a Robin Hood hash map of per-species
+// configurations: entries at [+0x280], index mask at +0x28C, overflow slots byte at +0x290;
+// 0xD8-byte entries {+4 probe distance (0 = empty), +8 species id, +0x10 SSpeciesRights}.
+// Country: +0x1634 founder species ref, +0x1658 secondary species ref.
+static void* LookupSpeciesRights(void* module, void* species, uint8_t* out_is_specific, int depth = 0) {
+    *out_is_specific = 0;
+    uint32_t sid = 0xFFFFFFFF, base_id = 0xFFFFFFFF, founder = 0xFFFFFFFF, secondary = 0xFFFFFFFF;
+    void* country = nullptr;
+    if (!module || !species || !SafeReadU32((const void*)((uintptr_t)species + 0x10), &sid) ||
+        !SafeReadPtr((const void*)((uintptr_t)module + 0x10), &country) || !country) {
         return nullptr;
     }
-}
-
-static bool SafePostCommand(SpeciesManager::FnPostCommand fn_post, void* cmd) {
-    __try {
-        fn_post(cmd, 0);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+    SafeReadU32((const void*)((uintptr_t)species + 0x38), &base_id);
+    SafeReadU32((const void*)((uintptr_t)country + 0x1634), &founder);
+    SafeReadU32((const void*)((uintptr_t)country + 0x1658), &secondary);
+    if (sid == founder) {
+        *out_is_specific = 1;
+        return (void*)((uintptr_t)module + 0x20);
     }
-}
-
-static void* SafeCallSetSpeciesRightCtor(SpeciesManager::FnSetSpeciesRightCmdCtor fn_ctor,
-                                        void* this_ptr, void* pCountry, void* pSpecies,
-                                        const void* pRights, uint8_t is_specific) {
-    __try {
-        return fn_ctor(this_ptr, pCountry, pSpecies, pRights, is_specific);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return nullptr;
+    if (sid == secondary) {
+        *out_is_specific = 1;
+        return (void*)((uintptr_t)module + 0xE8);
     }
+    void* entries = nullptr;
+    uint32_t mask = 0;
+    uint8_t overflow = 0;
+    if (SafeReadPtr((const void*)((uintptr_t)module + 0x280), &entries) && entries &&
+        SafeReadU32((const void*)((uintptr_t)module + 0x28C), &mask) && mask < 0x10000) {
+        SafeCopyChars((char*)&overflow, (const char*)((uintptr_t)module + 0x290), 1);
+        for (uint32_t i = 0; i <= mask + overflow; ++i) {
+            uintptr_t e = (uintptr_t)entries + (uintptr_t)i * 0xD8;
+            uint8_t probe = 0;
+            uint32_t key = 0;
+            if (SafeCopyChars((char*)&probe, (const char*)(e + 4), 1) && probe != 0 && probe != 0xFF &&
+                SafeReadU32((const void*)(e + 8), &key) && key == sid) {
+                *out_is_specific = 1;
+                return (void*)(e + 0x10);
+            }
+        }
+    }
+    // Templates and subspecies without their own configuration follow their base species.
+    if (base_id != 0xFFFFFFFF && base_id != sid && depth < 8) {
+        void* base = SpeciesManager::Get().FindSpeciesPtr(base_id);
+        if (base) {
+            uint8_t dummy = 0;
+            if (void* r = LookupSpeciesRights(module, base, &dummy, depth + 1)) {
+                return r;
+            }
+        }
+    }
+    return (void*)((uintptr_t)module + 0x1B0);
 }
 
 SpeciesManager& SpeciesManager::Get() {
@@ -221,11 +217,7 @@ bool SpeciesManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_get_species_rights_ = (FnGetSpeciesRights)(base_address_ + 0x7F68D0);
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
-    fn_set_species_right_cmd_ctor_ = (FnSetSpeciesRightCmdCtor)(base_address_ + 0x6C7460);
+    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + kRvaEngineAlloc);
 
     fn_species_copy_ctor_ = (FnSpeciesCopyCtor)(base_address_ + 0x3DE770);
     fn_species_dtor_ = (FnSpeciesDtor)(base_address_ + 0x1F8760);
@@ -249,7 +241,10 @@ void* SpeciesManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -267,7 +262,7 @@ uint32_t SpeciesManager::GetCurrentGameHours() {
     if (!base_address_) return 0;
 
     void* global_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &global_mgr) && global_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &global_mgr) && global_mgr && (uintptr_t)global_mgr >= 0x10000) {
         uint32_t raw_hours = 0;
         if (SafeReadU32((const void*)((uintptr_t)global_mgr + 0xC0), &raw_hours)) {
             return raw_hours;
@@ -277,29 +272,7 @@ uint32_t SpeciesManager::GetCurrentGameHours() {
 }
 
 std::string SpeciesManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    CPdxStringView in_key{ key.data(), key.size() };
-
-    PdxLocResult out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 65536) {
-        if (out_str.capacity < 16) {
-            result.assign(out_str.buf, (size_t)out_str.size);
-        } else if (out_str.heap_ptr) {
-            result.assign(out_str.heap_ptr, (size_t)out_str.size);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 void SpeciesManager::LoadRightDatabase(const std::string& category, uintptr_t db_rva) {
@@ -334,15 +307,15 @@ void SpeciesManager::LoadRightDatabase(const std::string& category, uintptr_t db
 void SpeciesManager::EnsureDatabasesLoaded() {
     if (!rights_cache_.empty()) return;
 
-    LoadRightDatabase("citizenship", 0x3110B90);
-    LoadRightDatabase("living_standards", 0x3110B80);
-    LoadRightDatabase("military_service", 0x3110B70);
-    LoadRightDatabase("slavery_type", 0x3110B58);
-    LoadRightDatabase("purge_type", 0x3110B60);
-    LoadRightDatabase("population_controls", 0x3110B68);
-    LoadRightDatabase("colonization_controls", 0x3110B88);
-    LoadRightDatabase("migration_controls", 0x3110B78);
-    LoadRightDatabase("subspecies_integration", 0x3110B50);
+    LoadRightDatabase("citizenship", 0x3111B90);
+    LoadRightDatabase("living_standards", 0x3111B80);
+    LoadRightDatabase("military_service", 0x3111B70);
+    LoadRightDatabase("slavery_type", 0x3111B58);
+    LoadRightDatabase("purge_type", 0x3111B60);
+    LoadRightDatabase("population_controls", 0x3111B68);
+    LoadRightDatabase("colonization_controls", 0x3111B88);
+    LoadRightDatabase("migration_controls", 0x3111B78);
+    LoadRightDatabase("subspecies_integration", 0x3111B50);
 
     LOGF("[SPECIES_MGR] Loaded %zu rights categories into catalog.", rights_cache_.size());
 }
@@ -351,7 +324,7 @@ void SpeciesManager::EnsureTraitsLoaded() {
     if (!traits_catalog_.empty() || !base_address_) return;
 
     void* db_ptr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3152658), &db_ptr) || !db_ptr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3153658), &db_ptr) || !db_ptr) {
         return;
     }
 
@@ -399,7 +372,7 @@ void* SpeciesManager::FindSpeciesPtr(uint32_t species_id) {
     if (!base_address_ || species_id == 0) return nullptr;
 
     void* smgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112F58), &smgr) || !smgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr) || !smgr || (uintptr_t)smgr < 0x10000) {
         return nullptr;
     }
 
@@ -478,7 +451,7 @@ uint32_t SpeciesManager::CalculateEmpirePops(uint32_t* out_colony_count) {
     if (!colony_vec || colony_cnt == 0 || colony_cnt > 1000) return 0;
 
     void* colony_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113140), &colony_mgr) || !colony_mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114140), &colony_mgr) || !colony_mgr || (uintptr_t)colony_mgr < 0x10000) {
         return 0;
     }
 
@@ -511,12 +484,12 @@ uint32_t SpeciesManager::CalculateEmpirePops(uint32_t* out_colony_count) {
 
 SpeciesRights SpeciesManager::ReadRights(void* pRightsMgr, void* pSpecies) {
     SpeciesRights r;
-    if (!pRightsMgr || !pSpecies || !fn_get_species_rights_) {
+    if (!pRightsMgr || !pSpecies) {
         return r;
     }
 
     uint8_t dummy = 0;
-    void* pRights = SafeGetSpeciesRightsCall(fn_get_species_rights_, pRightsMgr, pSpecies, &dummy);
+    void* pRights = LookupSpeciesRights(pRightsMgr, pSpecies, &dummy);
     if (!pRights) {
         return r;
     }
@@ -560,7 +533,7 @@ SpeciesRights SpeciesManager::ReadRights(void* pRightsMgr, void* pSpecies) {
     r.subspecies_integration_localized = LocalizeKey(r.subspecies_integration);
 
     // Check cooldown timestamps at +0xA4 .. +0xC0 (8 categories * 4 bytes)
-    uint32_t max_change_hour = 0;
+    uint32_t max_change_hour = 0;  // latest "may change again" date
     for (uint32_t off = 0xA4; off <= 0xC0; off += 4) {
         uint32_t h = 0;
         if (SafeReadU32((const void*)((uintptr_t)pRights + off), &h) && h > max_change_hour) {
@@ -568,13 +541,10 @@ SpeciesRights SpeciesManager::ReadRights(void* pRightsMgr, void* pSpecies) {
         }
     }
 
+    // Each date is when that category may next change (now + SPECIES_POLICY_YEARS at the change).
     uint32_t cur_hour = GetCurrentGameHours();
-    const uint32_t COOLDOWN_HOURS = 86400; // 10 years
-    if (max_change_hour > 0 && cur_hour > 0 && cur_hour < max_change_hour + COOLDOWN_HOURS) {
-        r.cooldown_remaining_days = (max_change_hour + COOLDOWN_HOURS - cur_hour) / 24;
-    } else {
-        r.cooldown_remaining_days = 0;
-    }
+    r.cooldown_remaining_days = (max_change_hour > 0 && cur_hour > 0 && cur_hour < max_change_hour)
+                                    ? (max_change_hour - cur_hour) / 24 : 0;
 
     return r;
 }
@@ -597,7 +567,8 @@ SpeciesSummary SpeciesManager::ReadSummary() {
     }
 
     void* smgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F58), &smgr) && smgr) {
+    SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr);
+    if (smgr && (uintptr_t)smgr >= 0x10000) {
         uint32_t total = 0;
         if (SafeReadU32((const void*)((uintptr_t)smgr + 0x24), &total)) {
             s.total_species_in_galaxy = total;
@@ -650,7 +621,7 @@ nlohmann::json SpeciesManager::GetSpeciesJson(const nlohmann::json& req) {
     std::vector<void*> species_to_process;
 
     void* smgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3112F58), &smgr);
+    SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr);
     void* arr = nullptr;
     uint32_t cap = 0;
     if (smgr) {
@@ -708,8 +679,8 @@ nlohmann::json SpeciesManager::GetSpeciesJson(const nlohmann::json& req) {
                             }
                         } else {
                             uint8_t is_specific = 0;
-                            if (fn_get_species_rights_ && rights_mgr) {
-                                void* r = SafeGetSpeciesRightsCall(fn_get_species_rights_, rights_mgr, sp, &is_specific);
+                            if (rights_mgr) {
+                                void* r = LookupSpeciesRights(rights_mgr, sp, &is_specific);
                                 if (r && is_specific != 0) {
                                     if (std::find(species_to_process.begin(), species_to_process.end(), sp) == species_to_process.end()) {
                                         species_to_process.push_back(sp);
@@ -822,13 +793,6 @@ nlohmann::json SpeciesManager::GetSpeciesJson(const nlohmann::json& req) {
 }
 
 nlohmann::json SpeciesManager::SetSpeciesRight(uint32_t species_id, const std::string& category, const std::string& right_value) {
-    if (!fn_engine_alloc_ || !fn_post_command_ || !fn_set_species_right_cmd_ctor_ || !fn_get_species_rights_) {
-        return {
-            {"success", false},
-            {"error", "SpeciesManager command interface not fully initialized"}
-        };
-    }
-
     void* country = GetPlayerCountry();
     if (!country) {
         return {
@@ -901,7 +865,7 @@ nlohmann::json SpeciesManager::SetSpeciesRight(uint32_t species_id, const std::s
     }
 
     uint8_t is_specific = 0;
-    void* current_rights = SafeGetSpeciesRightsCall(fn_get_species_rights_, rights_mgr, species, &is_specific);
+    void* current_rights = LookupSpeciesRights(rights_mgr, species, &is_specific);
     if (!current_rights) {
         return {
             {"success", false},
@@ -911,17 +875,32 @@ nlohmann::json SpeciesManager::SetSpeciesRight(uint32_t species_id, const std::s
 
     // Check cooldown
     if (ts_offset != 0) {
-        uint32_t last_change_hour = 0;
-        SafeReadU32((const void*)((uintptr_t)current_rights + ts_offset), &last_change_hour);
+        uint32_t next_change_hour = 0;
+        SafeReadU32((const void*)((uintptr_t)current_rights + ts_offset), &next_change_hour);
         uint32_t cur_hour = GetCurrentGameHours();
-        const uint32_t COOLDOWN_HOURS = 86400; // 10 years
-        if (last_change_hour > 0 && cur_hour > 0 && cur_hour < last_change_hour + COOLDOWN_HOURS) {
-            uint32_t rem_days = (last_change_hour + COOLDOWN_HOURS - cur_hour) / 24;
+        // The engine stores the date the category may next change (set to now +
+        // SPECIES_POLICY_YEARS by CopySettingsFrom when the category changes).
+        if (next_change_hour > 0 && cur_hour > 0 && cur_hour < next_change_hour) {
+            uint32_t rem_days = (next_change_hour - cur_hour) / 24;
             return {
                 {"success", false},
                 {"error", "Rights category '" + category + "' is on cooldown for " + std::to_string(rem_days) + " more days"}
             };
         }
+    }
+
+    // The engine applies any choice and then silently falls back to the best allowed right
+    // (CheckIsValidForCountry) while still starting the category's cooldown, so check the
+    // right's potential/allow triggers first, as the species rights screen does.
+    void* right_base = (void*)((uintptr_t)new_right_type + 0x40);
+    if (!CommandBuilder::Get().CallPredicate(sdk::fn::CSpeciesRightBase_IsPotential, right_base, country, species, nullptr)) {
+        return { {"success", false},
+                 {"error", "Right '" + right_value + "' is not available for this species in this empire"} };
+    }
+    std::string not_allowed;
+    if (!CommandBuilder::Get().CallPredicate(sdk::fn::CSpeciesRightBase_IsAllowed, right_base, country, species, &not_allowed)) {
+        return { {"success", false},
+                 {"error", "Right '" + right_value + "' is not allowed" + (not_allowed.empty() ? "" : ": " + not_allowed)} };
     }
 
     // Prepare modified rights structure (0xC8 bytes)
@@ -936,28 +915,22 @@ nlohmann::json SpeciesManager::SetSpeciesRight(uint32_t species_id, const std::s
     // Replace the 64-bit pointer
     *(void**)(modified_rights + field_offset) = new_right_type;
 
-    // Allocate CSetSpeciesRightCommand (size 0xF8 = 248 bytes)
-    void* cmd = fn_engine_alloc_(0xF8);
-    if (!cmd) {
-        return {
-            {"success", false},
-            {"error", "Engine allocator failed for CSetSpeciesRightCommand"}
-        };
+    // CCountrySetSpeciesRightsCommand: the factory default-constructs SSpeciesRights at +0x28
+    // (0xC8 bytes: vtable + right-type pointers + dates, no owned memory), so copying the current
+    // rights over it with one category changed matches what the engine's copy does.
+    namespace rights = sdk::cmd::set_species_right_command;
+    uint32_t country_id = 0;
+    SafeReadU32((const void*)((uintptr_t)country + 0x20), &country_id);
+    auto cmd = CommandBuilder::Get().Create(rights::kSpec);
+    cmd.Set<uint32_t>(rights::country, country_id)
+       .Set<uint32_t>(rights::species, species_id)
+       .SetBytes(rights::species_rights, modified_rights, sizeof(modified_rights));
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "Rights change rejected" : "Rights change rejected: " + why} };
     }
-
-    void* constructed_cmd = SafeCallSetSpeciesRightCtor(fn_set_species_right_cmd_ctor_, cmd, country, species, modified_rights, 1);
-    if (!constructed_cmd) {
-        return {
-            {"success", false},
-            {"error", "Exception in CSetSpeciesRightCommand constructor"}
-        };
-    }
-
-    if (!SafePostCommand(fn_post_command_, constructed_cmd)) {
-        return {
-            {"success", false},
-            {"error", "Exception in PostCommand"}
-        };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        return { {"success", false}, {"error", cmd.error()} };
     }
 
     LOGF("[SPECIES_MGR] Dispatched CSetSpeciesRightCommand for species_id %u, %s -> %s",
@@ -1094,7 +1067,7 @@ nlohmann::json SpeciesManager::GetSpeciesModificationInfoJson(uint32_t species_i
 }
 
 nlohmann::json SpeciesManager::CreateSpeciesTemplateJson(uint32_t base_species_id, const std::string& name, const std::vector<std::string>& trait_keys) {
-    if (!base_address_ || !fn_species_copy_ctor_ || !fn_species_dtor_ || !fn_trait_set_set_traits_ || !fn_post_command_) {
+    if (!base_address_ || !fn_species_copy_ctor_ || !fn_species_dtor_ || !fn_trait_set_set_traits_) {
         return { {"success", false}, {"error", "Engine functions not initialized"} };
     }
 
@@ -1113,8 +1086,8 @@ nlohmann::json SpeciesManager::CreateSpeciesTemplateJson(uint32_t base_species_i
     uint32_t country_id = 0;
     SafeReadU32((const void*)((uintptr_t)country + 0x20), &country_id);
 
-    alignas(16) uint8_t cmd_stack[0x580]{ 0 };
-    *(void***)cmd_stack = (void**)(base_address_ + 0x23C9DB8);
+    alignas(16) uint8_t cmd_stack[0x570]{ 0 };
+    *(void***)cmd_stack = (void**)(base_address_ + sdk::cmd::create_species_mod_template_command::kVtableRva);
     *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
     *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
     *(uint16_t*)(cmd_stack + 0x14) = 0;
@@ -1131,7 +1104,7 @@ nlohmann::json SpeciesManager::CreateSpeciesTemplateJson(uint32_t base_species_i
     }
 
     *(uint32_t*)((uintptr_t)cmd_species + 0x38) = base_species_id;
-    *(uint8_t*)(cmd_stack + 0x568) = 0; // apply_immediately = false
+    *(uint8_t*)(cmd_stack + 0x568) = 0; // apply_immediately = false (0x568 in 4.5.1)
 
     if (!name.empty() && fn_cstring_assign_) {
         void* p_name_cstring = (void*)((uintptr_t)cmd_species + 0x50);
@@ -1200,30 +1173,19 @@ nlohmann::json SpeciesManager::CreateSpeciesTemplateJson(uint32_t base_species_i
         }
     }
 
+    // The engine's Clone deep-copies the embedded species; CommandBuilder then validates
+    // (with the engine's reason) and posts the heap copy.
     void** vt = *(void***)cmd_stack;
-    if (!vt || !vt[8] || !vt[12]) {
-        SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-        return { {"success", false}, {"error", "Invalid command vtable"} };
-    }
-
-    bool is_valid = SafeCallIsValid(vt[8], cmd_stack);
-    if (!is_valid) {
-        SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-        return {
-            {"success", false},
-            {"error", "Species template creation validation failed (exceeds points/picks or invalid traits)"}
-        };
-    }
-
     void* cloned_cmd = SafeCallClone(vt[12], cmd_stack);
     SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-
-    if (!cloned_cmd) {
-        return { {"success", false}, {"error", "Failed to clone template command"} };
+    auto cmd = CommandBuilder::Get().Adopt(sdk::cmd::create_species_mod_template_command::kSpec, cloned_cmd);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false},
+                 {"error", why.empty() ? "Species template creation rejected" : "Species template creation rejected: " + why} };
     }
-
-    if (!SafePostCommand(fn_post_command_, cloned_cmd)) {
-        return { {"success", false}, {"error", "Failed to post template command to session"} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        return { {"success", false}, {"error", cmd.error()} };
     }
 
     LOGF("[SPECIES_MGR] Dispatched CCountryCreateSpeciesModTemplate for base_species_id %u, name '%s'",
@@ -1251,7 +1213,7 @@ nlohmann::json SpeciesManager::CreateSpeciesTemplateJson(uint32_t base_species_i
 
 nlohmann::json SpeciesManager::DeleteSpeciesTemplateJson(uint32_t species_id) {
     LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: start, species_id %u", species_id);
-    if (!base_address_ || !fn_post_command_) {
+    if (!base_address_) {
         return { {"success", false}, {"error", "Engine functions not initialized"} };
     }
 
@@ -1269,45 +1231,17 @@ nlohmann::json SpeciesManager::DeleteSpeciesTemplateJson(uint32_t species_id) {
     uint32_t country_id = 0;
     SafeReadU32((const void*)((uintptr_t)country + 0x20), &country_id);
 
-    alignas(16) uint8_t cmd_stack[0x30]{ 0 };
-    *(void***)cmd_stack = (void**)(base_address_ + 0x23C9E70);
-    *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
-    *(uint16_t*)(cmd_stack + 0x14) = 0;
-    *(uint8_t*)(cmd_stack + 0x16) = 0;
-    *(uint8_t*)(cmd_stack + 0x17) = 0;
-    *(uint32_t*)(cmd_stack + 0x18) = 0;
-    *(uint32_t*)(cmd_stack + 0x1C) = 0;
-    *(uint32_t*)(cmd_stack + 0x20) = country_id;
-    *(uint32_t*)(cmd_stack + 0x24) = species_id;
-
-    void** vt = *(void***)cmd_stack;
-    if (!vt || !vt[8] || !vt[12]) {
-        LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: invalid vtable");
-        return { {"success", false}, {"error", "Invalid delete command vtable"} };
+    namespace del = sdk::cmd::delete_species_mod_template_command;
+    auto cmd = CommandBuilder::Get().Create(del::kSpec);
+    cmd.Set<uint32_t>(del::country, country_id).Set<uint32_t>(del::species, species_id);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false},
+                 {"error", why.empty() ? "Template cannot be deleted (not owned, or living pops of it exist)"
+                                       : "Template cannot be deleted: " + why} };
     }
-
-    LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: checking IsValid...");
-    bool is_valid = SafeCallIsValid(vt[8], cmd_stack);
-    LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: IsValid returned %d", is_valid ? 1 : 0);
-    if (!is_valid) {
-        return {
-            {"success", false},
-            {"error", "Delete template validation failed (template is not owned or living pops of this template still exist on colonies)"}
-        };
-    }
-
-    LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: cloning command...");
-    void* cloned_cmd = SafeCallClone(vt[12], cmd_stack);
-    if (!cloned_cmd) {
-        LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: clone failed");
-        return { {"success", false}, {"error", "Failed to clone delete template command"} };
-    }
-
-    LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: posting command...");
-    if (!SafePostCommand(fn_post_command_, cloned_cmd)) {
-        LOGF("[SPECIES_MGR] DeleteSpeciesTemplate: post failed");
-        return { {"success", false}, {"error", "Failed to post delete template command"} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        return { {"success", false}, {"error", cmd.error()} };
     }
 
     LOGF("[SPECIES_MGR] Dispatched CCountryDeleteSpeciesModTemplate for species_id %u", species_id);
@@ -1323,7 +1257,7 @@ nlohmann::json SpeciesManager::ModifySpeciesTemplateJson(uint32_t template_speci
     LOGF("[SPECIES_MGR] ModifySpeciesTemplate: start, template_species_id %u, name '%s', traits %zu",
          template_species_id, name.c_str(), trait_keys.size());
 
-    if (!base_address_ || !fn_species_copy_ctor_ || !fn_species_dtor_ || !fn_trait_set_set_traits_ || !fn_post_command_) {
+    if (!base_address_ || !fn_species_copy_ctor_ || !fn_species_dtor_ || !fn_trait_set_set_traits_) {
         return { {"success", false}, {"error", "Engine functions not initialized"} };
     }
 
@@ -1344,8 +1278,8 @@ nlohmann::json SpeciesManager::ModifySpeciesTemplateJson(uint32_t template_speci
     uint32_t country_id = 0;
     SafeReadU32((const void*)((uintptr_t)country + 0x20), &country_id);
 
-    alignas(16) uint8_t cmd_stack[0x580]{ 0 };
-    *(void***)cmd_stack = (void**)(base_address_ + 0x23C99B0);
+    alignas(16) uint8_t cmd_stack[0x568]{ 0 };
+    *(void***)cmd_stack = (void**)(base_address_ + sdk::cmd::update_species_mod_template_command::kVtableRva);
     *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
     *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
     *(uint16_t*)(cmd_stack + 0x14) = 0;
@@ -1433,38 +1367,19 @@ nlohmann::json SpeciesManager::ModifySpeciesTemplateJson(uint32_t template_speci
         }
     }
 
+    // The engine's Clone deep-copies the embedded species; CommandBuilder then validates
+    // (with the engine's reason) and posts the heap copy.
     void** vt = *(void***)cmd_stack;
-    if (!vt || !vt[8] || !vt[12]) {
-        LOGF("[SPECIES_MGR] ModifySpeciesTemplate: invalid vtable");
-        SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-        return { {"success", false}, {"error", "Invalid modify command vtable"} };
-    }
-
-    LOGF("[SPECIES_MGR] ModifySpeciesTemplate: checking IsValid...");
-    bool is_valid = SafeCallIsValid(vt[8], cmd_stack);
-    LOGF("[SPECIES_MGR] ModifySpeciesTemplate: IsValid returned %d", is_valid ? 1 : 0);
-    if (!is_valid) {
-        SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-        return {
-            {"success", false},
-            {"error", "Species template modification validation failed (living pops of this template may already exist or exceeds traits capacity)"}
-        };
-    }
-
-    LOGF("[SPECIES_MGR] ModifySpeciesTemplate: cloning command...");
     void* cloned_cmd = SafeCallClone(vt[12], cmd_stack);
-    LOGF("[SPECIES_MGR] ModifySpeciesTemplate: destructing stack species...");
     SafeCallDtorSpecies(fn_species_dtor_, cmd_species);
-
-    if (!cloned_cmd) {
-        LOGF("[SPECIES_MGR] ModifySpeciesTemplate: clone failed");
-        return { {"success", false}, {"error", "Failed to clone modify template command"} };
+    auto cmd = CommandBuilder::Get().Adopt(sdk::cmd::update_species_mod_template_command::kSpec, cloned_cmd);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false},
+                 {"error", why.empty() ? "Species template modification rejected" : "Species template modification rejected: " + why} };
     }
-
-    LOGF("[SPECIES_MGR] ModifySpeciesTemplate: posting command...");
-    if (!SafePostCommand(fn_post_command_, cloned_cmd)) {
-        LOGF("[SPECIES_MGR] ModifySpeciesTemplate: post failed");
-        return { {"success", false}, {"error", "Failed to post modify template command to session"} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        return { {"success", false}, {"error", cmd.error()} };
     }
 
     LOGF("[SPECIES_MGR] Dispatched CCountryUpdateSpeciesModTemplate for template_species_id %u", template_species_id);
@@ -1484,12 +1399,12 @@ nlohmann::json SpeciesManager::ModifySpeciesTemplateJson(uint32_t template_speci
         {"template_species_id", template_species_id},
         {"name", effective_name},
         {"traits_count", trait_keys.size()},
-        {"message", "Species template modified successfully"}
+        {"message", "Species template modified; the engine replaces the template with a new species id (re-read get_species)"}
     };
 }
 
 nlohmann::json SpeciesManager::ApplySpeciesTemplateJson(uint32_t template_species_id, const std::vector<uint32_t>& colony_ids) {
-    if (!base_address_ || !fn_post_command_) {
+    if (!base_address_) {
         return { {"success", false}, {"error", "Engine functions not initialized"} };
     }
 
@@ -1534,58 +1449,40 @@ nlohmann::json SpeciesManager::ApplySpeciesTemplateJson(uint32_t template_specie
         return { {"success", false}, {"error", "No colonies found to apply template to"} };
     }
 
+    // CCreateSpeciesModSpecialProjectCommand: +0x20 country, +0x24 template species, +0x28
+    // CPdxArray<SSpeciesColonyPair> (vtable from the factory; data +8, capacity +0x10, size +0x14).
+    // SSpeciesColonyPair is 16 bytes {vtable, species, colony}; 0x2335870 is the element vtable
+    // the engine's own array copy (0x82E110) writes.
     struct SSpeciesColonyPair {
-        void* vtable{ nullptr };
-        uint32_t species_id{ 0 };
-        uint32_t colony_id{ 0 };
+        void* vtable;
+        uint32_t species_id;
+        uint32_t colony_id;
     };
+    static_assert(sizeof(SSpeciesColonyPair) == 16, "engine element stride is 16");
+    constexpr uintptr_t kSpeciesColonyPairVt = 0x2335870;
+    constexpr std::ptrdiff_t kPairs = 0x28;
 
-    std::vector<SSpeciesColonyPair> pairs;
-    pairs.reserve(targets.size());
-    for (uint32_t cid : targets) {
-        SSpeciesColonyPair p{};
-        p.vtable = (void*)(base_address_ + 0x2334870);
-        p.species_id = base_species_id;
-        p.colony_id = cid;
-        pairs.push_back(p);
+    namespace apply = sdk::cmd::create_species_mod_special_project;
+    auto cmd = CommandBuilder::Get().Create(apply::kSpec);
+    auto* pairs = (SSpeciesColonyPair*)CommandBuilder::Get().EngineAlloc(targets.size() * sizeof(SSpeciesColonyPair));
+    if (!pairs) {
+        return { {"success", false}, {"error", "engine allocation for the colony list failed"} };
     }
-
-    alignas(16) uint8_t cmd_stack[0x40]{ 0 };
-    *(void***)cmd_stack = (void**)(base_address_ + 0x258CF30);
-    *(uint64_t*)(cmd_stack + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)(cmd_stack + 0x10) = 0xFFFF0000;
-    *(uint16_t*)(cmd_stack + 0x14) = 0;
-    *(uint8_t*)(cmd_stack + 0x16) = 0;
-    *(uint8_t*)(cmd_stack + 0x17) = 0;
-    *(uint32_t*)(cmd_stack + 0x18) = 0;
-    *(uint32_t*)(cmd_stack + 0x1C) = 0;
-    *(uint32_t*)(cmd_stack + 0x20) = country_id;
-    *(uint32_t*)(cmd_stack + 0x24) = template_species_id;
-    *(void**)(cmd_stack + 0x28) = (void*)(base_address_ + 0x233A888);
-    *(void**)(cmd_stack + 0x30) = pairs.data();
-    *(uint32_t*)(cmd_stack + 0x38) = (uint32_t)pairs.size();
-    *(uint32_t*)(cmd_stack + 0x3C) = (uint32_t)pairs.size();
-
-    void** vt = *(void***)cmd_stack;
-    if (!vt || !vt[8] || !vt[12]) {
-        return { {"success", false}, {"error", "Invalid apply command vtable"} };
+    for (size_t i = 0; i < targets.size(); ++i) {
+        pairs[i] = { (void*)(base_address_ + kSpeciesColonyPairVt), base_species_id, targets[i] };
     }
-
-    bool is_valid = SafeCallIsValid(vt[8], cmd_stack);
-    if (!is_valid) {
-        return {
-            {"success", false},
-            {"error", "Apply template validation failed (special project already running, pops of base species not present on selected colonies, or conditions not met)"}
-        };
+    cmd.Set<uint32_t>(0x20, country_id)             // tok 0x2c88 country
+       .Set<uint32_t>(0x24, template_species_id)    // tok 0x2cd template
+       .Set<void*>(kPairs + 0x08, pairs)
+       .Set<uint32_t>(kPairs + 0x10, (uint32_t)targets.size())
+       .Set<uint32_t>(kPairs + 0x14, (uint32_t)targets.size());
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false},
+                 {"error", why.empty() ? "Species modification project rejected" : "Species modification project rejected: " + why} };
     }
-
-    void* cloned_cmd = SafeCallClone(vt[12], cmd_stack);
-    if (!cloned_cmd) {
-        return { {"success", false}, {"error", "Failed to clone apply template command"} };
-    }
-
-    if (!SafePostCommand(fn_post_command_, cloned_cmd)) {
-        return { {"success", false}, {"error", "Failed to post apply template command to session"} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        return { {"success", false}, {"error", cmd.error()} };
     }
 
     LOGF("[SPECIES_MGR] Dispatched CCreateSpeciesModSpecialProjectCommand for template %u on %zu colonies",

@@ -1,5 +1,6 @@
 #include "tech_manager.hpp"
 #include "game_state.hpp"
+#include "command_builder.hpp"
 #include "task_queue.hpp"
 #include <unordered_map>
 #include <algorithm>
@@ -82,15 +83,6 @@ static bool SafeFreePdxStr(TechManager::FnFreePdxStr fn, RawPdxString* str) {
     }
 }
 
-static bool SafePostCommand(TechManager::FnPostCommand fn, void* cmd) {
-    __try {
-        fn(cmd, 0);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 TechManager& TechManager::Get() {
     static TechManager instance;
     return instance;
@@ -100,21 +92,10 @@ bool TechManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
     // RVAs discovered from binary reverse engineering
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
     fn_localize_     = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    command_vtable_  = base_address_ + 0x2393C90;
-    cancel_vtable_   = base_address_ + 0x2393E00;
-    fn_cancel_execute_ = (FnCancelExecute)(base_address_ + 0x6BB250);
-    fn_scalar_dtor_  = (FnScalarDtor)(base_address_ + 0x1AF230);
 
-    LOGF("[TECH_MGR] Initialized: Base=0x%llX, Alloc=0x%llX, PostCmd=0x%llX, Vtable=0x%llX, CancelVt=0x%llX",
-        (unsigned long long)base_address_,
-        (unsigned long long)fn_engine_alloc_,
-        (unsigned long long)fn_post_command_,
-        (unsigned long long)command_vtable_,
-        (unsigned long long)cancel_vtable_);
+    LOGF("[TECH_MGR] Initialized: Base=0x%llX", (unsigned long long)base_address_);
 
     return true;
 }
@@ -161,43 +142,7 @@ std::string TechManager::ExtractTechKey(void* tech_ptr) {
 }
 
 std::string TechManager::LocalizeTechKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    // Prepare input RawPdxString
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        // If long, just use key directly as fallback
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    // Free the heap buffer allocated by Localize if applicable
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 uint32_t TechManager::ExtractTechTier(void* tech_ptr) {
@@ -384,15 +329,6 @@ nlohmann::json TechManager::SelectResearch(uint32_t area, const std::string& tec
         };
     }
 
-    if (!fn_engine_alloc_ || !fn_post_command_ || !command_vtable_) {
-        return {
-            {"error", {
-                {"code", -32045},
-                {"message", "Command dispatch pointers not initialized."}
-            }}
-        };
-    }
-
     // Check if an existing technology is currently being researched in this area
     uintptr_t active_vec = (uintptr_t)tech_mgr + 0x48 + area * 24;
     int32_t active_cnt = 0;
@@ -415,8 +351,29 @@ nlohmann::json TechManager::SelectResearch(uint32_t area, const std::string& tec
         };
     }
 
+    namespace spec = sdk::cmd::research_technology_command;
+    auto cmd = CommandBuilder::Get().Create(spec::kSpec);
+    cmd.Set<uint32_t>(spec::country, GameState::Get().GetPlayerCountryId())
+       .Set<void*>(spec::technology, target_tech_ptr);
+
+    // Validate before touching the current research. The engine's check (0x81BF10) also fails
+    // while the area is occupied; that adds no text. The reason text is the prerequisite list,
+    // each marked with a trigger_yes / trigger_no icon, so only trigger_no is a real blocker.
+    std::string why;
+    const bool valid = cmd.IsValid(&why);
+    const bool blocked = why.find("trigger_no") != std::string::npos;
+    if (!valid && (!cur_tech || blocked)) {
+        return {
+            {"error", {
+                {"code", -32048},
+                {"message", why.empty() ? cmd.error().empty() ? "Technology cannot be researched now" : cmd.error()
+                                        : "Technology cannot be researched: " + why}
+            }}
+        };
+    }
+
     if (cur_tech) {
-        LOGF("[TECH_MGR] Area %u already researching tech 0x%p. Cancelling previous research before selecting '%s'...",
+        LOGF("[TECH_MGR] Area %u busy with 0x%p; cancelling it before selecting '%s'.",
             area, cur_tech, tech_key.c_str());
         nlohmann::json cancel_res = CancelResearch(area);
         if (cancel_res.contains("error")) {
@@ -424,37 +381,13 @@ nlohmann::json TechManager::SelectResearch(uint32_t area, const std::string& tec
         }
     }
 
-    // Executed on the game main thread (called via TaskQueue::Get().Enqueue from ipc_server)
-    LOGF("[TECH_MGR] Constructing CSelectTechCommand on main thread for tech '%s' (0x%p)...",
-        tech_key.c_str(), target_tech_ptr);
-
-    void* cmd = fn_engine_alloc_(0x30);
-    if (!cmd) {
-        return {
-            {"error", {
-                {"code", -32046},
-                {"message", "Engine allocator returned null for CSelectTechCommand"}
-            }}
-        };
-    }
-
-    memset(cmd, 0, 0x30);
-    *(void**)cmd = (void*)command_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)((uintptr_t)cmd + 0x0C) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x10) = 0xFFFF0000;
-    *(uint16_t*)((uintptr_t)cmd + 0x14) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = 0; // player country id
-    *(void**)((uintptr_t)cmd + 0x28) = target_tech_ptr;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[TECH_MGR] Exception occurred during PostCommand!");
+    // With a cancel queued ahead of it, IsValid would still see the occupied slot, so rely on
+    // the engine's own gate; the cancel executes first in the same command batch.
+    if (!cmd.Post(cur_tech ? NativeCommand::Check::EngineGate : NativeCommand::Check::IsValid)) {
         return {
             {"error", {
                 {"code", -32047},
-                {"message", "Exception occurred executing PostCommand for CSelectTechCommand"}
+                {"message", cmd.error()}
             }}
         };
     }
@@ -513,43 +446,20 @@ nlohmann::json TechManager::CancelResearch(uint32_t area) {
 
     LOGF("[TECH_MGR] Cancelling research in area %u: tech '%s' (0x%p)...", area, key.c_str(), cur_tech);
 
-    if (!fn_engine_alloc_ || !cancel_vtable_ || !fn_cancel_execute_) {
+    namespace spec = sdk::cmd::cancel_research_technology_command;
+    auto cmd = CommandBuilder::Get().Create(spec::kSpec);
+    cmd.Set<uint32_t>(spec::country, GameState::Get().GetPlayerCountryId())
+       .Set<void*>(spec::technology, cur_tech);
+    if (!cmd.Post()) {
         return {
             {"error", {
-                {"code", -32045},
-                {"message", "Cancel dispatch pointers not initialized."}
+                {"code", -32047},
+                {"message", cmd.error()}
             }}
         };
     }
 
-    void* cancel_cmd = fn_engine_alloc_(0x30);
-    if (!cancel_cmd) {
-        return {
-            {"error", {
-                {"code", -32046},
-                {"message", "Engine allocator returned null for CCancelTechCommand"}
-            }}
-        };
-    }
-
-    memset(cancel_cmd, 0, 0x30);
-    *(void**)cancel_cmd = (void*)cancel_vtable_;
-    *(uint32_t*)((uintptr_t)cancel_cmd + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)((uintptr_t)cancel_cmd + 0x0C) = 0;
-    *(uint16_t*)((uintptr_t)cancel_cmd + 0x10) = 0;
-    *(uint16_t*)((uintptr_t)cancel_cmd + 0x12) = 0xFFFF;
-    *(uint8_t*)((uintptr_t)cancel_cmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)cancel_cmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)cancel_cmd + 0x20) = 0; // player country ID
-    *(void**)((uintptr_t)cancel_cmd + 0x28) = cur_tech;
-
-    fn_cancel_execute_(cancel_cmd);
-
-    if (fn_scalar_dtor_) {
-        fn_scalar_dtor_(cancel_cmd, 1);
-    }
-
-    LOGF("[TECH_MGR] CCancelTechCommand executed successfully on main thread.");
+    LOGF("[TECH_MGR] CCancelTechCommand posted successfully.");
     return {
         {"success", true},
         {"area", area},

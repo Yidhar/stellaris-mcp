@@ -2,6 +2,7 @@
 #include "hook_manager.hpp"
 #include "game_state.hpp"
 #include "commands.hpp"
+#include "command_builder.hpp"
 #include "event_manager.hpp"
 #include "notification_manager.hpp"
 #include "alert_manager.hpp"
@@ -41,6 +42,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
 
     GameState::Get().Init(base_address);
     Commands::Get().Init(base_address);
+    CommandBuilder::Get().Init(base_address);
     EventManager::Get().Init(base_address);
     NotificationManager::Get().Init(base_address);
     AlertManager::Get().Init(base_address);
@@ -61,6 +63,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
         LOG("[INIT_FATAL] Failed to hook DXGI Present. Aborting.");
         return 1;
     }
+    CommandBuilder::Get().InstallGuards();
 
     if (!IPCServer::Get().Start()) {
         LOG("[INIT_FATAL] Failed to start IPC Named Pipe server. Aborting.");

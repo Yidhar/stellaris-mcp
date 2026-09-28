@@ -18,8 +18,13 @@ def send_request(pipe, req_id: int, method: str, params: dict | None = None) -> 
     pipe.write(line.encode("utf-8"))
     pipe.flush()
 
-    resp_line = pipe.readline().decode("utf-8").strip()
-    return json.loads(resp_line)
+    while True:
+        resp_line = pipe.readline().decode("utf-8").strip()
+        if not resp_line:
+            continue
+        data = json.loads(resp_line)
+        if data.get("id") == req_id:
+            return data
 
 def main():
     print(f"[*] Connecting to Named Pipe: {PIPE_PATH}")

@@ -15,8 +15,8 @@ print("[*] Terminating existing stellaris.exe...")
 os.system("taskkill /F /IM stellaris.exe 2>nul")
 time.sleep(2)
 
-print(f"[*] Launching Stellaris: {exe_path}...")
-proc = subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
+print(f"[*] Launching Stellaris: {exe_path} -dx11...")
+proc = subprocess.Popen([exe_path, "-dx11"], cwd=os.path.dirname(exe_path))
 pid = proc.pid
 print(f"[+] Started stellaris.exe with PID: {pid}")
 

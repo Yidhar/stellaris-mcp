@@ -1,5 +1,7 @@
 #include "fleet_manager.hpp"
 #include "task_queue.hpp"
+#include "command_builder.hpp"
+#include "game_state.hpp"
 #include <windows.h>
 #include <sstream>
 
@@ -108,8 +110,6 @@ bool FleetManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
     if (!base_address_) return false;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
 
     LOGF("[FLEET_MGR] Initialized with base address: 0x%llX", (unsigned long long)base_address_);
     return true;
@@ -119,7 +119,10 @@ void* FleetManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -137,7 +140,10 @@ void* FleetManager::FindFleetTemplate(uint32_t template_id) {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113038), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114038), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (!mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
 
@@ -165,7 +171,10 @@ void* FleetManager::FindFleet(uint32_t fleet_id) {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113008), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114008), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (!mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
 
@@ -362,11 +371,6 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
 }
 
 bool FleetManager::ReinforceFleet(uint32_t fleet_id, std::string& out_message) {
-    if (!fn_engine_alloc_ || !fn_post_command_) {
-        out_message = "Engine functions not initialized";
-        return false;
-    }
-
     void* fleet_obj = FindFleet(fleet_id);
     if (!fleet_obj) {
         // Also check if fleet_id is template_id
@@ -381,20 +385,38 @@ bool FleetManager::ReinforceFleet(uint32_t fleet_id, std::string& out_message) {
         }
     }
 
-    // Allocate 0x28 bytes for CReinforceFleetCommand (opcode 0x3B3C)
-    void* pCmd = fn_engine_alloc_(0x28);
-    if (!pCmd) {
-        out_message = "Engine memory allocation failed";
-        return false;
+    uint32_t template_id = fleet_id;
+    void* country = GetPlayerCountry();
+    if (country) {
+        void* vec_ptr = nullptr;
+        uint32_t vec_cnt = 0;
+        if (SafeReadPtr((const void*)((uintptr_t)country + 0x2648 + 8), &vec_ptr) && vec_ptr &&
+            SafeReadU32((const void*)((uintptr_t)country + 0x2648 + 0x14), &vec_cnt)) {
+            for (uint32_t i = 0; i < vec_cnt; ++i) {
+                uint32_t tid = 0;
+                if (SafeReadU32((const void*)((uintptr_t)vec_ptr + i * 4), &tid)) {
+                    void* candidate = FindFleetTemplate(tid);
+                    if (candidate) {
+                        uint32_t assoc = 0;
+                        SafeReadU32((const void*)((uintptr_t)candidate + 0x88), &assoc);
+                        if (tid == fleet_id || assoc == fleet_id) {
+                            template_id = tid;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    memset(pCmd, 0, 0x28);
-    *(uintptr_t*)pCmd = base_address_ + 0x23B90C8; // VTable
-    *(uint32_t*)((uintptr_t)pCmd + 0x08) = 0; // country_id (player = 0)
-    *(uint8_t*)((uintptr_t)pCmd + 0x14) = 0; // single fleet flag (0 = specific fleet)
-    *(uint32_t*)((uintptr_t)pCmd + 0x18) = fleet_id; // fleet_id
-
-    fn_post_command_(pCmd, 0);
+    namespace reinforce = sdk::cmd::reinforce_fleet_command;
+    auto cmd = CommandBuilder::Get().Create(reinforce::kSpec);
+    cmd.Set<uint32_t>(reinforce::country, GameState::Get().GetPlayerCountryId())
+       .Set<uint32_t>(reinforce::fleet_template, template_id);
+    if (!cmd.Post()) {
+        out_message = cmd.error();
+        return false;
+    }
 
     out_message = "CReinforceFleetCommand dispatched successfully for fleet " + std::to_string(fleet_id);
     LOGF("[FLEET_MGR] Reinforce fleet command posted for fleet %u", fleet_id);

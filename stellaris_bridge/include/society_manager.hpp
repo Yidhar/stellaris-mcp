@@ -18,8 +18,6 @@ struct SocietySummary {
 
 class SocietyManager {
 public:
-    using FnEngineAlloc = void* (*)(size_t);
-    using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
 
@@ -44,14 +42,9 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
 
-    uintptr_t activate_tradition_cmd_vtable_{ 0 };
-    uintptr_t add_edict_cmd_vtable_{ 0 };
-    uintptr_t remove_edict_cmd_vtable_{ 0 };
 
     // Cached pointers for all CTradition* definitions indexed by key
     std::unordered_map<std::string, void*> tradition_cache_;

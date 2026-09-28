@@ -45,8 +45,6 @@ struct FullSituationLogState {
 
 class SituationLogManager {
 public:
-    using FnEngineAlloc = void* (*)(size_t);
-    using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
     using FnPdxStringAssign = void* (*)(void* pdx_str, const char* src, size_t len);
@@ -70,13 +68,10 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
     FnPdxStringAssign fn_pdx_string_assign_{ nullptr };
 
-    uintptr_t command_vtable_{ 0 };
 
     void* GetPlayerCountry();
     uint32_t GetPlayerCountryId();

@@ -40,8 +40,6 @@ struct FullResearchState {
 
 class TechManager {
 public:
-    using FnEngineAlloc = void* (*)(size_t);
-    using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
 
@@ -65,18 +63,8 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
-
-    using FnCancelExecute = void (*)(void* cmd);
-    using FnScalarDtor = void* (*)(void* this_ptr, unsigned int flags);
-
-    uintptr_t command_vtable_{ 0 };
-    uintptr_t cancel_vtable_{ 0 };
-    FnCancelExecute fn_cancel_execute_{ nullptr };
-    FnScalarDtor fn_scalar_dtor_{ nullptr };
 
     void* GetPlayerCountry();
     void* GetTechManagerPtr();

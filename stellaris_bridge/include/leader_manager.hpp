@@ -19,6 +19,9 @@ struct LeaderTraitDetail {
     uint32_t tier{ 1 };
 };
 
+// [{key, name, tier}, ...] for API responses.
+nlohmann::json TraitsJson(const std::vector<LeaderTraitDetail>& traits);
+
 struct HiredLeaderDetail {
     uint32_t id{ 0 };
     std::string key;
@@ -40,6 +43,10 @@ struct HiredLeaderDetail {
     std::vector<LeaderTraitDetail> traits;
     bool has_unspent_trait_points{ false };
     bool is_councilor{ false };
+    // Level-up trait picks offered by the engine (CLeader::available_trait / available_trait_2).
+    int32_t trait_selections_available{ 0 };
+    std::vector<LeaderTraitDetail> trait_options;
+    std::vector<LeaderTraitDetail> trait_upgrade_options;
 };
 
 struct CandidateDetail {
@@ -57,8 +64,6 @@ struct CandidateDetail {
 
 class LeaderManager {
 public:
-    using FnEngineAlloc = void* (*)(size_t);
-    using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
     using FnGetLocalizedLeaderName = void (*)(void* out_str, void* name_obj, int mode);
@@ -78,6 +83,8 @@ public:
     nlohmann::json HireLeader(uint32_t candidate_id);
     nlohmann::json DismissLeader(uint32_t leader_id);
     nlohmann::json AssignLeader(uint32_t leader_id, uint8_t assignment_type, uint32_t target_id);
+    // Picks one of the traits the engine currently offers this leader (level-up selection).
+    nlohmann::json SelectTrait(uint32_t leader_id, const std::string& trait_key);
 
     // Helpers
     void* FindLeaderPtr(uint32_t leader_id);
@@ -88,15 +95,10 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
     FnGetLocalizedLeaderName fn_get_localized_leader_name_{ nullptr };
 
-    uintptr_t hire_leader_cmd_vtable_{ 0 };
-    uintptr_t fire_leader_cmd_vtable_{ 0 };
-    uintptr_t assign_leader_cmd_vtable_{ 0 };
 
     void* GetPlayerCountry();
     uint32_t GetPlayerCountryId();

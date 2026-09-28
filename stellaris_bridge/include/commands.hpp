@@ -16,22 +16,24 @@ public:
     // Native speed control (0 = 1x, ..., 4 = 5x)
     nlohmann::json SetSpeed(uint32_t target_speed);
 
+    using FnPostCommand = void(*)(void* cmd, bool unk);
+    using FnCreateCommand = void*(*)();
+    using FnSetPaused = void(*)(void* idler, void* data);
+    using FnSetGameSpeed = void(*)(void* idler, int speed);
+
+    FnPostCommand GetPostCommand() const { return fn_post_command_; }
+
 private:
     Commands() = default;
 
     uintptr_t base_address_{ 0 };
 
-    // Function pointers
-    using FnPostCommand = void(*)(void* cmd, bool unk);
-    using FnCommandCtor = void*(*)(void* cmd);
-    using FnOperatorNew = void*(*)(size_t size);
-
     FnPostCommand fn_post_command_{ nullptr };
-    FnCommandCtor fn_increase_speed_{ nullptr };
-    FnCommandCtor fn_decrease_speed_{ nullptr };
-    FnOperatorNew fn_operator_new_{ nullptr };
-
-    uintptr_t vt_pause_command_{ 0 };
+    FnCreateCommand fn_create_pause_game_{ nullptr };
+    FnCreateCommand fn_create_inc_speed_{ nullptr };
+    FnCreateCommand fn_create_dec_speed_{ nullptr };
+    FnSetPaused fn_set_paused_{ nullptr };
+    FnSetGameSpeed fn_set_game_speed_{ nullptr };
 
     uintptr_t FindPattern(const uint8_t* pattern, const char* mask, size_t size);
 };

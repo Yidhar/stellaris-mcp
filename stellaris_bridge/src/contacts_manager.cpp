@@ -121,7 +121,10 @@ void* ContactsManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -136,40 +139,7 @@ void* ContactsManager::GetPlayerCountry() {
 }
 
 std::string ContactsManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
@@ -179,7 +149,7 @@ nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
     if (!country) return { {"error", "Player country not found"} };
 
     void* cmgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112F50), &cmgr) || !cmgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
         return { {"error", "Country manager not found"} };
     }
 
@@ -293,7 +263,7 @@ nlohmann::json ContactsManager::GetSummaryJson() {
     if (!country) return { {"known_empires_count", 0}, {"pending_first_contacts_count", 0} };
 
     void* cmgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112F50), &cmgr) || !cmgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
         return { {"known_empires_count", 0}, {"pending_first_contacts_count", 0} };
     }
     uint32_t c_cap = 0;

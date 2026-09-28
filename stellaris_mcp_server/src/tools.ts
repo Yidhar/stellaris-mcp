@@ -529,6 +529,71 @@ export function registerTools(server: McpServer, client: PipeClient) {
     }
   );
 
+  // stellaris_set_council_agenda
+  server.tool(
+    "stellaris_set_council_agenda",
+    "Starts a new council agenda via native CSetCouncilAgendaCommand (Layer 3 Action Command). Choose agenda_key from stellaris_get_government available_agendas (only agendas the engine currently accepts are listed). Finish a ready agenda with stellaris_launch_council_agenda.",
+    {
+      agenda_key: z.string().describe("Agenda key from available_agendas, e.g. 'agenda_chart_the_unknown'."),
+    },
+    async ({ agenda_key }) => {
+      try {
+        const result = await client.request("set_council_agenda", { agenda_key });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting council agenda: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // stellaris_select_leader_trait
+  server.tool(
+    "stellaris_select_leader_trait",
+    "Picks a level-up trait for a leader via native CAddTraitFromPoolCommand (Layer 3 Action Command). Offered choices are listed per leader as trait_options / trait_upgrade_options with trait_selections_available (stellaris_get_leaders, and council seats in stellaris_get_government). Rejects traits that are not currently offered.",
+    {
+      leader_id: z.number().int().describe("Leader ID."),
+      trait_key: z.string().describe("Trait key from the leader's trait_options or trait_upgrade_options."),
+    },
+    async ({ leader_id, trait_key }) => {
+      try {
+        const result = await client.request("select_leader_trait", { leader_id, trait_key });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error selecting leader trait: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
   // Tool 17: stellaris_get_traditions
   server.tool(
     "stellaris_get_traditions",
@@ -1624,22 +1689,24 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 37: stellaris_set_monthly_trade
   server.tool(
     "stellaris_set_monthly_trade",
-    "Creates, updates, or cancels a recurring monthly market trade order (Layer 3 Directive Intervention) via native engine command CAddMonthlyTradeCommand / CRemoveMonthlyTradeCommand.",
+    "Creates or cancels a recurring monthly market trade order (Layer 3 Directive Intervention) via native engine command CAddMonthlyTradeCommand / CRemoveMonthlyTradeCommand. Existing orders and their order_id are listed by stellaris_get_market (monthly_trades).",
     {
-      resource: z.string().describe("Resource key (e.g., 'alloys', 'minerals', 'energy')."),
-      action: z.enum(["buy", "sell"]).describe("Order type: 'buy' or 'sell'."),
-      amount: z.number().describe("Monthly quantity in units (e.g., 10, 50, 100)."),
-      price_limit: z.number().optional().describe("Maximum buy price or minimum sell price per unit. Optional (0 for no limit)."),
-      cancel: z.boolean().optional().describe("Set to true to cancel/remove the monthly trade order. Default: false."),
+      resource: z.string().optional().describe("Resource key (e.g., 'alloys', 'minerals', 'energy'). Required when creating an order."),
+      action: z.enum(["buy", "sell"]).optional().describe("Order type: 'buy' or 'sell'. Default: 'buy'."),
+      amount: z.number().optional().describe("Monthly quantity in units (e.g., 10, 50, 100). Required when creating an order."),
+      price_limit: z.number().optional().describe("Maximum unit price in trade value (e.g. 100). Optional, 0 for no limit."),
+      cancel: z.boolean().optional().describe("Set to true to cancel an existing order identified by order_id. Default: false."),
+      order_id: z.number().int().optional().describe("Required when cancel is true: order_id from stellaris_get_market monthly_trades."),
     },
-    async ({ resource, action, amount, price_limit, cancel }) => {
+    async ({ resource, action, amount, price_limit, cancel, order_id }) => {
       try {
         const result = await client.request("set_monthly_trade", {
-          resource,
-          action,
-          amount,
+          resource: resource ?? "",
+          action: action ?? "buy",
+          amount: amount ?? 0,
           price_limit: price_limit ?? 0.0,
           cancel: cancel ?? false,
+          order_id: order_id ?? -1,
         });
         return {
           content: [
@@ -2395,6 +2462,271 @@ export function registerTools(server: McpServer, client: PipeClient) {
       }
     }
   );
+
+  // Tool 60: stellaris_get_planet_jobs
+  server.tool(
+    "stellaris_get_planet_jobs",
+    "Retrieves detailed job and workforce allocation for a colony in Stellaris 4.5.0 Cygnus (Layer 2 Progressive Disclosure). Returns jobs categorized by stratum (ruler, specialist, worker, civilian), detailing current workforce, max workforce capacity, bonus workforce, effective workforce, workforce limit, whether prioritized (favorite), and whether it can be prioritized.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_planet_jobs", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting planet jobs for planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 61: stellaris_set_job_priority
+  server.tool(
+    "stellaris_set_job_priority",
+    "Toggles or sets the priority (favorite) status for a job type on a planet using native engine command CSetFavoriteJobCommand. Prioritized jobs receive preferential workforce allocation from available pops.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+      job_key: z.string().describe("Job type key to prioritize/toggle (e.g. 'physicist', 'metallurgist', 'politician', 'artisan')."),
+    },
+    async ({ planet_id, job_key }) => {
+      try {
+        const result = await client.request("set_job_priority", { planet_id, job_key });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting job priority for ${job_key} on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 62: stellaris_set_job_workforce_limit
+  server.tool(
+    "stellaris_set_job_workforce_limit",
+    "Adjusts the workforce limit slider for a specific job on a planet using native engine command CChangeJobWorkforceLimitCommand. Allows capping or reopening workforce capacity for specific jobs (e.g. 0 to disable, or -1 for max capacity).",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+      job_key: z.string().describe("Job type key to limit (e.g. 'clerk', 'technician', 'farmer')."),
+      limit: z.number().int().describe("Workforce allocation limit (non-negative integer count, or -1 for uncapped maximum capacity)."),
+    },
+    async ({ planet_id, job_key, limit }) => {
+      try {
+        const result = await client.request("set_job_workforce_limit", { planet_id, job_key, limit });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting workforce limit for ${job_key} on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 63: stellaris_get_planet_armies
+  server.tool(
+    "stellaris_get_planet_armies",
+    "Retrieves complete army information for a planet/colony in Stellaris 4.5.0 Cygnus (Layer 2 Progressive Disclosure). Returns overview (stationed armies count, garrison power, assault power, deploy_in_orbit, include_in_builder), stationed armies list (army_id, name, type_key, is_defense, power, health/max_health, morale/max_morale, species), recruitable assault army types catalog, and current army recruitment queue.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID to inspect (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("get_planet_armies", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting planet armies for planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 64: stellaris_set_planet_army_settings
+  server.tool(
+    "stellaris_set_planet_army_settings",
+    "Controls planet army status settings in Stellaris 4.5.0 Cygnus. Toggles or sets '部署到轨道上' (deploy_in_orbit) via CToggleDeployArmiesInOrbitCommand and/or '包含在陆军建造功能中' (include_in_builder) via CToggleIncludeInArmyBuilderCommand.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+      deploy_in_orbit: z.boolean().optional().describe("Whether recruited armies should automatically deploy into orbit (true) or stay stationed on the surface (false)."),
+      include_in_builder: z.boolean().optional().describe("Whether this planet is included in the empire army builder roster (true) or excluded (false)."),
+    },
+    async ({ planet_id, deploy_in_orbit, include_in_builder }) => {
+      try {
+        const result = await client.request("set_planet_army_settings", { planet_id, deploy_in_orbit, include_in_builder });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting planet army settings on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 65: stellaris_embark_all_armies
+  server.tool(
+    "stellaris_embark_all_armies",
+    "Embarks all stationed assault armies from a colony into orbit as a transport fleet using native engine command CMoveArmyToOrbitCommand ('全部登船'). Defense armies remain on the planet.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+    },
+    async ({ planet_id }) => {
+      try {
+        const result = await client.request("embark_all_armies", { planet_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error embarking armies on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 66: stellaris_disband_planet_army
+  server.tool(
+    "stellaris_disband_planet_army",
+    "Disbands a specific army stationed on a planet using native engine command CDisbandArmyCommand.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+      army_id: z.number().int().describe("Unique army ID / handle slot to disband."),
+    },
+    async ({ planet_id, army_id }) => {
+      try {
+        const result = await client.request("disband_planet_army", { planet_id, army_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error disbanding army ${army_id} on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 67: stellaris_recruit_planet_army
+  server.tool(
+    "stellaris_recruit_planet_army",
+    "Recruits an assault army on a colony into the planet's recruitment queue (Queue 1) using native engine command CAddBuildableToQueueCommand with CBuildableArmy.",
+    {
+      planet_id: z.number().int().describe("Planet / Colony ID (e.g. 3 for Earth)."),
+      army_key: z.string().describe("Army type key from catalog to recruit (e.g. 'assault_army', 'xenomorph_army', 'clone_army', 'gene_warrior_army')."),
+      species_id: z.number().int().optional().describe("Optional species ID for the recruited army pops (defaults to colony founder/dominant species)."),
+    },
+    async ({ planet_id, army_key, species_id }) => {
+      try {
+        const result = await client.request("recruit_planet_army", { planet_id, army_key, species_id });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error recruiting army ${army_key} on planet ${planet_id}: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
 }
+
 
 

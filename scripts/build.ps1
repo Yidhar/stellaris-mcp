@@ -34,7 +34,7 @@ if (Test-Path $DllPath) {
 $CmakeCmd = @"
 call "$VcvarsPath"
 cd /d "$BuildDir"
-cmake -G "Visual Studio 17 2022" -A x64 "$RootDir"
+cmake -G "Visual Studio 17 2022" -A x64 -DFETCHCONTENT_UPDATES_DISCONNECTED=ON "$RootDir"
 cmake --build . --config Release
 "@
 

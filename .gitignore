@@ -54,3 +54,8 @@ scratch/
 scratch_inspect.py
 disasm_cmd.py
 
+
+# SDK dumper intermediates (linux index is kept so the Windows stage runs without source/)
+tools/sdk_dumper/out/*
+!tools/sdk_dumper/out/linux_index.json
+!tools/sdk_dumper/out/linux_classes.json

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "leader_manager.hpp"
 #include <string>
 #include <vector>
 
@@ -16,6 +17,10 @@ struct LeaderDetail {
     uint32_t age{ 0 };
     std::string ethic_key;
     std::string ethic_name;
+    std::vector<LeaderTraitDetail> traits;
+    int32_t trait_selections_available{ 0 };
+    std::vector<LeaderTraitDetail> trait_options;
+    std::vector<LeaderTraitDetail> trait_upgrade_options;
 };
 
 struct CouncilSeatDetail {
@@ -62,11 +67,8 @@ struct FullGovernmentState {
 
 class GovernmentManager {
 public:
-    using FnEngineAlloc = void* (*)(size_t);
-    using FnPostCommand = void (*)(void* cmd, int unk);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
-    using FnGetAgendaCost = int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* unk);
 
     static GovernmentManager& Get();
 
@@ -82,19 +84,17 @@ public:
 
     // Layer 3: Action command execution for stellaris_launch_council_agenda
     nlohmann::json LaunchCouncilAgenda();
+    // Starts a new council agenda (CSetCouncilAgendaCommand); see available_agendas.
+    nlohmann::json SetCouncilAgenda(const std::string& agenda_key);
 
 private:
     GovernmentManager() = default;
 
     uintptr_t base_address_{ 0 };
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
-    FnGetAgendaCost fn_get_agenda_cost_{ nullptr };
 
-    uintptr_t finish_agenda_cmd_vtable_{ 0 };
 
     void* GetPlayerCountry();
     uint32_t GetPlayerCountryId();
@@ -102,6 +102,8 @@ private:
 
     void* FindLeaderPtr(uint32_t leader_id);
     LeaderDetail ReadLeader(uint32_t leader_id);
+    nlohmann::json AvailableAgendasJson();
+    std::string AgendaName(const std::string& key);
 };
 
 } // namespace bridge

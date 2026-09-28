@@ -127,20 +127,18 @@ EventManager& EventManager::Get() {
 bool EventManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    // Updated RVAs for hot-updated game version
+    // Updated RVAs for Stellaris 4.5.0 Cygnus
     fn_find_child_ = nullptr;
-    fn_select_option_ = (FnSelectOption)(base_address_ + 0x107AD50);
-    fn_start_screen_dismiss_ = (FnStartScreenDismiss)(base_address_ + 0x12D1E50);
-    fn_anomaly_dismiss_ = (FnAnomalyDismiss)(base_address_ + 0x11AFAD0);
-    fn_anomaly_research_ = (FnAnomalyResearch)(base_address_ + 0xFBA080);
+    fn_select_option_ = (FnSelectOption)(base_address_ + 0x107BA70);
+    fn_start_screen_dismiss_ = (FnStartScreenDismiss)(base_address_ + 0x12D1FA0);
+    fn_anomaly_dismiss_ = (FnAnomalyDismiss)(base_address_ + 0x11AFA90);
+    fn_anomaly_research_ = nullptr;
     fn_first_contact_dismiss_ = (FnFirstContactDismiss)(base_address_ + 0x1139FD0);
 
-    LOGF("[EVENT_MGR] Initialized: Base=0x%llX, SelectOption=0x%llX, StartScreenDismiss=0x%llX, AnomalyDismiss=0x%llX, AnomalyResearch=0x%llX, FirstContactDismiss=0x%llX",
+    LOGF("[EVENT_MGR] Initialized: Base=0x%llX, SelectOption=0x%llX, StartScreenDismiss=0x%llX, FirstContactDismiss=0x%llX",
         (unsigned long long)base_address_,
         (unsigned long long)fn_select_option_,
         (unsigned long long)fn_start_screen_dismiss_,
-        (unsigned long long)fn_anomaly_dismiss_,
-        (unsigned long long)fn_anomaly_research_,
         (unsigned long long)fn_first_contact_dismiss_);
 
     return true;

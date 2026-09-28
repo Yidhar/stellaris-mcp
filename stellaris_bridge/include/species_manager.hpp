@@ -65,10 +65,7 @@ class SpeciesManager {
 public:
     using FnLocalize = void(__fastcall*)(void* out_pdx_str, const void* in_key_pdx_str);
     using FnFreePdxStr = void(__fastcall*)(void* pdx_str);
-    using FnGetSpeciesRights = void*(__fastcall*)(void* pRightsMgr, void* pSpecies, uint8_t* out_is_specific);
     using FnEngineAlloc = void* (*)(size_t size);
-    using FnPostCommand = void (*)(void* cmd, int unk);
-    using FnSetSpeciesRightCmdCtor = void*(__fastcall*)(void* this_ptr, void* pCountry, void* pSpecies, const void* pRights, uint8_t is_specific);
     using FnSpeciesCopyCtor = void*(__fastcall*)(void* dest_species, const void* src_species);
     using FnSpeciesDtor = void(__fastcall*)(void* species);
     using FnTraitSetSetTraits = void(__fastcall*)(void* trait_set_ptr, void* p_pdx_array_traits);
@@ -108,10 +105,7 @@ private:
 
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
-    FnGetSpeciesRights fn_get_species_rights_{ nullptr };
     FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
-    FnSetSpeciesRightCmdCtor fn_set_species_right_cmd_ctor_{ nullptr };
 
     FnSpeciesCopyCtor fn_species_copy_ctor_{ nullptr };
     FnSpeciesDtor fn_species_dtor_{ nullptr };

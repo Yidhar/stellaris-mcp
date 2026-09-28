@@ -57,6 +57,7 @@ public:
 
     void* GetInGameIdler();
     void* GetPlayerCountry();
+    uint32_t GetPlayerCountryId();
 
     GameDate ReadDate();
     EmpireStats ReadEmpireStats(void* country = nullptr);
@@ -65,7 +66,7 @@ public:
 private:
     GameState() = default;
     uintptr_t base_address_{ 0 };
-    uintptr_t in_game_idler_rva_{ 0x3113180 };
+    uintptr_t in_game_idler_rva_{ 0x3114180 };
 
     std::vector<std::string> cached_resource_names_;
     void EnsureResourceNamesLoaded();

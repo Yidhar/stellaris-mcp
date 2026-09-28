@@ -175,9 +175,12 @@ void* GameState::GetInGameIdler() {
 void* GameState::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
-    // 1. Try via global CCountryManager at base + 0x3112F50
+    // Global CCountryManager at base + 0x3113F50 (4.5.1 Cygnus)
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -193,12 +196,22 @@ void* GameState::GetPlayerCountry() {
     return nullptr;
 }
 
+uint32_t GameState::GetPlayerCountryId() {
+    void* country = GetPlayerCountry();
+    if (!country) return 0;
+    uint32_t cid = 0;
+    if (SafeReadU32((const void*)((uintptr_t)country + 0x20), &cid)) {
+        return cid;
+    }
+    return 0;
+}
+
 GameDate GameState::ReadDate() {
     GameDate date{};
     if (!base_address_) return date;
 
     void* global_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112A08), &global_mgr) || !global_mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &global_mgr) || !global_mgr || (uintptr_t)global_mgr < 0x10000) {
         return date;
     }
 
@@ -223,7 +236,7 @@ void GameState::EnsureResourceNamesLoaded() {
     if (!cached_resource_names_.empty() || !base_address_) return;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3150E78), &res_db) || !res_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return;
     }
 

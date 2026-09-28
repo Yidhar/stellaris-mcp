@@ -1,4 +1,7 @@
 #include "ship_designer.hpp"
+#include "common.hpp"
+#include "command_builder.hpp"
+#include "game_state.hpp"
 #include <windows.h>
 #include <algorithm>
 
@@ -191,21 +194,19 @@ bool ShipDesigner::Init(uintptr_t base_address) {
     base_address_ = base_address;
     if (!base_address_) return false;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
+    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + kRvaEngineAlloc);
     fn_register_design_ = (FnRegisterDesign)(base_address_ + 0x266670);
-    fn_country_add_design_ = (FnCountryAddDesign)(base_address_ + 0x68A090);
-    fn_calc_long_name_ = (FnCalcLongName)(base_address_ + 0xE0FF10);
+    fn_country_add_design_ = (FnCountryAddDesign)(base_address_ + 0x689FE0);
+    fn_calc_long_name_ = (FnCalcLongName)(base_address_ + 0xE0FEE0);
     fn_can_be_built_by_ = (FnCanBeBuiltBy)(base_address_ + 0x3B9A10);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_set_component_on_slot_ = (FnSetComponentOnSlot)(base_address_ + 0xD6E320);
-    fn_stage_update_resources_ = (FnStageUpdateResources)(base_address_ + 0xD6C4A0);
+    fn_set_component_on_slot_ = (FnSetComponentOnSlot)(base_address_ + 0xD6E290);
+    fn_stage_update_resources_ = (FnStageUpdateResources)(base_address_ + 0xD6C420);
 
-    LOGF("[SHIP_DESIGNER] Initialized with Base=0x%llX, Alloc=0x%llX, PostCmd=0x%llX, RegDes=0x%llX, AddDes=0x%llX, CalcLongName=0x%llX, CanBeBuiltBy=0x%llX, SetComp=0x%llX, UpdRes=0x%llX",
+    LOGF("[SHIP_DESIGNER] Initialized with Base=0x%llX, Alloc=0x%llX, RegDes=0x%llX, AddDes=0x%llX, CalcLongName=0x%llX, CanBeBuiltBy=0x%llX, SetComp=0x%llX, UpdRes=0x%llX",
          (unsigned long long)base_address_,
          (unsigned long long)fn_engine_alloc_,
-         (unsigned long long)fn_post_command_,
          (unsigned long long)fn_register_design_,
          (unsigned long long)fn_country_add_design_,
          (unsigned long long)fn_calc_long_name_,
@@ -216,29 +217,7 @@ bool ShipDesigner::Init(uintptr_t base_address) {
 }
 
 std::string ShipDesigner::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    StringView in_sv{ key.data(), key.size() };
-    PdxCString out_str{};
-
-    if (!SafeLocalizeCall(fn_localize_, &in_sv, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            result.assign(out_str.buf, out_str.size);
-        } else if (out_str.heap_ptr) {
-            result.assign(out_str.heap_ptr, out_str.size);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 bool ShipDesigner::CanCountryUseComponent(void* p_tmpl, void* p_country) {
@@ -253,7 +232,9 @@ bool ShipDesigner::CanCountryUseComponent(void* p_tmpl, void* p_country) {
 void* ShipDesigner::GetPlayerCountry() {
     if (!base_address_) return nullptr;
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) || !mgr) return nullptr;
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
     void* countries_arr = nullptr;
     if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) || !countries_arr) return nullptr;
     void* player_country = nullptr;
@@ -264,7 +245,9 @@ void* ShipDesigner::GetPlayerCountry() {
 void* ShipDesigner::FindShipDesign(uint32_t design_id) {
     if (!base_address_) return nullptr;
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112980), &mgr) || !mgr) return nullptr;
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113980), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
     void* arr = nullptr;
     uint32_t cap = 0;
     if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &arr) || !arr ||
@@ -286,7 +269,7 @@ void* ShipDesigner::FindShipDesign(uint32_t design_id) {
 void* ShipDesigner::FindFleet(uint32_t fleet_id) {
     if (!base_address_) return nullptr;
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113008), &mgr) || !mgr) return nullptr;
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114008), &mgr) || !mgr) return nullptr;
     void* arr = nullptr;
     uint32_t cap = 0;
     if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &arr) || !arr ||
@@ -310,7 +293,7 @@ void ShipDesigner::BuildComponentIndexIfNeeded() {
     if (!base_address_) return;
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3156198), &comp_db) || !comp_db) return;
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) return;
 
     void* arr = nullptr;
     uint32_t cnt = 0;
@@ -558,7 +541,7 @@ nlohmann::json ShipDesigner::GetShipDesignCatalogJson(const nlohmann::json& para
     }
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3156198), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
@@ -657,7 +640,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
     void* country = GetPlayerCountry();
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3156198), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
@@ -1053,7 +1036,7 @@ bool ShipDesigner::CreateShipDesign(const std::string& ship_size, std::string& n
     }
 
     void* manager_ctx = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3112A08), &manager_ctx) || !manager_ctx) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &manager_ctx) || !manager_ctx || (uintptr_t)manager_ctx < 0x10000) {
         out_message = "CShipDesignManager context not found";
         return false;
     }
@@ -1334,39 +1317,23 @@ nlohmann::json ShipDesigner::UpdateShipDesignJson(const nlohmann::json& params) 
 
 bool ShipDesigner::UpgradeFleet(uint32_t fleet_id, uint32_t starbase_id, uint32_t target_design_id,
                                std::string& out_message) {
-    if (!fn_engine_alloc_ || !fn_post_command_) {
-        out_message = "Engine functions not initialized";
-        return false;
-    }
-
     void* fleet = FindFleet(fleet_id);
     if (!fleet) {
         out_message = "Fleet ID " + std::to_string(fleet_id) + " not found";
         return false;
     }
 
-    // Allocate 0x30 bytes for CFleetUpgradeDesignCommand (Opcode 0x2F93)
-    void* pCmd = fn_engine_alloc_(0x30);
-    if (!pCmd) {
-        out_message = "Engine memory allocation failed";
+    // `starbase_id` is really the construction queue that builds the upgrade; the factory
+    // default 0xFFFFFFFF lets the engine pick the nearest shipyard. Queue flags keep defaults.
+    namespace upgrade = sdk::cmd::fleet_upgrade_design_command;
+    auto cmd = CommandBuilder::Get().Create(upgrade::kSpec);
+    cmd.Set<uint32_t>(upgrade::country, GameState::Get().GetPlayerCountryId())
+       .Set<uint32_t>(upgrade::fleet, fleet_id)
+       .Set<uint32_t>(upgrade::construction_queue, starbase_id);
+    if (!cmd.Post()) {
+        out_message = cmd.error();
         return false;
     }
-
-    memset(pCmd, 0, 0x30);
-    *(uintptr_t*)pCmd = base_address_ + 0x23B98B0; // VTable
-    *(uint32_t*)((uintptr_t)pCmd + 0x08) = 0; // country_id (player = 0)
-    *(uint32_t*)((uintptr_t)pCmd + 0x0C) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x10) = 0xFFFF0000;
-    *(uint16_t*)((uintptr_t)pCmd + 0x14) = 0;
-    *(uint8_t*)((uintptr_t)pCmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x20) = fleet_id;
-    *(uint32_t*)((uintptr_t)pCmd + 0x24) = starbase_id; // 0xFFFFFFFF for nearest
-    *(uint32_t*)((uintptr_t)pCmd + 0x28) = target_design_id; // 0xFFFFFFFF for all designs
-    *(uint8_t*)((uintptr_t)pCmd + 0x2C) = 0;
-    *(uint8_t*)((uintptr_t)pCmd + 0x2D) = 0;
-
-    fn_post_command_(pCmd, 0);
 
     out_message = "CFleetUpgradeDesignCommand posted successfully for fleet " + std::to_string(fleet_id);
     LOGF("[SHIP_DESIGNER] Fleet upgrade command dispatched for fleet %u", fleet_id);
@@ -1406,11 +1373,6 @@ nlohmann::json ShipDesigner::UpgradeFleetJson(const nlohmann::json& params) {
 }
 
 bool ShipDesigner::DeleteShipDesign(uint32_t design_id, std::string& out_message) {
-    if (!fn_engine_alloc_ || !fn_post_command_) {
-        out_message = "Engine functions not initialized";
-        return false;
-    }
-
     void* design = FindShipDesign(design_id);
     if (!design) {
         out_message = "Ship design ID " + std::to_string(design_id) + " not found";
@@ -1431,25 +1393,14 @@ bool ShipDesigner::DeleteShipDesign(uint32_t design_id, std::string& out_message
         return false;
     }
 
-    // Allocate 0x28 bytes for CRemoveShipDesignCommand (Opcode 0x31B2)
-    void* pCmd = fn_engine_alloc_(0x28);
-    if (!pCmd) {
-        out_message = "Engine memory allocation failed";
+    namespace remove = sdk::cmd::remove_ship_design;
+    auto cmd = CommandBuilder::Get().Create(remove::kSpec);
+    cmd.Set<uint32_t>(remove::country, GameState::Get().GetPlayerCountryId())
+       .Set<uint32_t>(remove::design, design_id);
+    if (!cmd.Post()) {
+        out_message = cmd.error();
         return false;
     }
-
-    memset(pCmd, 0, 0x28);
-    *(uintptr_t*)pCmd = base_address_ + 0x258C958; // VTable
-    *(uint32_t*)((uintptr_t)pCmd + 0x08) = 0; // country_id (player = 0)
-    *(uint32_t*)((uintptr_t)pCmd + 0x0C) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x10) = 0xFFFF0000;
-    *(uint16_t*)((uintptr_t)pCmd + 0x14) = 0;
-    *(uint8_t*)((uintptr_t)pCmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x20) = 0; // country_id (player = 0)
-    *(uint32_t*)((uintptr_t)pCmd + 0x24) = design_id;
-
-    fn_post_command_(pCmd, 0);
 
     out_message = "CRemoveShipDesignCommand posted successfully for design " + std::to_string(design_id);
     LOGF("[SHIP_DESIGNER] Ship design deletion command dispatched for design %u", design_id);

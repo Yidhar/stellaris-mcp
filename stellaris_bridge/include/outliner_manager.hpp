@@ -10,6 +10,8 @@
 
 namespace bridge {
 
+class NativeCommand;
+
 struct ConstructionCard {
     std::string type;            // "building", "district"
     std::string name;            // Localized name, e.g. "场动力学中心 (Physics Lab)"
@@ -123,7 +125,25 @@ public:
     nlohmann::json StartTerraformingJson(uint32_t planet_id, const std::string& target_class = "", int32_t link_index = -1);
     nlohmann::json CancelTerraformingJson(uint32_t planet_id);
 
+    // Economy & Jobs Management (4.5.0 Cygnus Workforce Model)
+    nlohmann::json GetPlanetJobsJson(uint32_t planet_id);
+    nlohmann::json SetJobPriorityJson(uint32_t planet_id, const std::string& job_key);
+    nlohmann::json SetJobWorkforceLimitJson(uint32_t planet_id, const std::string& job_key, int32_t limit);
+
+    // Armies Management (Planet Armies View)
+    nlohmann::json GetPlanetArmiesJson(uint32_t planet_id);
+    nlohmann::json SetPlanetArmySettingsJson(uint32_t planet_id, std::optional<bool> deploy_in_orbit, std::optional<bool> include_in_builder);
+    nlohmann::json EmbarkAllArmiesJson(uint32_t planet_id);
+    nlohmann::json DisbandArmyJson(uint32_t planet_id, uint32_t army_id);
+    nlohmann::json RecruitArmyJson(uint32_t planet_id, const std::string& army_key, std::optional<uint32_t> species_id = std::nullopt);
+    nlohmann::json ExtractArmiesSummary(void* planet_obj, void* colony_obj);
+
 private:
+    // Fills the CPdxArray<TPdxRef<CArmy>> at array_off of a command with engine-heap data.
+    bool SetArmyRefs(NativeCommand& cmd, std::ptrdiff_t array_off, const std::vector<uint32_t>& ids, std::string* why);
+    // Queues (dispatch=true) or only validates a copy of `buildable` via CAddBuildableToQueueCommand.
+    bool QueueBuildable(const void* buildable, size_t size, uint32_t country_id, uint32_t queue_id,
+                        bool dispatch, std::string* why);
     OutlinerManager() = default;
     uintptr_t base_address_{ 0 };
 
@@ -162,6 +182,7 @@ private:
     nlohmann::json ExtractMonthlyPopulationSummary(void* colony_obj);
     nlohmann::json ExtractPopulationBreakdown(void* colony_obj);
     nlohmann::json ExtractColonyAscension(void* colony_obj, uint32_t cid);
+    nlohmann::json ExtractWorkforceSummary(void* colony_obj);
 
     void BuildSectorGroups(std::vector<SectorGroup>& out_sectors);
 };

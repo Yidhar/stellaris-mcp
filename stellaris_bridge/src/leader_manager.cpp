@@ -1,4 +1,6 @@
 #include "leader_manager.hpp"
+#include "command_builder.hpp"
+#include <algorithm>
 #include "alert_manager.hpp"
 #include <windows.h>
 #include <cmath>
@@ -122,13 +124,12 @@ static void SafeFreePdxStr(LeaderManager::FnFreePdxStr fn_free_pdx, RawPdxString
     }
 }
 
-static bool SafePostCommand(LeaderManager::FnPostCommand fn_post, void* cmd) {
-    __try {
-        fn_post(cmd, 1);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+nlohmann::json TraitsJson(const std::vector<LeaderTraitDetail>& traits) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& t : traits) {
+        arr.push_back({ {"key", t.key}, {"name", t.name}, {"tier", t.tier} });
     }
+    return arr;
 }
 
 LeaderManager& LeaderManager::Get() {
@@ -139,31 +140,22 @@ LeaderManager& LeaderManager::Get() {
 bool LeaderManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
     fn_get_localized_leader_name_ = (FnGetLocalizedLeaderName)(base_address_ + 0x3E8E20);
 
-    // Native Command Vtables
-    hire_leader_cmd_vtable_ = base_address_ + 0x2393840;
-    fire_leader_cmd_vtable_ = base_address_ + 0x23938F8;
-    assign_leader_cmd_vtable_ = base_address_ + 0x23C9A68;
-
-    LOGF("[LEADER] Initialized (Base: 0x%llX, HireVT: 0x%llX, FireVT: 0x%llX, AssignVT: 0x%llX)",
-        (unsigned long long)base_address_,
-        (unsigned long long)hire_leader_cmd_vtable_,
-        (unsigned long long)fire_leader_cmd_vtable_,
-        (unsigned long long)assign_leader_cmd_vtable_);
-
-    return fn_engine_alloc_ != nullptr && fn_post_command_ != nullptr;
+    LOGF("[LEADER] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
+    return true;
 }
 
 void* LeaderManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -218,47 +210,14 @@ std::string LeaderManager::LocalizeKey(const std::string& key) {
         return it->second;
     }
 
-    if (!fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 void* LeaderManager::FindLeaderPtr(uint32_t leader_id) {
     if (!base_address_ || leader_id == 0 || leader_id == 0xFFFFFFFF) return nullptr;
 
     void* leader_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113120), &leader_mgr) || !leader_mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114120), &leader_mgr) || !leader_mgr || (uintptr_t)leader_mgr < 0x10000) {
         return nullptr;
     }
 
@@ -451,34 +410,40 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         }
     }
 
-    // 5. Traits
-    void* t_arr = nullptr;
-    uint32_t t_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0x9B0), &t_arr) && t_arr &&
-        SafeReadU32((const void*)((uintptr_t)leader + 0x9B8), &t_cnt) && t_cnt > 0) {
-        for (uint32_t t = 0; t < t_cnt && t < 16; ++t) {
+    // 5. Traits. CPdxArray<CLeaderTrait*> fields: data pointer at the SDK offset, count 0xC
+    // further; the trait key is the std::string at trait+0x148 (CString at +0x138 on Linux).
+    namespace L = sdk::ent::CLeader;
+    constexpr std::ptrdiff_t kTraitKey = 0x148;
+    auto read_traits = [&](std::ptrdiff_t field, std::vector<LeaderTraitDetail>& out) {
+        void* arr = nullptr;
+        uint32_t cnt = 0;
+        if (!SafeReadPtr((const void*)((uintptr_t)leader + field), &arr) || !arr ||
+            !SafeReadU32((const void*)((uintptr_t)leader + field + 0xC), &cnt)) {
+            return;
+        }
+        for (uint32_t t = 0; t < cnt && t < 16; ++t) {
             void* t_obj = nullptr;
-            if (SafeReadPtr((const void*)((uintptr_t)t_arr + t * 8), &t_obj) && t_obj) {
-                std::string t_key;
-                if (SafeReadPdxString((const void*)((uintptr_t)t_obj + 0x148), t_key) && !t_key.empty()) {
-                    LeaderTraitDetail td;
-                    td.key = t_key;
-                    td.name = LocalizeKey(t_key);
-                    if (t_key.rfind("_3") != std::string::npos) td.tier = 3;
-                    else if (t_key.rfind("_2") != std::string::npos) td.tier = 2;
-                    else td.tier = 1;
-                    detail.traits.push_back(td);
-                }
+            std::string t_key;
+            if (SafeReadPtr((const void*)((uintptr_t)arr + t * 8), &t_obj) && t_obj &&
+                SafeReadPdxString((const void*)((uintptr_t)t_obj + kTraitKey), t_key) && !t_key.empty()) {
+                LeaderTraitDetail td;
+                td.key = t_key;
+                td.name = LocalizeKey(t_key);
+                if (t_key.rfind("_3") != std::string::npos) td.tier = 3;
+                else if (t_key.rfind("_2") != std::string::npos) td.tier = 2;
+                else td.tier = 1;
+                out.push_back(td);
             }
         }
-    }
+    };
+    read_traits(L::traits, detail.traits);
+    read_traits(L::available_trait, detail.trait_options);
+    read_traits(L::available_trait_2, detail.trait_upgrade_options);
 
-    // 6. Unspent Trait Points Indicator ("+")
-    if (detail.level > 1 && detail.class_key != "envoy") {
-        if (detail.traits.size() < detail.level) {
-            detail.has_unspent_trait_points = true;
-        }
-    }
+    // 6. Unspent trait picks: the engine's own counter ("+" badge in the UI)
+    SafeReadU32((const void*)((uintptr_t)leader + L::available_trait_selections), (uint32_t*)&detail.trait_selections_available);
+    detail.has_unspent_trait_points = detail.trait_selections_available > 0 &&
+        (!detail.trait_options.empty() || !detail.trait_upgrade_options.empty());
 
     return detail;
 }
@@ -570,7 +535,10 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                     {"hire_date", d.hire_date},
                     {"is_councilor", d.is_councilor},
                     {"has_unspent_trait_points", d.has_unspent_trait_points},
-                    {"traits", traits_arr}
+                    {"traits", traits_arr},
+                    {"trait_selections_available", d.trait_selections_available},
+                    {"trait_options", TraitsJson(d.trait_options)},
+                    {"trait_upgrade_options", TraitsJson(d.trait_upgrade_options)}
                 });
             }
         }
@@ -615,12 +583,6 @@ nlohmann::json LeaderManager::GetLeadersJson() {
 }
 
 nlohmann::json LeaderManager::HireLeader(uint32_t candidate_id) {
-    if (!fn_engine_alloc_ || !fn_post_command_ || !hire_leader_cmd_vtable_) {
-        return {
-            {"error", {{"code", -32071}, {"message", "Native command dispatch functions not initialized"}}}
-        };
-    }
-
     void* leader = FindLeaderPtr(candidate_id);
     if (!leader) {
         return {
@@ -632,31 +594,20 @@ nlohmann::json LeaderManager::HireLeader(uint32_t candidate_id) {
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[LEADER] Posting CHireLeaderCommand (0x4073) for candidate %u, country %u, tick %u...",
         candidate_id, country_id, tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x28);
-    if (!cmd) {
+    namespace hire = sdk::cmd::hire_leader;
+    auto cmd = CommandBuilder::Get().Create(hire::kSpec);
+    cmd.Set<uint32_t>(hire::country, country_id)
+       .Set<uint32_t>(hire::leader, candidate_id);
+    if (!cmd.Post()) {
         return {
-            {"error", {{"code", -32073}, {"message", "Engine allocator returned null for CHireLeaderCommand"}}}
-        };
-    }
-
-    memset(cmd, 0, 0x28);
-    *(void**)cmd = (void*)hire_leader_cmd_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1; // satisfies IsValid()
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = country_id;
-    *(uint32_t*)((uintptr_t)cmd + 0x24) = candidate_id;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[LEADER] Exception occurred executing PostCommand for CHireLeaderCommand!");
-        return {
-            {"error", {{"code", -32074}, {"message", "Exception occurred executing PostCommand for CHireLeaderCommand"}}}
+            {"error", {{"code", -32074}, {"message", cmd.error()}}}
         };
     }
 
@@ -673,12 +624,6 @@ nlohmann::json LeaderManager::HireLeader(uint32_t candidate_id) {
 }
 
 nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
-    if (!fn_engine_alloc_ || !fn_post_command_ || !fire_leader_cmd_vtable_) {
-        return {
-            {"error", {{"code", -32075}, {"message", "Native command dispatch functions not initialized"}}}
-        };
-    }
-
     void* leader = FindLeaderPtr(leader_id);
     if (!leader) {
         return {
@@ -701,31 +646,20 @@ nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[LEADER] Posting CFireLeaderCommand (0x2EB3) for leader %u, country %u, tick %u...",
         leader_id, country_id, tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x28);
-    if (!cmd) {
+    namespace fire = sdk::cmd::fire_leader_command;
+    auto cmd = CommandBuilder::Get().Create(fire::kSpec);
+    cmd.Set<uint32_t>(fire::country, country_id)
+       .Set<uint32_t>(fire::leader, leader_id);
+    if (!cmd.Post()) {
         return {
-            {"error", {{"code", -32078}, {"message", "Engine allocator returned null for CFireLeaderCommand"}}}
-        };
-    }
-
-    memset(cmd, 0, 0x28);
-    *(void**)cmd = (void*)fire_leader_cmd_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1; // satisfies IsValid()
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = country_id;
-    *(uint32_t*)((uintptr_t)cmd + 0x24) = leader_id;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[LEADER] Exception occurred executing PostCommand for CFireLeaderCommand!");
-        return {
-            {"error", {{"code", -32079}, {"message", "Exception occurred executing PostCommand for CFireLeaderCommand"}}}
+            {"error", {{"code", -32079}, {"message", cmd.error()}}}
         };
     }
 
@@ -739,12 +673,6 @@ nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
 }
 
 nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, uint8_t assignment_type, uint32_t target_id) {
-    if (!fn_engine_alloc_ || !fn_post_command_ || !assign_leader_cmd_vtable_) {
-        return {
-            {"error", {{"code", -32080}, {"message", "Native command dispatch functions not initialized"}}}
-        };
-    }
-
     void* leader = FindLeaderPtr(leader_id);
     if (!leader) {
         return {
@@ -756,35 +684,27 @@ nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, uint8_t assignmen
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[LEADER] Posting CAssignLeaderCommand (0x4076) for leader %u, type %u, target %u, tick %u...",
         leader_id, assignment_type, target_id, tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x38);
-    if (!cmd) {
+    namespace assign = sdk::cmd::assign_leader_command;
+    // `location` is a nested persistent the SDK does not expand yet. Layout from the engine
+    // factory (0xBE8A00): +0 u8 assignment type, +4 u32 slot kind (default 9), +8 u32 target.
+    constexpr std::ptrdiff_t kLocType = assign::location + 0x0;
+    constexpr std::ptrdiff_t kLocKind = assign::location + 0x4;
+    constexpr std::ptrdiff_t kLocTarget = assign::location + 0x8;
+    auto cmd = CommandBuilder::Get().Create(assign::kSpec);
+    cmd.Set<uint32_t>(assign::leader, leader_id)
+       .Set<uint8_t>(kLocType, assignment_type)
+       .Set<uint32_t>(kLocKind, (assignment_type == 8) ? 4u : 9u)
+       .Set<uint32_t>(kLocTarget, target_id);
+    if (!cmd.Post()) {
         return {
-            {"error", {{"code", -32082}, {"message", "Engine allocator returned null for CAssignLeaderCommand"}}}
-        };
-    }
-
-    memset(cmd, 0, 0x38);
-    *(void**)cmd = (void*)assign_leader_cmd_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint32_t*)((uintptr_t)cmd + 0x10) = 0xFFFF0000;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1;
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = leader_id;
-    *(uint8_t*)((uintptr_t)cmd + 0x24) = assignment_type;
-    *(uint32_t*)((uintptr_t)cmd + 0x28) = (assignment_type == 8) ? 4 : 9;
-    *(uint32_t*)((uintptr_t)cmd + 0x2C) = target_id;
-    *(uint8_t*)((uintptr_t)cmd + 0x34) = 1;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[LEADER] Exception occurred executing PostCommand for CAssignLeaderCommand!");
-        return {
-            {"error", {{"code", -32083}, {"message", "Exception occurred executing PostCommand for CAssignLeaderCommand"}}}
+            {"error", {{"code", -32083}, {"message", cmd.error()}}}
         };
     }
 
@@ -796,6 +716,39 @@ nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, uint8_t assignmen
         {"assignment_type", assignment_type},
         {"target_id", target_id},
         {"message", "Leader assigned successfully"}
+    };
+}
+
+nlohmann::json LeaderManager::SelectTrait(uint32_t leader_id, const std::string& trait_key) {
+    if (!FindLeaderPtr(leader_id)) {
+        return { {"error", {{"code", -32084}, {"message", "Leader ID " + std::to_string(leader_id) + " not found"}}} };
+    }
+    HiredLeaderDetail d = ReadLeader(leader_id);
+    auto offered = [&](const std::vector<LeaderTraitDetail>& v) {
+        return std::any_of(v.begin(), v.end(), [&](const LeaderTraitDetail& t) { return t.key == trait_key; });
+    };
+    if (!offered(d.trait_options) && !offered(d.trait_upgrade_options)) {
+        nlohmann::json opts = TraitsJson(d.trait_options);
+        for (auto& t : TraitsJson(d.trait_upgrade_options)) opts.push_back(t);
+        return { {"error", {{"code", -32085},
+                            {"message", "Trait '" + trait_key + "' is not currently offered to this leader"},
+                            {"offered", opts}}} };
+    }
+
+    namespace pick = sdk::cmd::add_trait_from_pool_command;
+    auto cmd = CommandBuilder::Get().Create(pick::kSpec);
+    cmd.Set<uint32_t>(pick::leader, leader_id)
+       .Set<uint32_t>(pick::country, GetPlayerCountryId())
+       .SetString(pick::trait, trait_key);
+    if (!cmd.Post()) {
+        return { {"error", {{"code", -32086}, {"message", cmd.error()}}} };
+    }
+    return {
+        {"success", true},
+        {"leader_id", leader_id},
+        {"trait_key", trait_key},
+        {"trait_name", LocalizeKey(trait_key)},
+        {"message", "Trait selection posted"}
     };
 }
 

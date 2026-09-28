@@ -1,4 +1,5 @@
 #include "ipc_server.hpp"
+#include "command_builder.hpp"
 #include "task_queue.hpp"
 #include "game_state.hpp"
 #include "commands.hpp"
@@ -20,6 +21,8 @@
 
 namespace bridge {
 
+static constexpr const wchar_t* kPipeName = L"\\\\.\\pipe\\stellaris_mcp_bridge";
+
 IPCServer& IPCServer::Get() {
     static IPCServer instance;
     return instance;
@@ -27,6 +30,14 @@ IPCServer& IPCServer::Get() {
 
 bool IPCServer::Start() {
     if (is_running_) return true;
+
+    // Refuse to share the pipe name: a stale game instance or a bridge that did not unload
+    // cleanly would otherwise receive a random share of the client connections.
+    if (WaitNamedPipeW(kPipeName, 1) || GetLastError() != ERROR_FILE_NOT_FOUND) {
+        LOG("[IPC_FATAL] Pipe stellaris_mcp_bridge is already served by another bridge "
+            "(another stellaris.exe, or a previous injection still loaded). Not starting.");
+        return false;
+    }
 
     is_running_ = true;
     worker_thread_ = std::thread(&IPCServer::WorkerLoop, this);
@@ -41,7 +52,7 @@ void IPCServer::Stop() {
 
     // Connect to the pipe locally to unblock ConnectNamedPipe
     HANDLE hDummy = CreateFileW(
-        L"\\\\.\\pipe\\stellaris_mcp_bridge",
+        kPipeName,
         GENERIC_READ | GENERIC_WRITE,
         0, nullptr, OPEN_EXISTING, 0, nullptr
     );
@@ -73,7 +84,11 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
 
     std::future<nlohmann::json> fut;
 
-    if (method == "get_status") {
+    if (method == "self_test_purecall_guard") {
+        fut = TaskQueue::Get().Enqueue([]() {
+            return CommandBuilder::Get().SelfTestPurecallGuard();
+        });
+    } else if (method == "get_status") {
         fut = TaskQueue::Get().Enqueue([]() {
             return GameState::Get().GetStatusJson();
         });
@@ -165,6 +180,11 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([]() {
             return GovernmentManager::Get().GetGovernmentJson();
         });
+    } else if (method == "set_council_agenda") {
+        std::string agenda_key = params.value("agenda_key", "");
+        fut = TaskQueue::Get().Enqueue([agenda_key]() {
+            return GovernmentManager::Get().SetCouncilAgenda(agenda_key);
+        });
     } else if (method == "launch_council_agenda") {
         fut = TaskQueue::Get().Enqueue([]() {
             return GovernmentManager::Get().LaunchCouncilAgenda();
@@ -201,6 +221,12 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         uint32_t leader_id = params.value("leader_id", 0);
         fut = TaskQueue::Get().Enqueue([leader_id]() {
             return LeaderManager::Get().DismissLeader(leader_id);
+        });
+    } else if (method == "select_leader_trait") {
+        uint32_t leader_id = params.value("leader_id", 0u);
+        std::string trait_key = params.value("trait_key", "");
+        fut = TaskQueue::Get().Enqueue([leader_id, trait_key]() {
+            return LeaderManager::Get().SelectTrait(leader_id, trait_key);
         });
     } else if (method == "assign_leader") {
         uint32_t leader_id = params.value("leader_id", 0);
@@ -299,7 +325,14 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         });
     } else if (method == "market_trade") {
         std::string resource = params.value("resource", "");
-        std::string action = params.value("action", "buy");
+        std::string action = params.value("action", "");
+        if (action.empty()) {
+            if (params.contains("is_buy")) {
+                action = params["is_buy"].get<bool>() ? "buy" : "sell";
+            } else {
+                action = "buy";
+            }
+        }
         uint32_t units = params.value("units", (uint32_t)params.value("amount", 0));
         fut = TaskQueue::Get().Enqueue([resource, action, units]() {
             std::string msg;
@@ -315,9 +348,10 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         double amount = params.value("amount", 0.0);
         double price_limit = params.value("price_limit", 0.0);
         bool cancel = params.value("cancel", false);
-        fut = TaskQueue::Get().Enqueue([resource, action, amount, price_limit, cancel]() {
+        int32_t order_id = params.value("order_id", -1);
+        fut = TaskQueue::Get().Enqueue([resource, action, amount, price_limit, cancel, order_id]() {
             std::string msg;
-            bool ok = MarketManager::Get().SetMonthlyTrade(resource, action, amount, price_limit, cancel, msg);
+            bool ok = MarketManager::Get().SetMonthlyTrade(resource, action, amount, price_limit, cancel, order_id, msg);
             return nlohmann::json{
                 {"success", ok},
                 {"message", msg}
@@ -454,6 +488,63 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([planet_id]() {
             return OutlinerManager::Get().AscendColonyJson(planet_id);
         });
+    } else if (method == "get_planet_jobs") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetPlanetJobsJson(planet_id);
+        });
+    } else if (method == "set_job_priority" || method == "prioritize_job") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string job_key = params.value("job_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, job_key]() {
+            return OutlinerManager::Get().SetJobPriorityJson(planet_id, job_key);
+        });
+    } else if (method == "set_job_workforce_limit") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string job_key = params.value("job_key", "");
+        int32_t limit = params.value("limit", -1);
+        fut = TaskQueue::Get().Enqueue([planet_id, job_key, limit]() {
+            return OutlinerManager::Get().SetJobWorkforceLimitJson(planet_id, job_key, limit);
+        });
+    } else if (method == "get_planet_armies") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().GetPlanetArmiesJson(planet_id);
+        });
+    } else if (method == "set_planet_army_settings") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::optional<bool> deploy_in_orbit;
+        if (params.contains("deploy_in_orbit") && !params["deploy_in_orbit"].is_null()) {
+            deploy_in_orbit = params["deploy_in_orbit"].get<bool>();
+        }
+        std::optional<bool> include_in_builder;
+        if (params.contains("include_in_builder") && !params["include_in_builder"].is_null()) {
+            include_in_builder = params["include_in_builder"].get<bool>();
+        }
+        fut = TaskQueue::Get().Enqueue([planet_id, deploy_in_orbit, include_in_builder]() {
+            return OutlinerManager::Get().SetPlanetArmySettingsJson(planet_id, deploy_in_orbit, include_in_builder);
+        });
+    } else if (method == "embark_all_armies") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id]() {
+            return OutlinerManager::Get().EmbarkAllArmiesJson(planet_id);
+        });
+    } else if (method == "disband_planet_army") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        uint32_t army_id = params.value("army_id", 0);
+        fut = TaskQueue::Get().Enqueue([planet_id, army_id]() {
+            return OutlinerManager::Get().DisbandArmyJson(planet_id, army_id);
+        });
+    } else if (method == "recruit_planet_army") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string army_key = params.value("army_key", "");
+        std::optional<uint32_t> species_id;
+        if (params.contains("species_id") && !params["species_id"].is_null()) {
+            species_id = params["species_id"].get<uint32_t>();
+        }
+        fut = TaskQueue::Get().Enqueue([planet_id, army_key, species_id]() {
+            return OutlinerManager::Get().RecruitArmyJson(planet_id, army_key, species_id);
+        });
     } else {
         return {
             {"jsonrpc", "2.0"},
@@ -495,7 +586,7 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
 }
 
 void IPCServer::WorkerLoop() {
-    const wchar_t* pipe_name = L"\\\\.\\pipe\\stellaris_mcp_bridge";
+    const wchar_t* pipe_name = kPipeName;
 
     while (is_running_) {
         pipe_handle_ = CreateNamedPipeW(

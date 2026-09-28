@@ -64,10 +64,10 @@ kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
 
 
-def find_stellaris_pid() -> int | None:
+def list_stellaris_pids() -> list[int]:
     h_snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if h_snapshot == -1:
-        return None
+        return []
 
     pe32 = PROCESSENTRY32W()
     pe32.dwSize = ctypes.sizeof(PROCESSENTRY32W)
@@ -81,7 +81,48 @@ def find_stellaris_pid() -> int | None:
                 break
 
     kernel32.CloseHandle(h_snapshot)
-    return pids[-1] if pids else None
+    return pids
+
+
+_user32 = ctypes.WinDLL("user32")
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+
+def pids_with_game_window() -> set[int]:
+    """PIDs owning a visible top-level window big enough to be the game (not a splash/stub)."""
+    found = set()
+
+    def cb(hwnd, _):
+        if _user32.IsWindowVisible(hwnd):
+            rect = wintypes.RECT()
+            _user32.GetClientRect(hwnd, ctypes.byref(rect))
+            if rect.right - rect.left > 400 and rect.bottom - rect.top > 300:
+                pid = wintypes.DWORD()
+                _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                found.add(pid.value)
+        return True
+
+    _user32.EnumWindows(_WNDENUMPROC(cb), 0)
+    return found
+
+
+def find_stellaris_pid() -> int | None:
+    """The one stellaris.exe that owns the game window.
+
+    A second launch while the game is running leaves the old instance alive without a window;
+    both would host a bridge on the same pipe name, so never guess between several processes.
+    """
+    pids = list_stellaris_pids()
+    if len(pids) <= 1:
+        return pids[0] if pids else None
+    windowed = [p for p in pids if p in pids_with_game_window()]
+    if len(windowed) == 1:
+        others = [p for p in pids if p != windowed[0]]
+        print(f"[!] Ignoring windowless stellaris.exe {others} (stale instance); using {windowed[0]}")
+        return windowed[0]
+    print(f"[-] {len(pids)} stellaris.exe processes {pids}, {len(windowed)} with a game window; "
+          "close the extra instances first")
+    return None
 
 
 class MODULEENTRY32W(ctypes.Structure):

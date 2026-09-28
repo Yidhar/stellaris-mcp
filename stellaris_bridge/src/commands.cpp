@@ -1,5 +1,6 @@
 #include "commands.hpp"
 #include "game_state.hpp"
+#include "common.hpp"
 
 namespace bridge {
 
@@ -52,27 +53,48 @@ bool Commands::Init(uintptr_t base_address) {
         fn_post_command_ = (FnPostCommand)scanned_pc;
         LOGF("[COMMANDS] PostCommand dynamically found at 0x%llX", (unsigned long long)scanned_pc);
     } else {
-        fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
-        LOGF("[COMMANDS] PostCommand falling back to static RVA 0x5F8590: 0x%llX", (unsigned long long)fn_post_command_);
+        fn_post_command_ = (FnPostCommand)(base_address_ + kRvaPostCommand);
+        LOGF("[COMMANDS] PostCommand falling back to static RVA 0x%llX: 0x%llX", (unsigned long long)kRvaPostCommand, (unsigned long long)fn_post_command_);
     }
 
-    fn_increase_speed_ = (FnCommandCtor)(base_address_ + 0x924990);
-    fn_decrease_speed_ = (FnCommandCtor)(base_address_ + 0x9249C0);
-    fn_operator_new_ = (FnOperatorNew)(base_address_ + 0x20208C8);
-    vt_pause_command_ = 0;
+    fn_set_paused_ = (FnSetPaused)(base_address_ + 0x9362D0);
+    fn_set_game_speed_ = (FnSetGameSpeed)(base_address_ + 0x935BE0);
 
-    LOGF("[COMMANDS] Target addresses initialized (Base: 0x%llX, vt_Pause: 0x%llX, IncSpeed: 0x%llX, DecSpeed: 0x%llX)",
+    LOGF("[COMMANDS] Target addresses initialized (Base: 0x%llX, SetPaused: 0x%llX, SetGameSpeed: 0x%llX)",
         (unsigned long long)base_address_,
-        (unsigned long long)vt_pause_command_,
-        (unsigned long long)fn_increase_speed_,
-        (unsigned long long)fn_decrease_speed_);
+        (unsigned long long)fn_set_paused_,
+        (unsigned long long)fn_set_game_speed_);
 
-    return fn_post_command_ != nullptr;
+    return fn_post_command_ != nullptr && fn_set_paused_ != nullptr && fn_set_game_speed_ != nullptr;
+}
+
+static bool CallNativeSetPaused(Commands::FnSetPaused fn, void* idler, void* data) {
+    if (!idler || !fn) return false;
+    __try {
+        void* timer = *(void**)((uintptr_t)idler + 0xf08);
+        if (!timer) return false;
+        fn(idler, data);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool CallNativeSetGameSpeed(Commands::FnSetGameSpeed fn, void* idler, int speed) {
+    if (!idler || !fn) return false;
+    __try {
+        void* timer = *(void**)((uintptr_t)idler + 0xf08);
+        if (!timer) return false;
+        fn(idler, speed);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 nlohmann::json Commands::SetPaused(bool paused) {
     auto status = GameState::Get().ReadStatus();
-    if (!status.in_game) {
+    if (!status.in_game || !GameState::Get().GetPlayerCountry()) {
         return {
             {"success", false},
             {"error", "Game is not currently loaded in an active session."}
@@ -87,26 +109,28 @@ nlohmann::json Commands::SetPaused(bool paused) {
         };
     }
 
-    // Call CInGameIdler::SetPaused directly on main thread (RVA 0x994170)
-    struct {
-        uint8_t pad0[0x10]{ 0 };
-        char str_buf[16]{ 0 };
-        uint64_t str_size{ 0 };
-        uint64_t str_cap{ 0xf };
-        uint8_t is_paused{ 1 };     // +0x30: 1 = paused, 0 = running
-        uint8_t is_auto_pause{ 1 }; // +0x31: 1 = bypass name check / unlock
-        uint8_t pad1[14]{ 0 };
+    struct SPauseGameSettings {
+        uint64_t pad0{ 0 };
+        uint64_t pad8{ 0 };
+        char* p_buf{ nullptr };      // +0x10: must point to inline_buf at +0x20
+        uint64_t length{ 0 };        // +0x18: 0
+        char inline_buf[16]{ 0 };    // +0x20: null-terminated empty string
+        uint8_t is_paused{ 1 };      // +0x30: 1 = paused, 0 = running
+        uint8_t override_flag{ 2 };  // +0x31: 2 = bypass lock
+        uint8_t pad32[14]{ 0 };
     } pause_data;
 
-    // Clausewitz idler convention: 1 = paused, 0 = running
+    pause_data.p_buf = pause_data.inline_buf;
     pause_data.is_paused = paused ? 1 : 0;
-    pause_data.is_auto_pause = 1;
-
-    using FnSetPaused = void(*)(void* idler, void* data);
-    auto fn_set_paused = (FnSetPaused)(base_address_ + 0x935FB0);
+    pause_data.override_flag = 2;
 
     LOGF("[COMMANDS] Calling native CInGameIdler::SetPaused(is_paused=%d)...", pause_data.is_paused);
-    fn_set_paused(idler, &pause_data);
+    if (!CallNativeSetPaused(fn_set_paused_, idler, &pause_data)) {
+        return {
+            {"success", false},
+            {"error", "Exception in native SetPaused"}
+        };
+    }
 
     return {
         {"success", true},
@@ -120,43 +144,36 @@ nlohmann::json Commands::SetSpeed(uint32_t target_speed) {
     }
 
     auto status = GameState::Get().ReadStatus();
-    if (!status.in_game) {
+    if (!status.in_game || !GameState::Get().GetPlayerCountry()) {
         return {
             {"success", false},
             {"error", "Game is not currently loaded in an active session."}
         };
     }
 
-    if (!fn_post_command_ || !fn_increase_speed_ || !fn_decrease_speed_) {
+    void* idler = GameState::Get().GetInGameIdler();
+    if (!idler) {
         return {
             {"success", false},
-            {"error", "Speed command addresses not initialized."}
+            {"error", "InGameIdler not available."}
+        };
+    }
+
+    if (!fn_set_game_speed_) {
+        return {
+            {"success", false},
+            {"error", "SetGameSpeed function not initialized."}
         };
     }
 
     uint32_t cur_speed = status.speed;
-    LOGF("[COMMANDS] Setting speed: current=%u, target=%u", cur_speed, target_speed);
+    LOGF("[COMMANDS] Calling native CInGameIdler::SetGameSpeed: current=%u, target=%u", cur_speed, target_speed);
 
-    if (target_speed > cur_speed) {
-        uint32_t steps = target_speed - cur_speed;
-        for (uint32_t i = 0; i < steps; ++i) {
-            void* mem = fn_operator_new_ ? fn_operator_new_(0x20) : malloc(0x20);
-            if (mem) {
-                memset(mem, 0, 0x20);
-                fn_increase_speed_(mem);
-                fn_post_command_(mem, false);
-            }
-        }
-    } else if (target_speed < cur_speed) {
-        uint32_t steps = cur_speed - target_speed;
-        for (uint32_t i = 0; i < steps; ++i) {
-            void* mem = fn_operator_new_ ? fn_operator_new_(0x20) : malloc(0x20);
-            if (mem) {
-                memset(mem, 0, 0x20);
-                fn_decrease_speed_(mem);
-                fn_post_command_(mem, false);
-            }
-        }
+    if (!CallNativeSetGameSpeed(fn_set_game_speed_, idler, (int)target_speed)) {
+        return {
+            {"success", false},
+            {"error", "Exception in native SetGameSpeed"}
+        };
     }
 
     return {

@@ -64,11 +64,7 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    using FnEngineAlloc = void* (*)(size_t size);
-    using FnPostCommand = void (*)(void* pCmd, int flag);
 
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnPostCommand fn_post_command_{ nullptr };
 };
 
 } // namespace bridge

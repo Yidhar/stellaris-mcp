@@ -1,4 +1,5 @@
 #include "government_manager.hpp"
+#include "command_builder.hpp"
 #include <cstring>
 #include <cmath>
 
@@ -91,43 +92,14 @@ static bool SafeReadPdxString(const void* pdx_str_addr, std::string& out) {
     return false;
 }
 
-static bool SafeLocalizeCall(GovernmentManager::FnLocalize fn_localize,
-                             GovernmentManager::FnFreePdxStr fn_free_pdx,
-                             const RawPdxString* in_key,
-                             RawPdxString* out_str) {
+// CCouncilAgenda::GetCost(CCountry const*, CString*) const: the cost scales with empire size and
+// modifiers, so ask the engine (sdk::fn, located by fingerprint). Main thread only.
+static bool SafeAgendaCost(uintptr_t fn, void* agenda, void* country, int64_t* out_cost) {
+    using FnGetCost = int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason);
     __try {
-        fn_localize(out_str, in_key);
+        ((FnGetCost)fn)(agenda, out_cost, country, nullptr);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(GovernmentManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
-    __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
-static bool SafePostCommand(GovernmentManager::FnPostCommand fn_post, void* cmd) {
-    __try {
-        fn_post(cmd, 1);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeGetAgendaCost(GovernmentManager::FnGetAgendaCost fn_cost, void* agenda, int64_t* out_cost, void* country) {
-    if (!fn_cost || !agenda || !country || !out_cost) return false;
-    __try {
-        fn_cost(agenda, out_cost, country, nullptr);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *out_cost = 0;
         return false;
     }
 }
@@ -140,27 +112,19 @@ GovernmentManager& GovernmentManager::Get() {
 bool GovernmentManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_get_agenda_cost_ = (FnGetAgendaCost)(base_address_ + 0x4AC160);
+    LOGF("[GOVERNMENT] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
 
-    finish_agenda_cmd_vtable_ = base_address_ + 0x2393B20;
-
-    LOGF("[GOVERNMENT] Initialized (Base: 0x%llX, CmdVT: 0x%llX, CostFn: 0x%llX)",
-        (unsigned long long)base_address_,
-        (unsigned long long)finish_agenda_cmd_vtable_,
-        (unsigned long long)fn_get_agenda_cost_);
-
-    return fn_engine_alloc_ != nullptr && fn_post_command_ != nullptr && fn_get_agenda_cost_ != nullptr;
+    return true;
 }
 
 void* GovernmentManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -185,47 +149,14 @@ uint32_t GovernmentManager::GetPlayerCountryId() {
 }
 
 std::string GovernmentManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 void* GovernmentManager::FindLeaderPtr(uint32_t leader_id) {
     if (!base_address_ || leader_id == 0 || leader_id == 0xFFFFFFFF) return nullptr;
 
     void* leader_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113120), &leader_mgr) || !leader_mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3114120), &leader_mgr) || !leader_mgr) {
         return nullptr;
     }
 
@@ -263,31 +194,23 @@ void* GovernmentManager::FindLeaderPtr(uint32_t leader_id) {
 }
 
 LeaderDetail GovernmentManager::ReadLeader(uint32_t leader_id) {
-    LeaderDetail detail{};
-    detail.id = leader_id;
-
-    void* leader = FindLeaderPtr(leader_id);
-    if (!leader) return detail;
-
-    SafeReadPdxString((const void*)((uintptr_t)leader + 0x50), detail.key);
-    detail.name = LocalizeKey(detail.key);
-
-    void* class_ptr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0xE0), &class_ptr) && class_ptr) {
-        SafeReadPdxString((const void*)((uintptr_t)class_ptr + 0x20), detail.class_key);
-        detail.class_name = LocalizeKey(detail.class_key);
-    }
-
-    SafeReadU32((const void*)((uintptr_t)leader + 0xD0), &detail.level);
-    SafeReadU32((const void*)((uintptr_t)leader + 0x108), &detail.age);
-
-    void* ethic_ptr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0x6D8), &ethic_ptr) && ethic_ptr) {
-        SafeReadPdxString((const void*)((uintptr_t)ethic_ptr + 0x20), detail.ethic_key);
-        detail.ethic_name = LocalizeKey(detail.ethic_key);
-    }
-
-    return detail;
+    // LeaderManager owns the CLeader layout; reuse it instead of a second copy of the offsets.
+    HiredLeaderDetail h = LeaderManager::Get().ReadLeader(leader_id);
+    LeaderDetail d{};
+    d.id = leader_id;
+    d.key = h.key;
+    d.name = h.name.empty() ? h.key : h.name;
+    d.class_key = h.class_key;
+    d.class_name = h.class_name;
+    d.level = h.level;
+    d.age = h.age;
+    d.ethic_key = h.ethic_key;
+    d.ethic_name = h.ethic_name;
+    d.traits = h.traits;
+    d.trait_selections_available = h.trait_selections_available;
+    d.trait_options = h.trait_options;
+    d.trait_upgrade_options = h.trait_upgrade_options;
+    return d;
 }
 
 CouncilSummary GovernmentManager::GetSummary() {
@@ -314,16 +237,17 @@ CouncilSummary GovernmentManager::GetSummary() {
         void* agenda = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)council + 0x60), &agenda) && agenda) {
             SafeReadPdxString((const void*)((uintptr_t)agenda + 0x20), summary.active_agenda);
-            summary.active_agenda_name = LocalizeKey(summary.active_agenda);
+            summary.active_agenda_name = AgendaName(summary.active_agenda);
 
             int64_t raw_progress = 0;
             SafeReadI64((const void*)((uintptr_t)council + 0x68), &raw_progress);
             summary.agenda_progress = std::round((double)raw_progress / 1000.0) / 100.0;
 
             int64_t raw_cost = 0;
-            SafeGetAgendaCost(fn_get_agenda_cost_, agenda, &raw_cost, country);
-            summary.agenda_cost = std::round((double)raw_cost / 1000.0) / 100.0;
-            summary.agenda_ready = (raw_cost > 0 && raw_progress >= raw_cost);
+            if (SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda, country, &raw_cost) && raw_cost > 0) {
+                summary.agenda_cost = std::round((double)raw_cost / 1000.0) / 100.0;
+                summary.agenda_ready = raw_progress >= raw_cost;
+            }
         }
     }
 
@@ -415,57 +339,62 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
         void* agenda_ptr = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)council + 0x60), &agenda_ptr) && agenda_ptr) {
             SafeReadPdxString((const void*)((uintptr_t)agenda_ptr + 0x20), state.agenda.key);
-            state.agenda.name = LocalizeKey(state.agenda.key);
+            state.agenda.name = AgendaName(state.agenda.key);
 
             int64_t raw_progress = 0;
             SafeReadI64((const void*)((uintptr_t)council + 0x68), &raw_progress);
             state.agenda.progress = std::round((double)raw_progress / 1000.0) / 100.0;
 
             int64_t raw_cost = 0;
-            SafeGetAgendaCost(fn_get_agenda_cost_, agenda_ptr, &raw_cost, country);
-            state.agenda.cost = std::round((double)raw_cost / 1000.0) / 100.0;
-            state.agenda.is_ready = (raw_cost > 0 && raw_progress >= raw_cost);
+            if (SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda_ptr, country, &raw_cost) && raw_cost > 0) {
+                state.agenda.cost = std::round((double)raw_cost / 1000.0) / 100.0;
+                state.agenda.is_ready = raw_progress >= raw_cost;
+            }
         }
     }
 
-    // 4. Council Seats (+0x0AA0)
-    void* seats_arr = nullptr;
-    uint32_t seats_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x0AA0), &seats_arr) && seats_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x0AAC), &seats_cnt) && seats_cnt > 0) {
-        for (uint32_t i = 0; i < seats_cnt && i < 16; ++i) {
-            void* seat_ptr = nullptr;
-            if (!SafeReadPtr((const void*)((uintptr_t)seats_arr + i * 0x20), &seat_ptr) || !seat_ptr) {
-                continue;
-            }
+    // 4. Council seats: the ruler, then every CCouncilPosition owned by the player
+    //    (sdk::db::CCouncilPosition; country / leader / type per sdk::ent::CCouncilPosition).
+    {
+        CouncilSeatDetail ruler_seat{};
+        ruler_seat.seat_index = 0;
+        ruler_seat.position_key = "ruler";
+        ruler_seat.position_name = LocalizeKey("RULER");
+        ruler_seat.is_ruler = true;
+        ruler_seat.is_assigned = ruler_id != 0xFFFFFFFF;
+        ruler_seat.leader = state.ruler;
+        state.seats.push_back(ruler_seat);
 
-            CouncilSeatDetail seat{};
-            seat.seat_index = i;
-
-            void* pos_type = nullptr;
-            if (SafeReadPtr((const void*)((uintptr_t)seat_ptr + 0xA0), &pos_type) && pos_type) {
-                SafeReadPdxString((const void*)((uintptr_t)pos_type + 0x20), seat.position_key);
-                seat.position_name = LocalizeKey(seat.position_key);
-            }
-
-            if (i == 0 || seat.position_key.find("ruler") != std::string::npos) {
-                seat.is_ruler = true;
-                seat.is_assigned = true;
-                seat.leader = state.ruler;
-            } else {
-                seat.is_ruler = false;
-                uint32_t assigned_id = 0xFFFFFFFF;
-                SafeReadU32((const void*)((uintptr_t)seat_ptr + 0xAC), &assigned_id);
-                if (assigned_id != 0xFFFFFFFF && assigned_id != 0) {
-                    seat.is_assigned = true;
-                    seat.leader = ReadLeader(assigned_id);
-                } else {
-                    seat.is_assigned = false;
+        namespace P = sdk::ent::CCouncilPosition;
+        const uint32_t country_id = GetPlayerCountryId();
+        void* db = nullptr;
+        void* slots = nullptr;
+        uint32_t capacity = 0;
+        if (SafeReadPtr((const void*)(base_address_ + sdk::db::CCouncilPosition), &db) && db &&
+            SafeReadPtr((const void*)((uintptr_t)db + 0x18), &slots) && slots &&
+            SafeReadU32((const void*)((uintptr_t)db + 0x20), &capacity)) {
+            for (uint32_t i = 0; i < capacity && i < 65536; ++i) {
+                void* pos = nullptr;
+                uint32_t owner = 0xFFFFFFFF;
+                if (!SafeReadPtr((const void*)((uintptr_t)slots + i * 16 + 8), &pos) || !pos ||
+                    !SafeReadU32((const void*)((uintptr_t)pos + P::country), &owner) || owner != country_id) {
+                    continue;
                 }
+                CouncilSeatDetail seat{};
+                seat.seat_index = (uint32_t)state.seats.size();
+                void* type = nullptr;
+                if (SafeReadPtr((const void*)((uintptr_t)pos + P::type), &type) && type) {
+                    SafeReadPdxString((const void*)((uintptr_t)type + 0x20), seat.position_key);
+                    seat.position_name = LocalizeKey(seat.position_key);
+                }
+                uint32_t leader_id = 0xFFFFFFFF;
+                SafeReadU32((const void*)((uintptr_t)pos + P::leader), &leader_id);
+                seat.is_assigned = leader_id != 0xFFFFFFFF;  // 0 is a valid leader id
+                if (seat.is_assigned) seat.leader = ReadLeader(leader_id);
+                state.seats.push_back(seat);
             }
-
-            state.seats.push_back(seat);
         }
+        state.summary.councilor_count = (uint32_t)state.seats.size();
     }
 
     return state;
@@ -502,7 +431,11 @@ nlohmann::json GovernmentManager::GetGovernmentJson() {
                 {"level", seat.leader.level},
                 {"age", seat.leader.age},
                 {"ethic_key", seat.leader.ethic_key},
-                {"ethic_name", seat.leader.ethic_name}
+                {"ethic_name", seat.leader.ethic_name},
+                {"traits", TraitsJson(seat.leader.traits)},
+                {"trait_selections_available", seat.leader.trait_selections_available},
+                {"trait_options", TraitsJson(seat.leader.trait_options)},
+                {"trait_upgrade_options", TraitsJson(seat.leader.trait_upgrade_options)}
             };
         } else {
             sj["leader"] = nullptr;
@@ -545,6 +478,7 @@ nlohmann::json GovernmentManager::GetGovernmentJson() {
             {"cost", s.agenda.cost},
             {"is_ready", s.agenda.is_ready}
         }},
+        {"available_agendas", AvailableAgendasJson()},
         {"council_seats", seats_json}
     };
 }
@@ -580,56 +514,25 @@ nlohmann::json GovernmentManager::LaunchCouncilAgenda() {
         };
     }
 
-    if (!fn_engine_alloc_ || !fn_post_command_ || !finish_agenda_cmd_vtable_) {
-        return {
-            {"error", {
-                {"code", -32064},
-                {"message", "Native command dispatch functions not initialized"}
-            }}
-        };
-    }
-
     uint32_t target_country_id = GetPlayerCountryId();
 
-    // Read tick timestamp from date manager (+0xC0)
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[GOVERNMENT] Posting CFinishAgendaCommand for country %u, agenda '%s', tick %u...",
         target_country_id, summary.active_agenda.c_str(), tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x28);
-    if (!cmd) {
-        return {
-            {"error", {
-                {"code", -32065},
-                {"message", "Engine allocator returned null for CFinishAgendaCommand"}
-            }}
-        };
-    }
-
-    memset(cmd, 0, 0x28);
-    *(void**)cmd = (void*)finish_agenda_cmd_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint32_t*)((uintptr_t)cmd + 0x0C) = 0;
-    *(uint16_t*)((uintptr_t)cmd + 0x10) = 0xFFFF;
-    *(uint16_t*)((uintptr_t)cmd + 0x12) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1; // satisfies IsValid()
-    *(uint8_t*)((uintptr_t)cmd + 0x15) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x18) = 0;
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = target_country_id;
-    *(uint32_t*)((uintptr_t)cmd + 0x24) = 0;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[GOVERNMENT] Exception occurred executing PostCommand for CFinishAgendaCommand!");
+    namespace finish = sdk::cmd::finish_agenda_command;
+    auto cmd = CommandBuilder::Get().Create(finish::kSpec);
+    cmd.Set<uint32_t>(finish::country, target_country_id);
+    if (!cmd.Post()) {
         return {
             {"error", {
                 {"code", -32066},
-                {"message", "Exception occurred executing PostCommand for CFinishAgendaCommand"}
+                {"message", cmd.error()}
             }}
         };
     }
@@ -642,6 +545,65 @@ nlohmann::json GovernmentManager::LaunchCouncilAgenda() {
         {"agenda_name", summary.active_agenda_name},
         {"message", "Council agenda launched successfully"}
     };
+}
+
+nlohmann::json GovernmentManager::AvailableAgendasJson() {
+    // Agendas the engine would accept right now: every definition in
+    // TGameDatabase<CCouncilAgendaDatabase> (pointer array at +0x50, count at +0x5C, key
+    // std::string at +0x20) checked with CSetCouncilAgendaCommand's own IsValid.
+    nlohmann::json out = nlohmann::json::array();
+    void* db = nullptr;
+    void* items = nullptr;
+    uint32_t count = 0;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CCouncilAgendaDatabase_pInstance), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &items) || !items ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &count)) {
+        return out;
+    }
+    namespace set = sdk::cmd::set_council_agenda_command;
+    const uint32_t country_id = GetPlayerCountryId();
+    for (uint32_t i = 0; i < count && i < 512; ++i) {
+        void* agenda = nullptr;
+        std::string key;
+        if (!SafeReadPtr((const void*)((uintptr_t)items + i * 8), &agenda) || !agenda ||
+            !SafeReadPdxString((const void*)((uintptr_t)agenda + 0x20), key) || key.empty()) {
+            continue;
+        }
+        auto probe = CommandBuilder::Get().Create(set::kSpec);
+        probe.SetString(set::name, key).Set<uint32_t>(set::country, country_id);
+        std::string why;
+        bool can_set = probe.IsValid(&why);
+        if (can_set) {  // only what can be chosen now; the database holds ~90 definitions
+            out.push_back({ {"key", key}, {"name", AgendaName(key)} });
+        }
+    }
+    return out;
+}
+
+nlohmann::json GovernmentManager::SetCouncilAgenda(const std::string& agenda_key) {
+    if (agenda_key.empty()) {
+        return { {"error", {{"code", -32067}, {"message", "agenda_key must not be empty"}}} };
+    }
+    namespace set = sdk::cmd::set_council_agenda_command;
+    auto cmd = CommandBuilder::Get().Create(set::kSpec);
+    cmd.SetString(set::name, agenda_key).Set<uint32_t>(set::country, GetPlayerCountryId());
+    if (!cmd.Post()) {
+        return { {"error", {{"code", -32068}, {"message", cmd.error()}}} };
+    }
+    return {
+        {"success", true},
+        {"agenda_key", agenda_key},
+        {"agenda_name", AgendaName(agenda_key)},
+        {"message", "Council agenda set"}
+    };
+}
+
+std::string GovernmentManager::AgendaName(const std::string& key) {
+    // localisation/*: council_agenda_<key>_name
+    if (key.empty()) return key;
+    std::string loc_key = "council_agenda_" + key + "_name";
+    std::string name = LocalizeKey(loc_key);
+    return name == loc_key ? key : name;
 }
 
 } // namespace bridge

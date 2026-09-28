@@ -1,4 +1,6 @@
 #include "market_manager.hpp"
+#include "command_builder.hpp"
+#include "game_state.hpp"
 #include <windows.h>
 #include <cstring>
 #include <algorithm>
@@ -113,8 +115,6 @@ bool MarketManager::Init(uintptr_t base_address) {
 
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
 
     return true;
 }
@@ -123,7 +123,10 @@ void* MarketManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -138,47 +141,17 @@ void* MarketManager::GetPlayerCountry() {
 }
 
 std::string MarketManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 void* MarketManager::FindStrategicResource(const std::string& resource_key) {
     if (!base_address_) return nullptr;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3150E78), &res_db) || !res_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+        return nullptr;
+    }
+    if (!res_db || (uintptr_t)res_db < 0x10000) {
         return nullptr;
     }
 
@@ -254,7 +227,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
 
     // Check idler for CMarketView if present
     void* idler = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113180), &idler);
+    SafeReadPtr((const void*)(base_address_ + 0x3114180), &idler);
     if (idler) {
         void* mview = nullptr;
         SafeReadPtr((const void*)((uintptr_t)idler + 0xDC0), &mview);
@@ -267,7 +240,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
     }
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3150E78), &res_db) || !res_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return { {"error", "Resource database not found"} };
     }
 
@@ -349,22 +322,81 @@ nlohmann::json MarketManager::GetMarketInfo() {
         });
     }
 
+    nlohmann::json monthly = ReadMonthlyTrades(GameState::Get().GetPlayerCountryId());
     return {
         {"is_galactic_market", is_galactic_market},
         {"market_fee_percent", market_fee * 100.0},
         {"settlement_currency", "trade"},
         {"tradable_resources_count", res_list.size()},
         {"resources", res_list},
-        {"active_monthly_trades_count", 0},
-        {"monthly_trades", nlohmann::json::array()}
+        {"active_monthly_trades_count", monthly.size()},
+        {"monthly_trades", monthly}
     };
+}
+
+std::vector<MarketManager::MonthlyOrder> MarketManager::ReadMonthlyOrders(uint32_t country_id) {
+    std::vector<MonthlyOrder> out;
+
+    // CGameState::AccessMarket(): the market lives at g_CurrentGameState + 0xAF0
+    // (CAddMonthlyTradeCommand::Execute, 0x1D11B30). Not a serialized member, so not in the SDK.
+    constexpr std::ptrdiff_t kGameStateMarket = 0xAF0;
+    // CPdxArray<SMonthlyTradeData>: data at CMarket::monthly_trades, count 0xC further; 0x30-byte items.
+    constexpr std::ptrdiff_t kItemSize = 0x30;
+    namespace m = sdk::ent::SMonthlyTradeData;
+    namespace t = sdk::ent::STradeData;
+
+    void* game_state = nullptr;
+    void* market = nullptr;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &game_state) || !game_state ||
+        !SafeReadPtr((const void*)((uintptr_t)game_state + kGameStateMarket), &market) || !market) {
+        return out;
+    }
+    void* items = nullptr;
+    uint32_t count = 0;
+    SafeReadPtr((const void*)((uintptr_t)market + sdk::ent::CMarket::monthly_trades), &items);
+    SafeReadU32((const void*)((uintptr_t)market + sdk::ent::CMarket::monthly_trades + 0xC), &count);
+    if (!items || count > 4096) {
+        return out;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uintptr_t item = (uintptr_t)items + i * kItemSize;
+        uintptr_t trade = item + m::trade_data;
+        MonthlyOrder o;
+        SafeReadU32((const void*)(trade + t::country), &o.country);
+        if (o.country != country_id) continue;
+        SafeReadPtr((const void*)(trade + t::resource), &o.resource);
+        SafeReadU32((const void*)(trade + t::trade_type), &o.type);
+        SafeReadU32((const void*)(item + m::amount), (uint32_t*)&o.amount);
+        SafeReadU32((const void*)(item + m::price), (uint32_t*)&o.price);
+        SafeReadU32((const void*)(item + m::id), (uint32_t*)&o.id);
+        out.push_back(o);
+    }
+    return out;
+}
+
+nlohmann::json MarketManager::ReadMonthlyTrades(uint32_t country_id) {
+    nlohmann::json out = nlohmann::json::array();
+    for (const auto& o : ReadMonthlyOrders(country_id)) {
+        std::string key;
+        if (o.resource) SafeReadPdxString((const void*)((uintptr_t)o.resource + 0x30), key);
+        out.push_back({
+            {"order_id", o.id},
+            {"resource", key},
+            {"localized_name", key.empty() ? key : LocalizeKey(key)},
+            {"action", o.type == 0 ? "buy" : o.type == 1 ? "sell" : "unknown"},
+            {"amount", o.amount},
+            {"max_unit_price", o.price}  // plain trade value; 0 = no limit
+        });
+    }
+    return out;
 }
 
 nlohmann::json MarketManager::GetSummaryJson() {
     double market_fee = 0.30;
     bool is_galactic_market = false;
     void* idler = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113180), &idler) && idler) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3114180), &idler) && idler) {
         void* mview = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)idler + 0xDC0), &mview) && mview) {
             uint8_t gm_flag = 0;
@@ -395,11 +427,6 @@ nlohmann::json MarketManager::GetSummaryJson() {
 
 bool MarketManager::ExecuteInstantTrade(const std::string& resource_key, const std::string& action,
                                         uint32_t units, std::string& out_message) {
-    if (!fn_engine_alloc_ || !fn_post_command_) {
-        out_message = "Engine functions not initialized";
-        return false;
-    }
-
     void* country = GetPlayerCountry();
     if (!country) {
         out_message = "Player country not found";
@@ -438,31 +465,21 @@ bool MarketManager::ExecuteInstantTrade(const std::string& resource_key, const s
         return false;
     }
 
-    // Allocate 0x40 bytes for CMarketBuyResourceCommand / CMarketSellResourceCommand
-    void* pCmd = fn_engine_alloc_(0x40);
-    if (!pCmd) {
-        out_message = "Engine memory allocation failed";
+    namespace buy = sdk::cmd::market_buy_resource_command;
+    namespace sell = sdk::cmd::market_sell_resource_command;
+    namespace trade = sdk::ent::STradeData;
+    static_assert(buy::trade_data == sell::trade_data && buy::multiplier == sell::multiplier,
+                  "market buy/sell commands are expected to share one payload layout");
+    // The factory already constructed the embedded STradeData (vtable + defaults).
+    auto cmd = CommandBuilder::Get().Create(is_buy ? buy::kSpec : sell::kSpec);
+    cmd.Set<void*>(buy::trade_data + trade::resource, res_ptr)
+       .Set<uint32_t>(buy::trade_data + trade::trade_type, is_buy ? 0u : 1u)
+       .Set<uint32_t>(buy::trade_data + trade::country, GameState::Get().GetPlayerCountryId())
+       .Set<uint32_t>(buy::multiplier, batches);
+    if (!cmd.Post()) {
+        out_message = cmd.error();
         return false;
     }
-
-    memset(pCmd, 0, 0x40);
-
-    // Vtable selection
-    uintptr_t vt = is_buy ? (base_address_ + 0x245BD60) : (base_address_ + 0x23C9128);
-    uintptr_t vt_trade_data = base_address_ + 0x2334838;
-
-    *(uintptr_t*)pCmd = vt;
-    *(uint32_t*)((uintptr_t)pCmd + 0x08) = 0; // player country
-    *(uint32_t*)((uintptr_t)pCmd + 0x10) = 0xFFFF0000;
-
-    // STradeData payload
-    *(uintptr_t*)((uintptr_t)pCmd + 0x20) = vt_trade_data;
-    *(void**)((uintptr_t)pCmd + 0x28) = res_ptr;
-    *(uint32_t*)((uintptr_t)pCmd + 0x30) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x34) = 0; // country ref
-    *(uint32_t*)((uintptr_t)pCmd + 0x38) = batches; // batch multiplier
-
-    fn_post_command_(pCmd, 0);
 
     out_message = (is_buy ? "Successfully purchased " : "Successfully sold ") +
                   std::to_string(actual_units) + " units (" + std::to_string(batches) + " batches) of " + resource_key;
@@ -470,57 +487,68 @@ bool MarketManager::ExecuteInstantTrade(const std::string& resource_key, const s
 }
 
 bool MarketManager::SetMonthlyTrade(const std::string& resource_key, const std::string& action,
-                                    double amount, double price_limit, bool cancel, std::string& out_message) {
-    if (!fn_engine_alloc_ || !fn_post_command_) {
-        out_message = "Engine functions not initialized";
+                                    double amount, double price_limit, bool cancel, int32_t order_id,
+                                    std::string& out_message) {
+    if (cancel && order_id < 0) {
+        out_message = "cancel requires order_id (the monthly trade order to remove)";
         return false;
     }
-
-    void* res_ptr = FindStrategicResource(resource_key);
-    if (!res_ptr) {
-        out_message = "Resource '" + resource_key + "' not found in tradable database";
-        return false;
+    void* res_ptr = nullptr;
+    if (!cancel) {  // a cancel is fully described by order_id
+        res_ptr = FindStrategicResource(resource_key);
+        if (!res_ptr) {
+            out_message = "Resource '" + resource_key + "' not found in tradable database";
+            return false;
+        }
     }
 
     std::string act = action;
     std::transform(act.begin(), act.end(), act.begin(), ::tolower);
     bool is_buy = (act == "buy" || act == "purchase");
 
-    // Size 0x50 bytes for CAddMonthlyTradeCommand / CRemoveMonthlyTradeCommand
-    void* pCmd = fn_engine_alloc_(0x50);
-    if (!pCmd) {
-        out_message = "Engine memory allocation failed";
+    namespace add = sdk::cmd::add_monthly_trade_command;
+    namespace remove = sdk::cmd::remove_monthly_trade_command;
+    namespace monthly = sdk::ent::SMonthlyTradeData;
+    namespace trade = sdk::ent::STradeData;
+    static_assert(add::monthly_trade_data == remove::monthly_trade_data,
+                  "add/remove monthly trade commands are expected to share one payload layout");
+    constexpr std::ptrdiff_t kMonthly = add::monthly_trade_data;
+    constexpr std::ptrdiff_t kTrade = kMonthly + monthly::trade_data;
+    const uint32_t country_id = GameState::Get().GetPlayerCountryId();
+
+    MonthlyOrder order;
+    if (cancel) {
+        // CMarket::RemoveMonthlyTrade only removes an order whose resource, type, amount, price
+        // and id all match, so copy the live order instead of trusting the caller's arguments.
+        auto orders = ReadMonthlyOrders(country_id);
+        auto it = std::find_if(orders.begin(), orders.end(), [&](const MonthlyOrder& o) { return o.id == order_id; });
+        if (it == orders.end()) {
+            out_message = "No monthly trade order with id " + std::to_string(order_id);
+            return false;
+        }
+        order = *it;
+    } else {
+        order.resource = res_ptr;
+        order.type = is_buy ? 0u : 1u;
+        order.amount = (int32_t)amount;
+        order.price = (int32_t)price_limit;  // max unit price, plain trade value
+        order.id = -1;                       // new order; the engine assigns the id
+    }
+
+    auto cmd = CommandBuilder::Get().Create(cancel ? remove::kSpec : add::kSpec);
+    cmd.Set<void*>(kTrade + trade::resource, order.resource)
+       .Set<uint32_t>(kTrade + trade::trade_type, order.type)
+       .Set<uint32_t>(kTrade + trade::country, country_id)
+       .Set<int32_t>(kMonthly + monthly::amount, order.amount)
+       .Set<int32_t>(kMonthly + monthly::price, order.price)
+       .Set<int32_t>(kMonthly + monthly::id, order.id);
+    if (!cmd.Post()) {
+        out_message = cmd.error();
         return false;
     }
 
-    memset(pCmd, 0, 0x50);
-
-    uintptr_t vt = cancel ? (base_address_ + 0x2418BA0) : (base_address_ + 0x2418C58);
-    uintptr_t vt_monthly_1 = base_address_ + 0x2334800;
-    uintptr_t vt_monthly_2 = base_address_ + 0x2334838;
-
-    *(uintptr_t*)pCmd = vt;
-    *(uint32_t*)((uintptr_t)pCmd + 0x08) = 0xFFFFFFFF;
-    *(uint32_t*)((uintptr_t)pCmd + 0x0C) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x10) = 0xFFFF0000;
-    *(uint16_t*)((uintptr_t)pCmd + 0x14) = 0;
-    *(uint8_t*)((uintptr_t)pCmd + 0x16) = 0;
-    *(uint32_t*)((uintptr_t)pCmd + 0x18) = 0;
-
-    // SMonthlyTradeData at +0x20
-    *(uintptr_t*)((uintptr_t)pCmd + 0x20) = vt_monthly_1;
-    *(uintptr_t*)((uintptr_t)pCmd + 0x28) = vt_monthly_2;
-    *(void**)((uintptr_t)pCmd + 0x30) = res_ptr;
-    *(uint32_t*)((uintptr_t)pCmd + 0x38) = is_buy ? 0 : 1; // 0=buy, 1=sell
-    *(uint32_t*)((uintptr_t)pCmd + 0x3C) = 0; // country id 0
-    *(uint32_t*)((uintptr_t)pCmd + 0x40) = (uint32_t)amount; // amount (integer)
-    *(uint32_t*)((uintptr_t)pCmd + 0x44) = (uint32_t)(price_limit * 100000.0); // price limit fixed point
-    *(uint32_t*)((uintptr_t)pCmd + 0x48) = price_limit > 0.0 ? 1 : 0; // has price limit flag
-
-    fn_post_command_(pCmd, 0);
-
     if (cancel) {
-        out_message = "Successfully removed monthly trade order for " + resource_key;
+        out_message = "Successfully removed monthly trade order " + std::to_string(order_id);
     } else {
         out_message = "Successfully created monthly " + act + " order of " +
                       std::to_string((int)amount) + " " + resource_key;

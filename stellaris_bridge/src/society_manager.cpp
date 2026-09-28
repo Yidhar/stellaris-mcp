@@ -1,5 +1,6 @@
 #include "society_manager.hpp"
 #include "alert_manager.hpp"
+#include "command_builder.hpp"
 #include <cstring>
 #include <cmath>
 
@@ -113,15 +114,6 @@ static void SafeFreePdxStr(SocietyManager::FnFreePdxStr fn_free_pdx, RawPdxStrin
     }
 }
 
-static bool SafePostCommand(SocietyManager::FnPostCommand fn_post, void* cmd) {
-    __try {
-        fn_post(cmd, 1);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 SocietyManager& SocietyManager::Get() {
     static SocietyManager instance;
     return instance;
@@ -130,32 +122,24 @@ SocietyManager& SocietyManager::Get() {
 bool SocietyManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + 0x20208C8);
-    fn_post_command_ = (FnPostCommand)(base_address_ + 0x5F8590);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
 
-    // True Command Vtables discovered via reverse engineering
-    activate_tradition_cmd_vtable_ = base_address_ + 0x23429D0;
-    add_edict_cmd_vtable_ = base_address_ + 0x2393228;
-    remove_edict_cmd_vtable_ = base_address_ + 0x2393398;
-
-    LOGF("[SOCIETY] Initialized (Base: 0x%llX, ActTradVT: 0x%llX, AddEdictVT: 0x%llX, RemEdictVT: 0x%llX)",
-        (unsigned long long)base_address_,
-        (unsigned long long)activate_tradition_cmd_vtable_,
-        (unsigned long long)add_edict_cmd_vtable_,
-        (unsigned long long)remove_edict_cmd_vtable_);
+    LOGF("[SOCIETY] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
 
     RefreshTraditionCache();
 
-    return fn_engine_alloc_ != nullptr && fn_post_command_ != nullptr;
+    return true;
 }
 
 void* SocietyManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112F50), &mgr) && mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+        return nullptr;
+    }
+    if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
         if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
@@ -180,48 +164,15 @@ uint32_t SocietyManager::GetPlayerCountryId() {
 }
 
 std::string SocietyManager::LocalizeKey(const std::string& key) {
-    if (key.empty() || !fn_localize_) return key;
-
-    RawPdxString in_key{};
-    in_key.size = key.size();
-    in_key.capacity = 15;
-    if (key.size() < 16) {
-        memcpy(in_key.buf, key.data(), key.size());
-    } else {
-        return key;
-    }
-
-    RawPdxString out_str{};
-    if (!SafeLocalizeCall(fn_localize_, fn_free_pdx_str_, &in_key, &out_str)) {
-        return key;
-    }
-
-    std::string result;
-    if (out_str.size > 0 && out_str.size < 4096) {
-        if (out_str.capacity < 16) {
-            char temp[16]{ 0 };
-            size_t len = out_str.size < 16 ? (size_t)out_str.size : 15;
-            memcpy(temp, out_str.buf, len);
-            result = std::string(temp, len);
-        } else if (out_str.heap_ptr) {
-            size_t len = out_str.size < 512 ? (size_t)out_str.size : 512;
-            result = std::string(out_str.heap_ptr, len);
-        }
-    }
-
-    if (fn_free_pdx_str_) {
-        SafeFreePdxStr(fn_free_pdx_str_, &out_str);
-    }
-
-    return result.empty() ? key : result;
+    return SafeLocalize(base_address_, key);
 }
 
 void SocietyManager::RefreshTraditionCache() {
     if (!base_address_) return;
 
-    // First principles: read native global CTraditionDatabase directly at base + 0x3110908
+    // First principles: read native global CTraditionDatabase directly at base + 0x3111908
     void* tr_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3110908), &tr_db) || !tr_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + 0x3111908), &tr_db) || !tr_db) {
         return;
     }
 
@@ -281,7 +232,8 @@ SocietySummary SocietyManager::GetSummary() {
 
     SafeReadU32((const void*)((uintptr_t)country + 0x30B4), &summary.adopted_trees_count);
     SafeReadU32((const void*)((uintptr_t)country + 0x30CC), &summary.unlocked_traditions_count);
-    SafeReadU32((const void*)((uintptr_t)country + 0x287C), &summary.active_edicts_count);
+    // CCountry::edicts is a CPdxArray<SCountryActiveEdict>: data at +0, count at +0xC.
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::edicts + 0xC), &summary.active_edicts_count);
 
     // Tradition cost: standard Stellaris defines formula
     // Base 300.0, scaling with unlocked count
@@ -486,18 +438,19 @@ nlohmann::json SocietyManager::GetEdictsJson() {
         };
     }
 
-    // 1. Active Edicts from [country + 0x2870]
+    // 1. Active edicts: CCountry::edicts (CPdxArray<SCountryActiveEdict>, 0x20-byte entries)
     nlohmann::json active_edicts_json = nlohmann::json::array();
     std::unordered_map<std::string, bool> active_map;
 
     void* edict_entries = nullptr;
     uint32_t edict_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x2870), &edict_entries) && edict_entries &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x287C), &edict_cnt)) {
+    constexpr std::ptrdiff_t kEdicts = sdk::ent::CCountry::edicts;
+    if (SafeReadPtr((const void*)((uintptr_t)country + kEdicts), &edict_entries) && edict_entries &&
+        SafeReadU32((const void*)((uintptr_t)country + kEdicts + 0xC), &edict_cnt)) {
         for (uint32_t i = 0; i < edict_cnt && i < 64; ++i) {
             void* edict_p = nullptr;
-            // entry + 0x10 holds CEdict* pointer
-            if (!SafeReadPtr((const void*)((uintptr_t)edict_entries + i * 0x20 + 0x10), &edict_p) || !edict_p) {
+            if (!SafeReadPtr((const void*)((uintptr_t)edict_entries + i * 0x20 + sdk::ent::SCountryActiveEdict::edict),
+                             &edict_p) || !edict_p) {
                 continue;
             }
 
@@ -581,52 +534,26 @@ nlohmann::json SocietyManager::AdoptTradition(const std::string& tradition_key) 
         };
     }
 
-    if (!fn_engine_alloc_ || !fn_post_command_ || !activate_tradition_cmd_vtable_) {
-        return {
-            {"error", {
-                {"code", -32076},
-                {"message", "Native command dispatch functions not initialized"}
-            }}
-        };
-    }
-
     uint32_t country_id = GetPlayerCountryId();
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[SOCIETY] Posting CActivateTraditionCommand for tradition '%s' (0x%llX), tick %u...",
         tradition_key.c_str(), (unsigned long long)tr_ptr, tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x30);
-    if (!cmd) {
-        return {
-            {"error", {
-                {"code", -32077},
-                {"message", "Engine allocator returned null for CActivateTraditionCommand"}
-            }}
-        };
-    }
-
-    memset(cmd, 0, 0x30);
-    *(void**)cmd = (void*)activate_tradition_cmd_vtable_;
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint32_t*)((uintptr_t)cmd + 0x0C) = 0;
-    *(uint16_t*)((uintptr_t)cmd + 0x10) = 0xFFFF;
-    *(uint16_t*)((uintptr_t)cmd + 0x12) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1; // satisfies IsValid()
-    *(uint32_t*)((uintptr_t)cmd + 0x20) = country_id;
-    *(void**)((uintptr_t)cmd + 0x28) = tr_ptr;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[SOCIETY] Exception occurred executing PostCommand for CActivateTraditionCommand!");
+    namespace trad = sdk::cmd::activate_tradition_command;
+    auto cmd = CommandBuilder::Get().Create(trad::kSpec);
+    cmd.Set<uint32_t>(trad::country, country_id)
+       .Set<void*>(trad::object, tr_ptr);
+    if (!cmd.Post()) {
         return {
             {"error", {
                 {"code", -32078},
-                {"message", "Exception occurred executing PostCommand for CActivateTraditionCommand"}
+                {"message", cmd.error()}
             }}
         };
     }
@@ -661,72 +588,29 @@ nlohmann::json SocietyManager::ToggleEdict(const std::string& edict_key, bool en
         };
     }
 
-    if (!fn_engine_alloc_ || !fn_post_command_ || !add_edict_cmd_vtable_ || !remove_edict_cmd_vtable_) {
-        return {
-            {"error", {
-                {"code", -32082},
-                {"message", "Native command dispatch functions not initialized"}
-            }}
-        };
-    }
-
     uint32_t country_id = GetPlayerCountryId();
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3112A08), &date_mgr) && date_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
     LOGF("[SOCIETY] Posting %s for edict '%s', tick %u...",
         enabled ? "CAddEdictCommand" : "CRemoveEdictCommand", edict_key.c_str(), tick_timestamp);
 
-    void* cmd = fn_engine_alloc_(0x58);
-    if (!cmd) {
-        return {
-            {"error", {
-                {"code", -32083},
-                {"message", "Engine allocator returned null for edict command"}
-            }}
-        };
-    }
-
-    memset(cmd, 0, 0x58);
-    *(void**)cmd = (void*)(enabled ? add_edict_cmd_vtable_ : remove_edict_cmd_vtable_);
-    *(uint32_t*)((uintptr_t)cmd + 0x08) = tick_timestamp;
-    *(uint32_t*)((uintptr_t)cmd + 0x0C) = 0;
-    *(uint16_t*)((uintptr_t)cmd + 0x10) = 0xFFFF;
-    *(uint16_t*)((uintptr_t)cmd + 0x12) = 0;
-    *(uint8_t*)((uintptr_t)cmd + 0x14) = 1; // satisfies IsValid()
-
-    // Key string at +0x30
-    RawPdxString* str = (RawPdxString*)((uintptr_t)cmd + 0x30);
-    str->size = edict_key.size();
-    str->capacity = 15;
-    if (edict_key.size() < 16) {
-        memcpy(str->buf, edict_key.data(), edict_key.size());
-    } else {
-        // Fallback for long keys: engine alloc
-        char* heap_str = (char*)fn_engine_alloc_(edict_key.size() + 1);
-        if (heap_str) {
-            memcpy(heap_str, edict_key.data(), edict_key.size());
-            heap_str[edict_key.size()] = '\0';
-            str->heap_ptr = heap_str;
-            str->capacity = edict_key.size() + 1;
-        } else {
-            memcpy(str->buf, edict_key.data(), 15);
-            str->size = 15;
-        }
-    }
-
-    *(uint32_t*)((uintptr_t)cmd + 0x50) = country_id;
-
-    if (!SafePostCommand(fn_post_command_, cmd)) {
-        LOGF("[SOCIETY] Exception occurred executing PostCommand for edict command!");
+    namespace add = sdk::cmd::add_edict_command;
+    namespace remove = sdk::cmd::remove_edict_command;
+    static_assert(add::name == remove::name && add::country == remove::country,
+                  "add/remove edict commands are expected to share one payload layout");
+    auto cmd = CommandBuilder::Get().Create(enabled ? add::kSpec : remove::kSpec);
+    cmd.SetString(add::name, edict_key)
+       .Set<uint32_t>(add::country, country_id);
+    if (!cmd.Post()) {
         return {
             {"error", {
                 {"code", -32084},
-                {"message", "Exception occurred executing PostCommand for edict command"}
+                {"message", cmd.error()}
             }}
         };
     }

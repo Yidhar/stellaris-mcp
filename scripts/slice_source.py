@@ -1,3 +1,5 @@
+import sys
+
 source_path = r"d:\stellarismcp\source\stellaris_4.5_source.cpp"
 
 def print_lines(start, end):
@@ -11,5 +13,13 @@ def print_lines(start, end):
                 break
             line_num += 1
 
-print_lines(1661180, 1661240)
-print_lines(1669965, 1670060)
+if __name__ == "__main__":
+    if len(sys.argv) >= 3:
+        s = int(sys.argv[1])
+        cnt = int(sys.argv[2])
+        print_lines(s, s + cnt)
+    elif len(sys.argv) == 2:
+        s = int(sys.argv[1])
+        print_lines(s, s + 50)
+    else:
+        print("Usage: slice_source.py <start_line> [count]")
