@@ -26,6 +26,7 @@ constexpr int kMaxJumps = 12;
 // CGalacticObject::starbases / fleet_presence); CGalacticObject::hyperlane is a plain
 // {data, size @ +8} array of CHyperlane (0x20 bytes each).
 constexpr std::ptrdiff_t kArrData = 0x8;
+constexpr std::ptrdiff_t kArrCapacity = 0x10;
 constexpr std::ptrdiff_t kArrSize = 0x14;
 constexpr std::ptrdiff_t kPlainSize = 0x8;
 constexpr size_t kHyperlaneSize = 0x20;
@@ -40,6 +41,8 @@ constexpr uint32_t kHolderNone = 3;
 // key strings of script types: planet class (+0x28), deposit type and starbase level (+0x20)
 constexpr std::ptrdiff_t kPlanetClassKey = 0x28;
 constexpr std::ptrdiff_t kTypeKey = 0x20;
+// CBypass::type -> CBypassType, key ("gateway", "wormhole", "relay_bypass", ...) at +0x28
+constexpr std::ptrdiff_t kBypassTypeKey = 0x28;
 // CColony::carrier {planet id, carrier type (0 = planet)}
 constexpr std::ptrdiff_t kCarrierId = 0x0;
 
@@ -154,9 +157,168 @@ bool EngineByte(uintptr_t fn, const void* a, const void* b, uint8_t* out) {
     return true;
 }
 
+// CCelestialCoordinate {vtable, x, y, .., origin system, .., randomized}: the engine copies it
+// member-wise up to `randomized`
+struct Coord {
+    alignas(8) uint8_t raw[(sdk::ent::CCelestialCoordinate::randomized + 1 + 7) & ~7];
+};
+
+// A system's centre as CCelestialCoordinate(system, 0, 0) builds it: x = y = 0, origin = system
+Coord SystemCentre(uintptr_t base, uint32_t system_id) {
+    Coord c{};
+    *(uintptr_t*)c.raw = base + sdk::vt::CCelestialCoordinate;
+    *(uint32_t*)(c.raw + sdk::ent::CCelestialCoordinate::origin) = system_id;
+    return c;
+}
+
+// CFleetPath as DrawMovementDebugLines builds it on the stack: vtable, CPdxArray<SNode> (vtable at
+// +8, nodes / count per sdk::rt), CGameDate; Create fills the nodes, CalcEstimatedDays reads them
+struct PathCtx {
+    uintptr_t base;
+    void* fleet;
+    Coord from, to;
+    alignas(16) uint8_t path[0x40];
+    void* nodes;
+    int32_t count;
+    int64_t* per_node;
+    int64_t days;
+};
+
+void CallFleetCoordinate(void* c, void*) {
+    auto* x = (PathCtx*)c;
+    // the fleet's position: a virtual on its coordinate interface (secondary base)
+    auto iface = (uintptr_t)x->fleet + sdk::rt::CFleet_coordinate_base;
+    auto fn = (*(const void* (***)(uintptr_t))iface)[sdk::vt::CFleet_GetCoordinate];
+    x->nodes = (void*)fn(iface);
+}
+
+const void* FleetCoordinate(uintptr_t base, void* fleet) {
+    PathCtx ctx{};
+    ctx.base = base;
+    ctx.fleet = fleet;
+    if (!CommandBuilder::Get().CallGuarded(&CallFleetCoordinate, &ctx)) return nullptr;
+    return ctx.nodes;
+}
+
+void CallCreatePath(void* c, void*) {
+    auto* x = (PathCtx*)c;
+    // CFleet::CalcMovementPathFindSettings, as the engine inlines it before Create
+    bool flag = ((bool (*)(const void*))(x->base + sdk::fn::CFleet_PathFindSettingsFlag))(x->fleet);
+    const void* avoid = *(const void* const*)(x->base + sdk::glob::TPdxNullObject_CGalacticObject_pInstance);
+    ((void (*)(void*, const void*, const void*, const void*, const void*, uint32_t))(x->base + sdk::fn::CFleetPath_Create))(
+        x->path, x->from.raw, x->to.raw, avoid, x->fleet, flag ? 3u : 2u);
+}
+
+bool EnginePath(PathCtx* ctx) {
+    memset(ctx->path, 0, sizeof(ctx->path));
+    *(uintptr_t*)ctx->path = ctx->base + sdk::vt::CFleetPath;
+    *(uintptr_t*)(ctx->path + 8) = ctx->base + sdk::vt::CPdxArray_CFleetPath_SNode;
+    if (!CommandBuilder::Get().CallGuarded(&CallCreatePath, ctx)) return false;
+    ctx->nodes = *(void**)(ctx->path + sdk::rt::CFleetPath_nodes);
+    ctx->count = *(int32_t*)(ctx->path + sdk::rt::CFleetPath_node_count);
+    if (!ctx->nodes || ctx->count < 0 || ctx->count > 100000) ctx->count = 0;
+    return true;
+}
+
+void CallEstimatedDays(void* c, void*) {
+    auto* x = (PathCtx*)c;
+    int64_t out = 0;
+    ((int64_t * (*)(const void*, int64_t*, const void*, int64_t*))(x->base + sdk::fn::CFleetPath_CalcEstimatedDays))(
+        x->path, &out, x->fleet, x->per_node);
+    x->days = out;
+}
+
+// total and per-node days (CFixedPoint); per_node has one slot per node
+bool EngineDays(PathCtx* ctx, int64_t* per_node, int64_t* total) {
+    ctx->per_node = per_node;
+    if (!CommandBuilder::Get().CallGuarded(&CallEstimatedDays, ctx)) return false;
+    *total = ctx->days;
+    return true;
+}
+
+void CallFreeNodes(void* c, void*) {
+    auto* x = (PathCtx*)c;
+    ((void (*)(void*))(x->base + sdk::fn::CRT_operator_delete))(x->nodes);
+}
+
+// the path's destructor: the nodes are plain data, the engine just frees the array
+void FreePath(PathCtx* ctx) {
+    ctx->nodes = *(void**)(ctx->path + sdk::rt::CFleetPath_nodes);
+    if (ctx->nodes) CommandBuilder::Get().CallGuarded(&CallFreeNodes, ctx);
+    *(void**)(ctx->path + sdk::rt::CFleetPath_nodes) = nullptr;
+}
+
+struct CanColonizeCtx {
+    uintptr_t fn;
+    const void* planet;
+    const void* country;
+    bool result;
+};
+
+void CallCanColonize(void* c, void* out) {
+    auto* x = (CanColonizeCtx*)c;
+    x->result = ((bool (*)(const void*, const void*, void*))x->fn)(x->planet, x->country, out);
+}
+
+// CPlanet::CanColonize, the check CFleetColonizePlanetCommand::IsValid makes (with no reason);
+// `why` gets the game's reason when it says no
+bool CanColonize(uintptr_t base, const void* planet, const void* country, std::string* why) {
+    CanColonizeCtx ctx{ base + sdk::fn::CPlanet_CanColonize, planet, country, false };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText(&CallCanColonize, &ctx, &text)) return false;
+    if (!ctx.result && why) *why = text;
+    return ctx.result;
+}
+
+// CPdxArray<TPdxRef<T>> embedded in a command {vtable (factory's), data +8, capacity +0x10,
+// size +0x14}; the command frees the data, so it comes from the engine heap
+bool SetRefArray(NativeCommand& cmd, std::ptrdiff_t arr, const std::vector<uint32_t>& ids, std::string* why) {
+    if (!cmd) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    void* data = CommandBuilder::Get().EngineAlloc(ids.size() * sizeof(uint32_t));
+    if (!data) {
+        if (why) *why = "engine allocation for the fleet list failed";
+        return false;
+    }
+    memcpy(data, ids.data(), ids.size() * sizeof(uint32_t));
+    cmd.Set<void*>(arr + kArrData, data)
+        .Set<uint32_t>(arr + kArrCapacity, (uint32_t)ids.size())
+        .Set<uint32_t>(arr + kArrSize, (uint32_t)ids.size());
+    return true;
+}
+
+struct ClaimCtx {
+    uintptr_t fn;
+    const void* system;
+    const void* country;
+    alignas(8) uint8_t out[0x18];  // CClaim {vtable, owner +8, date +0xC, claims +0x10}
+};
+
+void CallGetClaims(void* c, void*) {
+    auto* x = (ClaimCtx*)c;
+    ((void* (*)(const void*, void*, const void*))x->fn)(x->system, x->out, x->country);
+}
+
+// CGalacticObject::GetClaimsBy(country).claims; 0 when none (or the call failed)
+int ClaimsBy(uintptr_t base, const void* system, const void* country) {
+    ClaimCtx ctx{ base + sdk::fn::CGalacticObject_GetClaimsBy, system, country, {} };
+    if (!CommandBuilder::Get().CallGuarded(&CallGetClaims, &ctx)) return 0;
+    return *(const int32_t*)(ctx.out + sdk::ent::CClaim::claims);
+}
+
 double Fixed(uintptr_t addr) { return std::round(ReadOr<int64_t>(addr, 0) / kFixed * 100.0) / 100.0; }
 
 const char* kIntelNames[] = { "none", "low", "medium", "high", "full" };
+// EPathJumpMethod (save tokens jump_hyperlane, jump_bypass): a hyperlane, or a gateway / wormhole / L-gate
+const char* kJumpMethods[] = { "hyperlane", "bypass" };
+// EFleetStance (save tokens passive, aggressive, evasive; names FLEET_STANCE_*)
+const char* kStances[] = { "passive", "aggressive", "evasive" };
+const char* kStanceNames[] = { "FLEET_STANCE_PASSIVE", "FLEET_STANCE_AGGRESSIVE", "FLEET_STANCE_EVASIVE" };
+// EMiaType: mia_emergency_ftl 0, mia_return_home 1 (the ones a player orders)
+constexpr uint32_t kMiaEmergencyFtl = 0;
+constexpr uint32_t kMiaReturnHome = 1;
 
 }  // namespace
 
@@ -434,6 +596,11 @@ nlohmann::json GalaxyManager::GetMapJson(uint32_t center, int jumps) {
             }
         }
         if (anomaly) flags += 'A';
+        if (ClaimsBy(base_address_, sys.obj, s.player) > 0) flags += 'K';
+        if (intel >= 2 || owner == s.player_id) {
+            if (!RefArray((uintptr_t)sys.obj + sdk::ent::CGalacticObject::megastructures).empty()) flags += 'M';
+            if (!RefArray((uintptr_t)sys.obj + sdk::ent::CGalacticObject::bypasses).empty()) flags += 'G';
+        }
         if (owner_known && !owners.contains(std::to_string(owner))) owners[std::to_string(owner)] = CountryName(owner);
         rows.push_back({ id, SystemName(id, sys.obj), sys.x, sys.y,
                          owner_known ? nlohmann::json(owner) : nlohmann::json(nullptr), intel, dist[id], flags });
@@ -453,7 +620,8 @@ nlohmann::json GalaxyManager::GetMapJson(uint32_t center, int jumps) {
         {"owners", owners},
         {"legend", {
             {"intel", "0 none, 1 low, 2 medium, 3 high, 4 full"},
-            {"flags", "S surveyed, C colonized, B starbase, F own fleet present, A unresearched anomaly"},
+            {"flags", "S surveyed, C colonized, B starbase, F own fleet present, A unresearched anomaly, "
+                      "K claimed by the player, M megastructure, G gateway / wormhole / relay (bypass)"},
             {"survey", "S means every planet is surveyed by the player (CCountry::HasFullySurveyedSystem); "
                        "planets inside another empire's borders cannot be surveyed without access"},
             {"owner_id", "null: unowned or not known to the player"}
@@ -555,9 +723,14 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
         if (!own && intel < 3) continue;
         void* f = fleets::Find(base_address_, fid);
         if (!f) continue;
-        fleet_arr.push_back({ {"id", fid}, {"name", fleets::Name(f)}, {"own", own},
+        nlohmann::json fj = { {"id", fid}, {"name", fleets::Name(f)}, {"own", own},
                               {"ship_class", fleets::ShipClassKey(fleets::ClassOf(f))},
-                              {"military_power", fleets::MilitaryPower(f)} });
+                              {"military_power", fleets::MilitaryPower(f)} };
+        if (own) {
+            uint32_t st = ReadOr<uint32_t>((uintptr_t)f + sdk::ent::CFleet::fleet_stance, 0);
+            if (st < std::size(kStances)) fj["stance"] = kStances[st];
+        }
+        fleet_arr.push_back(fj);
     }
 
     nlohmann::json out = {
@@ -573,7 +746,8 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
         {"hyperlanes", lanes},
         {"starbase", starbase},
         {"planets", planets},
-        {"fleets", fleet_arr}
+        {"fleets", fleet_arr},
+        {"player_claims", ClaimsBy(base_address_, sys.obj, s.player)}
     };
     if (hidden) out["unknown_planets"] = hidden;  // present but not known to the player
     return out;
@@ -668,52 +842,211 @@ bool GalaxyManager::OwnFleet(const Snapshot& s, uint32_t fleet_id) {
     return std::find(owned.begin(), owned.end(), fleet_id) != owned.end();
 }
 
-nlohmann::json GalaxyManager::FindPath(uint32_t from, uint32_t to) {
+nlohmann::json GalaxyManager::FindPath(uint32_t fleet_id, uint32_t to) {
     Snapshot s = Take();
     if (!s.player) return { {"error", "No player country (not in game?)"} };
-    if (from == kInvalidId) from = CapitalSystem(s);
-    if (!s.index.count(from) || !s.index.count(to)) return { {"error", "Unknown system id"} };
-    // Dijkstra over hyperlane lengths
-    std::unordered_map<uint32_t, double> dist{ {from, 0.0} };
-    std::unordered_map<uint32_t, uint32_t> prev;
-    using Item = std::pair<double, uint32_t>;
-    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
-    pq.push({ 0.0, from });
-    while (!pq.empty()) {
-        auto [d, id] = pq.top();
-        pq.pop();
-        if (d > dist[id]) continue;
-        if (id == to) break;
-        for (const auto& l : s.systems[s.index[id]].lanes) {
-            if (!s.index.count(l.first)) continue;
-            double nd = d + l.second;
-            auto it = dist.find(l.first);
-            if (it == dist.end() || nd < it->second) {
-                dist[l.first] = nd;
-                prev[l.first] = id;
-                pq.push({ nd, l.first });
+    if (!OwnFleet(s, fleet_id)) {
+        return { {"error", "fleet_id must be one of the player's fleets: the route and travel time depend on its "
+                           "speed, FTL and border access"} };
+    }
+    void* fleet = RefLookup(base_address_, sdk::db::CFleet, fleet_id);
+    if (!fleet) return { {"error", "Unknown fleet id: " + std::to_string(fleet_id)} };
+    if (!s.index.count(to)) return { {"error", "Unknown system id: " + std::to_string(to)} };
+
+    // from the fleet's own position: CalcEstimatedDays times the first leg from there
+    PathCtx ctx{};
+    ctx.base = base_address_;
+    ctx.fleet = fleet;
+    const void* here = FleetCoordinate(base_address_, fleet);
+    if (!here || !Read(here, &ctx.from)) return { {"error", "Could not read the fleet's position"} };
+    uint32_t from = ReadOr<uint32_t>((uintptr_t)here + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
+    ctx.to = SystemCentre(base_address_, to);
+    if (!EnginePath(&ctx)) return { {"error", "The engine path finder raised"} };
+
+    int n = ctx.count;
+    std::vector<uint32_t> node_system(n, kInvalidId), node_jump(n, 0), node_bypass(n, kInvalidId);
+    for (int i = 0; i < n; ++i) {
+        uintptr_t node = (uintptr_t)ctx.nodes + i * sdk::rt::CFleetPath_node_size;
+        node_system[i] = ReadOr<uint32_t>(node + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
+        node_jump[i] = ReadOr<uint32_t>(node + sdk::rt::CFleetPath_node_jump_method, 0);
+        node_bypass[i] = ReadOr<uint32_t>(node + sdk::rt::CFleetPath_node_bypass, kInvalidId);
+    }
+    std::vector<int64_t> per_node(n > 0 ? n : 1, 0);
+    int64_t total = 0;
+    bool timed = n > 0 && EngineDays(&ctx, per_node.data(), &total);
+    FreePath(&ctx);
+    if (n == 0) {
+        return { {"fleet_id", fleet_id}, {"from_system_id", from}, {"to_system_id", to}, {"reachable", false},
+                 {"note", "The game finds no route for this fleet (no hyperlane connection it may use, or it cannot move)"} };
+    }
+
+    // nodes are the leave / enter points of each system (the last one is the destination's
+    // centre); per_node[i] is the time spent before the leg into node i, so the arrival at
+    // node i is per_node[i + 1] (the total for the last)
+    auto days = [](int64_t v) { return std::round(v / kFixed * 10.0) / 10.0; };
+    nlohmann::json systems = nlohmann::json::array();
+    auto add_system = [&](uint32_t id, nlohmann::json arrival, const char* via, uint32_t bypass) {
+        void* obj = s.index.count(id) ? s.systems[s.index[id]].obj : nullptr;
+        uint32_t owner = obj ? Owner(obj) : kInvalidId;
+        bool known = owner != kInvalidId && (owner == s.player_id || Intel(s, obj) >= 1);
+        nlohmann::json row = { {"id", id}, {"name", obj ? SystemName(id, obj) : ""},
+                               {"owner_id", known ? nlohmann::json(owner) : nlohmann::json(nullptr)},
+                               {"arrival_days", arrival} };
+        if (via) row["via"] = via;
+        // an entry node's bypass is the one arrived at (a gateway, wormhole, relay, L-gate)
+        if (void* b = bypass != kInvalidId ? RefLookup(base_address_, sdk::db::CBypass, bypass) : nullptr) {
+            std::string key = KeyOf((uintptr_t)b + sdk::ent::CBypass::type, kBypassTypeKey);
+            if (!key.empty()) {
+                row["bypass"] = { {"key", key} };
+                std::string name = SafeLocalize(base_address_, key);  // "lgate" is a loc key, "relay_bypass" not
+                if (!name.empty() && name != key) row["bypass"]["name"] = name;
             }
         }
-    }
-    if (!dist.count(to)) return { {"from_system_id", from}, {"to_system_id", to}, {"reachable", false} };
-    std::vector<uint32_t> path{ to };
-    while (path.back() != from) path.push_back(prev[path.back()]);
-    std::reverse(path.begin(), path.end());
-    nlohmann::json systems = nlohmann::json::array();
-    for (uint32_t id : path) {
-        const System& sys = s.systems[s.index[id]];
-        uint32_t owner = Owner(sys.obj);
-        bool known = owner != kInvalidId && (owner == s.player_id || Intel(s, sys.obj) >= 1);
-        systems.push_back({ {"id", id}, {"name", SystemName(id, sys.obj)},
-                            {"owner_id", known ? nlohmann::json(owner) : nlohmann::json(nullptr)} });
-    }
-    return {
-        {"from_system_id", from}, {"to_system_id", to}, {"reachable", true},
-        {"jumps", (int)path.size() - 1}, {"length", std::round(dist[to] * 100.0) / 100.0},
-        {"systems", systems},
-        {"note", "Shortest route by hyperlane length. Closed borders, gateways, wormholes and jump drives are not "
-                 "considered; the engine plans the actual route when an order is given."}
+        systems.push_back(row);
     };
+    add_system(from, 0.0, nullptr, kInvalidId);
+    for (int i = 0; i < n; ++i) {
+        uint32_t id = node_system[i];
+        if (id == kInvalidId || id == systems.back()["id"].get<uint32_t>()) continue;
+        nlohmann::json arrival = nullptr;
+        if (timed) arrival = days(i + 1 < n ? per_node[i + 1] : total);
+        // the entry node carries how the fleet got here (EPathJumpMethod)
+        bool by_bypass = node_jump[i] == 1;
+        add_system(id, arrival, node_jump[i] < std::size(kJumpMethods) ? kJumpMethods[node_jump[i]] : "unknown",
+                   by_bypass ? node_bypass[i] : kInvalidId);
+    }
+    nlohmann::json out = { {"fleet_id", fleet_id}, {"from_system_id", from}, {"to_system_id", to}, {"reachable", true},
+                           {"jumps", (int)systems.size() - 1}, {"systems", systems} };
+    out["estimated_days"] = timed ? nlohmann::json(days(total)) : nlohmann::json(nullptr);
+    return out;
+}
+
+nlohmann::json GalaxyManager::CancelFleetOrders(const std::vector<uint32_t>& fleet_ids) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (fleet_ids.empty()) return { {"success", false}, {"error", "fleet_ids is empty"} };
+    for (uint32_t f : fleet_ids) {
+        if (!OwnFleet(s, f)) return { {"success", false}, {"error", "Fleet " + std::to_string(f) + " is not one of the player's fleets"} };
+    }
+    // CFleetCancelOrdersCommand: ClearOrders + CancelMovement + ClearAutoMoveTarget for each
+    // fleet the country controls that has an order
+    namespace co = sdk::cmd::fleet_cancel_orders;
+    auto cmd = CommandBuilder::Get().Create(co::kSpec);
+    std::string why;
+    cmd.Set<uint32_t>(co::country, s.player_id);
+    if (!SetRefArray(cmd, co::fleets, fleet_ids, &why)) return { {"success", false}, {"error", why} };
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "None of these fleets has an order to cancel" : why} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_ids", fleet_ids}, {"message", "Orders cancelled; the fleets stop where they are"} };
+}
+
+nlohmann::json GalaxyManager::FollowFleet(uint32_t fleet_id, uint32_t target_fleet_id, bool attack, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* target = fleets::Find(base_address_, target_fleet_id);
+    if (!target) return { {"success", false}, {"error", "Unknown fleet id: " + std::to_string(target_fleet_id)} };
+    // CFollowFleetCommand: IsValid asks the CFollowFleetOrder it would add (CanDo)
+    namespace fo = sdk::cmd::follow_command;
+    auto cmd = CommandBuilder::Get().Create(fo::kSpec);
+    cmd.Set<uint32_t>(fo::fleet, fleet_id)
+        .Set<uint32_t>(fo::target_fleet, target_fleet_id)
+        .Set<uint8_t>(fo::attack, attack ? 1 : 0)
+        .Set<uint8_t>(fo::cancelled, 0)
+        .Set<uint8_t>(fo::queue, queue ? 1 : 0)
+        .Set<uint8_t>(fo::queue_to_front, 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The fleet cannot follow that fleet" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"target_fleet_id", target_fleet_id},
+             {"target_fleet", fleets::Name(target)}, {"attack", attack}, {"queued", queue},
+             {"message", "Follow order posted"} };
+}
+
+nlohmann::json GalaxyManager::SetFleetStance(uint32_t fleet_id, const std::string& stance) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    auto it = std::find(std::begin(kStances), std::end(kStances), stance);
+    if (it == std::end(kStances)) return { {"success", false}, {"error", "stance must be one of: passive, aggressive, evasive"} };
+    uint32_t value = (uint32_t)(it - std::begin(kStances));
+    void* fleet = fleets::Find(base_address_, fleet_id);
+    uint32_t before = fleet ? ReadOr<uint32_t>((uintptr_t)fleet + sdk::ent::CFleet::fleet_stance, 0) : 0;
+    // CSwitchFleetStanceCommand -> CFleet::SetFleetStance; IsValid: the fleet supports stances
+    namespace st = sdk::cmd::switch_fleet_stance_command;
+    auto cmd = CommandBuilder::Get().Create(st::kSpec);
+    cmd.Set<uint32_t>(st::fleet, fleet_id).Set<uint32_t>(st::stance, value);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "This fleet has no stances (civilian or a station)" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id},
+             {"previous_stance", before < std::size(kStances) ? kStances[before] : "unknown"},
+             {"stance", stance}, {"stance_name", SafeLocalize(base_address_, kStanceNames[value])} };
+}
+
+nlohmann::json GalaxyManager::FleetMia(const std::vector<uint32_t>& fleet_ids, const std::string& type) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (fleet_ids.empty()) return { {"success", false}, {"error", "fleet_ids is empty"} };
+    for (uint32_t f : fleet_ids) {
+        if (!OwnFleet(s, f)) return { {"success", false}, {"error", "Fleet " + std::to_string(f) + " is not one of the player's fleets"} };
+    }
+    uint32_t mia;
+    if (type == "return_home") mia = kMiaReturnHome;
+    else if (type == "emergency_ftl") mia = kMiaEmergencyFtl;
+    else return { {"success", false}, {"error", "type must be return_home or emergency_ftl"} };
+    // CGoMIACommand: CFleet::GoMIA(type) for every fleet with CFleet::CanGoMIA
+    namespace mi = sdk::cmd::mia_command;
+    auto cmd = CommandBuilder::Get().Create(mi::kSpec);
+    std::string why;
+    if (!SetRefArray(cmd, mi::fleets, fleet_ids, &why)) return { {"success", false}, {"error", why} };
+    cmd.Set<uint32_t>(sdk::rt::CGoMIACommand_mia_type, mia);
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "None of these fleets can go missing in action now" : why} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_ids", fleet_ids}, {"type", type},
+             {"message", type == "return_home" ? "The fleets jump out and return home (MIA until they arrive)"
+                                               : "Emergency FTL: the fleets retreat and are MIA for a while"} };
+}
+
+nlohmann::json GalaxyManager::ClaimSystem(uint32_t system_id, bool remove, int count) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    auto it = s.index.find(system_id);
+    if (it == s.index.end()) return { {"success", false}, {"error", "Unknown system id: " + std::to_string(system_id)} };
+    void* sys = s.systems[it->second].obj;
+    int before = ClaimsBy(base_address_, sys, s.player);
+    std::string why;
+    if (remove) {
+        // CRemoveSystemClaimCommand: at most the claims we hold; not while at war with the owner
+        if (count <= 0) count = before;
+        namespace rc = sdk::cmd::remove_system_claim_command;
+        auto cmd = CommandBuilder::Get().Create(rc::kSpec);
+        cmd.Set<uint32_t>(rc::country, s.player_id).Set<uint32_t>(rc::system, system_id).Set<int32_t>(rc::claims, count);
+        if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "No claims to remove here" : why}, {"player_claims", before} };
+        if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    } else {
+        // CAddSystemClaimCommand, as the UI builds it: `count` claims dated today; IsValid is
+        // CGalacticObject::IsClaimableBy plus the influence cost (CCountry::CalcClaimCost)
+        if (count <= 0) count = 1;
+        void* state = nullptr;
+        Read((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &state);
+        uint32_t today = state ? ReadOr<uint32_t>((uintptr_t)state + sdk::rt::CGameState_date_hours, 0) : 0;
+        namespace ac = sdk::cmd::add_system_claim_command;
+        auto cmd = CommandBuilder::Get().Create(ac::kSpec);
+        cmd.Set<uint32_t>(ac::country, s.player_id)
+            .Set<uint32_t>(ac::system, system_id)
+            .Set<int32_t>(ac::claims, count)
+            .Set<uint32_t>(ac::date, today);
+        if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The system cannot be claimed" : why}, {"player_claims", before} };
+        if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    }
+    return { {"success", true}, {"system_id", system_id}, {"system", SystemName(system_id, sys)},
+             {"action", remove ? "remove" : "add"}, {"count", count}, {"player_claims_before", before},
+             {"message", "Claim order posted; read player_claims from get_system on a later call"} };
 }
 
 bool GalaxyManager::OutpostCommand(uint32_t fleet_id, uint32_t system_id, bool queue, bool post, std::string* why) {
@@ -758,14 +1091,21 @@ nlohmann::json GalaxyManager::Colonize(uint32_t fleet_id, uint32_t planet_id, bo
     if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
     void* planet = RefLookup(base_address_, sdk::db::CPlanet, planet_id);
     if (!planet) return { {"success", false}, {"error", "Unknown planet id: " + std::to_string(planet_id)} };
+    // IsValid asks CanColonize without a reason; ask it first so a refusal says why
+    std::string why;
+    if (!CanColonize(base_address_, planet, s.player, &why)) {
+        return { {"success", false}, {"error", why.empty() ? "The game refused the colonization" : why} };
+    }
     namespace co = sdk::cmd::colonize_planet_order;
     auto cmd = CommandBuilder::Get().Create(co::kSpec);
     cmd.Set<uint32_t>(co::fleet, fleet_id)
         .Set<uint32_t>(co::planet, planet_id)
         .Set<uint8_t>(co::queue, queue ? 1 : 0)
         .Set<uint8_t>(co::queue_to_front, 0);
-    std::string why;
-    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the colonization" : why} };
+    if (!cmd.IsValid(&why)) {
+        // CanColonize passed: CColonizePlanetFleetOrder::CanQueue refused this fleet
+        return { {"success", false}, {"error", why.empty() ? "This fleet cannot take the colonization order (not a colony ship?)" : why} };
+    }
     if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
     return { {"success", true}, {"fleet_id", fleet_id}, {"planet_id", planet_id},
              {"planet", PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name))},
@@ -864,7 +1204,9 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
     } else if (purpose == "colonizable") {
         // the expansion planner's rule (ValidatePlanetFilters): systems with intel above low, planets
         // the player surveyed, not owned, with habitability for the species from
-        // NHabitability::CalcHabitability(species, planet, player) above zero; best first
+        // NHabitability::CalcHabitability(species, planet, player) above zero; best first. The
+        // planner hides systems of empires the player has communications with; a system another
+        // country owns cannot be colonized at all, so every foreign-owned system is left out
         if (species_id == kInvalidId) {
             species_id = ReadOr<uint32_t>((uintptr_t)s.player + sdk::ent::CCountry::founder_species_ref, kInvalidId);
         }
@@ -879,6 +1221,8 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
         for (const auto& [d, id] : order) {
             const System& sys = s.systems[s.index[id]];
             if (Intel(s, sys.obj) < 2) continue;
+            uint32_t sys_owner = Owner(sys.obj);
+            if (sys_owner != kInvalidId && sys_owner != s.player_id) continue;
             auto pit = s.planets.find(id);
             if (pit == s.planets.end()) continue;
             for (const auto& p : pit->second) {
@@ -894,17 +1238,28 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
                     {"class", cls}, {"class_name", SafeLocalize(base_address_, cls)},
                     {"size", ReadOr<int32_t>((uintptr_t)p.obj + sdk::ent::CPlanet::planet_size, 0)},
                     {"habitability_percent", std::round(hab * 1000.0) / 10.0},
-                    {"system_id", id}, {"system", SystemName(id, sys.obj)}, {"jumps", d} } });
+                    {"system_id", id}, {"system", SystemName(id, sys.obj)}, {"jumps", d},
+                    {"system_owned", sys_owner == s.player_id} } });
             }
         }
         std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
             return a.hab != b.hab ? a.hab > b.hab : a.jumps < b.jumps;
         });
         nlohmann::json planets = nlohmann::json::array();
-        for (size_t i = 0; i < cands.size() && (int)i < limit; ++i) planets.push_back(cands[i].row);
+        for (size_t i = 0; i < cands.size() && (int)i < limit; ++i) {
+            // the game's own verdict for the player now (borders, hostile fleets, blockers ...)
+            nlohmann::json row = cands[i].row;
+            void* planet = RefLookup(base_address_, sdk::db::CPlanet, row["planet_id"].get<uint32_t>());
+            std::string why;
+            bool can = planet && CanColonize(base_address_, planet, s.player, &why);
+            row["can_colonize"] = can;
+            if (!can && !why.empty()) row["reason"] = why;
+            planets.push_back(row);
+        }
         return { {"purpose", purpose}, {"from_system_id", from}, {"species_id", species_id}, {"planets", planets},
-                 {"note", "Habitability for the species with the player's modifiers; colonizing still needs a colony ship "
-                          "and the planet inside or next to the player's borders (the colonize order reports why not)."} };
+                 {"note", "Habitability for the species with the player's modifiers; systems owned by other empires are "
+                          "left out. can_colonize is the game's CPlanet::CanColonize for the player now (reason when not); "
+                          "colonizing also needs a colony ship."} };
     } else {
         return { {"error", "purpose must be one of: unsurveyed, outpost, deposit, colonizable"} };
     }

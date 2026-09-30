@@ -280,9 +280,16 @@ def extract_fields(im, fn, known_tokens, newline_fn):
         # track mov edx, imm
         if mnem == "mov" and len(ops) == 2 and ops[0].type == X86_OP_REG and ins.reg_name(ops[0].reg) == "edx" and ops[1].type == X86_OP_IMM:
             last_edx_imm = (ops[1].imm, n)
-        if mnem == "call":
+        # the last field is often written by a tail jump into the writer after the epilogue
+        # (`mov edx, TOKEN; mov rcx, rdi; mov rbx, [rsp+x]; add rsp, y; pop rdi; jmp Write`)
+        tail = (mnem == "jmp" and ops and ops[0].type == X86_OP_IMM and last_edx_imm
+                and n - last_edx_imm[1] <= 6
+                and all(b.mnemonic in ("mov", "add", "pop") for b in insns[last_edx_imm[1] + 1:n])
+                # an epilogue, not `mov edx, TOKEN; jmp shared_write` inside the function
+                and any(b.mnemonic == "pop" or b.op_str.startswith("rsp, ") for b in insns[last_edx_imm[1] + 1:n]))
+        if mnem == "call" or tail:
             tgt = ops[0].imm - im.ib if ops and ops[0].type == X86_OP_IMM else None
-            if last_edx_imm and n - last_edx_imm[1] <= 3:
+            if last_edx_imm and n - last_edx_imm[1] <= (6 if tail else 3):
                 tok = last_edx_imm[0]
                 # the "newline" helper is really a generic WriteToken(char/token): small values
                 # are punctuation (0x10 newline, 0x3 '=' ...), real field tokens are keys
@@ -372,10 +379,14 @@ def assign_offsets(events, refs, insns, kinds, indirect=None):
                     belongs_next = True
                     # direct kv: `lea/mov r8|r9, [this+d]; mov edx, TOKEN; call` hands the value
                     # straight to the writer, which beats any load that follows the call
+                    # (register moves such as saving `this` may sit in between: `lea r8, [rcx+d];
+                    # mov rbx, rcx; mov edx, TOKEN; mov rcx, rdi; call`)
                     between = insns[i + 1:nxt["i"]]
-                    as_arg = (R in ("r8", "r9") and 1 <= len(between) <= 2
+                    as_arg = (R in ("r8", "r9") and 1 <= len(between) <= 3
                               and any(b.op_str == f"edx, {hex(nxt['token'])}" for b in between)
-                              and all(b.mnemonic == "mov" and b.op_str.startswith(("edx, ", "rcx, "))
+                              and all(b.mnemonic == "mov" and not b.op_str.startswith(R + ",")
+                                      and (b.op_str.startswith("edx, ")
+                                           or (len(b.operands) == 2 and b.operands[1].type == X86_OP_REG))
                                       for b in between))
                 elif not clobbered:
                     for ins in insns[nxt["i"] + 1:nxt["i"] + 8]:

@@ -2,6 +2,7 @@
 
     python scripts/launch_stellaris.py            # launch unless the game is already running
     python scripts/launch_stellaris.py --restart  # close every running instance first
+    python scripts/launch_stellaris.py --continue # load the last save (the launcher's "Continue")
 
 Launching while an instance is running leaves the old process alive without a window, and
 both instances then host a bridge on the same named pipe. So this script refuses to start a
@@ -34,7 +35,7 @@ def close_running(timeout=30):
     return False
 
 
-def launch_stellaris(restart=False, wait=120):
+def launch_stellaris(restart=False, wait=120, continue_last=False):
     """Returns the PID of the single game instance, or None."""
     if not os.path.exists(GAME_EXE):
         print(f"[-] Stellaris executable not found at: {GAME_EXE}")
@@ -49,10 +50,11 @@ def launch_stellaris(restart=False, wait=120):
     if running and not close_running():
         return None
 
-    print(f"[*] Starting Stellaris directly: {GAME_EXE} -dx11")
+    args = "-dx11" + (" --continuelastsave" if continue_last else "")
+    print(f"[*] Starting Stellaris directly: {GAME_EXE} {args}")
     bat_path = os.path.join(os.environ["TEMP"], "launch_stellaris.bat")
     with open(bat_path, "w") as f:
-        f.write(f'@cd /d "{GAME_DIR}"\n@start "" "{GAME_EXE}" -dx11\n')
+        f.write(f'@cd /d "{GAME_DIR}"\n@start "" "{GAME_EXE}" {args}\n')
     subprocess.Popen(["explorer.exe", bat_path])
 
     end = time.time() + wait
@@ -70,5 +72,5 @@ def launch_stellaris(restart=False, wait=120):
 
 
 if __name__ == "__main__":
-    ok = launch_stellaris(restart="--restart" in sys.argv)
+    ok = launch_stellaris(restart="--restart" in sys.argv, continue_last="--continue" in sys.argv)
     sys.exit(0 if ok else 1)

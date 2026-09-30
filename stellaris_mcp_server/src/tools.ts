@@ -411,7 +411,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
 
   server.tool(
     "stellaris_get_galaxy_map",
-    "Galaxy map around a system (Layer 1.5): every system within `jumps` hyperlane jumps of center_system_id (default: the player's capital system) as table rows [id, name, x, y, owner_id, intel, jumps, flags] plus the hyperlanes between them as [a, b, length] and the names of the owners shown. flags: S surveyed, C colonized, B starbase, F own fleet present, A unresearched anomaly. owner_id is null when the system is unowned or its owner is unknown to the player. Use stellaris_get_system for one system's planets, starbase and fleets.",
+    "Galaxy map around a system (Layer 1.5): every system within `jumps` hyperlane jumps of center_system_id (default: the player's capital system) as table rows [id, name, x, y, owner_id, intel, jumps, flags] plus the hyperlanes between them as [a, b, length] and the names of the owners shown. flags: S surveyed, C colonized, B starbase, F own fleet present, A unresearched anomaly, K claimed by the player, M megastructure, G gateway / wormhole / relay. owner_id is null when the system is unowned or its owner is unknown to the player. Use stellaris_get_system for one system's planets, starbase and fleets.",
     {
       center_system_id: z.number().int().optional().describe("System to center on (default: the player's capital system)"),
       jumps: z.number().int().min(0).max(12).optional().default(3).describe("Hyperlane jumps around the center (0-12, default 3)"),
@@ -441,6 +441,60 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   server.tool(
+    "stellaris_cancel_fleet_orders",
+    "Cancels every order of the given player fleets (native CFleetCancelOrdersCommand: orders cleared, movement stopped). Refused when none of them has an order.",
+    {
+      fleet_ids: z.array(z.number().int()).min(1).describe("The player's fleet ids"),
+    },
+    async ({ fleet_ids }) => galaxyCall("cancel_fleet_orders", { fleet_ids })
+  );
+
+  server.tool(
+    "stellaris_follow_fleet",
+    "Orders a player fleet to follow another fleet (native CFollowFleetCommand); attack=true engages the target when it catches up. The game's own order check decides whether it is allowed.",
+    {
+      fleet_id: z.number().int().describe("The player's fleet that follows"),
+      target_fleet_id: z.number().int().describe("The fleet to follow (own or a visible foreign fleet)"),
+      attack: z.boolean().optional().default(false).describe("Attack the target when reached"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, target_fleet_id, attack, queue }) =>
+      galaxyCall("follow_fleet", { fleet_id, target_fleet_id, attack: attack ?? false, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_set_fleet_stance",
+    "Sets a player fleet's stance (native CSwitchFleetStanceCommand): passive (never engages; the path finder avoids danger), aggressive (engages hostiles), evasive (flees combat). A fleet that follows another (e.g. in an armada) keeps the leader's stance. Own fleets' current stance shows in stellaris_get_system.",
+    {
+      fleet_id: z.number().int().describe("The player's fleet id"),
+      stance: z.enum(["passive", "aggressive", "evasive"]).describe("New stance"),
+    },
+    async ({ fleet_id, stance }) => galaxyCall("set_fleet_stance", { fleet_id, stance })
+  );
+
+  server.tool(
+    "stellaris_fleet_mia",
+    "Sends player fleets missing in action (native CGoMIACommand): return_home jumps them home (they are unreachable until they arrive), emergency_ftl retreats them from combat. Refused when none of them can go MIA now.",
+    {
+      fleet_ids: z.array(z.number().int()).min(1).describe("The player's fleet ids"),
+      type: z.enum(["return_home", "emergency_ftl"]).optional().default("return_home").describe("Kind of MIA jump"),
+    },
+    async ({ fleet_ids, type }) => galaxyCall("fleet_mia", { fleet_ids, type: type ?? "return_home" })
+  );
+
+  server.tool(
+    "stellaris_claim_system",
+    "Adds or removes the player's claims on a star system (native CAddSystemClaimCommand / CRemoveSystemClaimCommand; claims cost influence and are what a war goal needs to take the system). Refused with the game's reason (not claimable, not enough influence, at war with the owner ...). The current count is player_claims in stellaris_get_system; the map flags claimed systems with K.",
+    {
+      system_id: z.number().int().describe("Target system id"),
+      remove: z.boolean().optional().default(false).describe("Remove claims instead of adding"),
+      count: z.number().int().optional().describe("Claims to add (default 1) or remove (default all)"),
+    },
+    async ({ system_id, remove, count }) =>
+      galaxyCall("claim_system", { system_id, remove: remove ?? false, ...(count !== undefined ? { count } : {}) })
+  );
+
+  server.tool(
     "stellaris_find_systems",
     "Finds systems for a purpose, nearest first by hyperlane jumps from from_system_id (default: the capital), using only what the player knows. purpose: 'unsurveyed' (systems not fully surveyed), 'outpost' (unowned systems; with a construction ship, can_build and the game's reason come from the build order's own check), 'deposit' (surveyed planets whose deposit key contains `resource`, e.g. 'minerals', 'energy', 'alloys'), 'colonizable' (the expansion planner's list: unowned surveyed planets in systems with medium+ intel, with the game's habitability for species_id (default: the founder species) and the player's modifiers, best first).",
     {
@@ -464,13 +518,12 @@ export function registerTools(server: McpServer, client: PipeClient) {
 
   server.tool(
     "stellaris_find_path",
-    "Shortest hyperlane route between two systems by hyperlane length (the systems on the way, jumps, length). Closed borders, gateways, wormholes and jump drives are not considered; the engine plans the actual route when stellaris_move_fleet is used.",
+    "The route the game's own path finder plans for one of your fleets from where it is now (closed borders, gateways, wormholes and the fleet's FTL as it may use them) and the travel time in days, the same ETA the fleet gets when ordered there: the systems on the way with the arrival day at each and how the fleet gets there (via: hyperlane, or bypass for a gateway / wormhole / L-gate). reachable=false when the game finds no route for that fleet.",
     {
-      from_system_id: z.number().int().optional().describe("Start system (default: the capital system)"),
+      fleet_id: z.number().int().describe("The player's fleet that would travel (speed, FTL and border access are the fleet's)"),
       to_system_id: z.number().int().describe("Destination system"),
     },
-    async ({ from_system_id, to_system_id }) =>
-      galaxyCall("find_path", { ...(from_system_id !== undefined ? { from_system_id } : {}), to_system_id })
+    async ({ fleet_id, to_system_id }) => galaxyCall("find_path", { fleet_id, to_system_id })
   );
 
   server.tool(

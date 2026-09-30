@@ -140,4 +140,24 @@ flowchart TD
 
 - 宜居度：`sdk::fn::NHabitability_CalcHabitability(out, species, carrier = planet + 0x20, country, planet_class = CPlanet::planet_class, pop_group = null, modifier = null)`，`out` 为 0..1 定点数（×100000）。扩张规划器（`ValidatePlanetFilters`）按这个值、玩家的修正、情报等级 > 1、已调查、无主来筛选。
 - 恒星基地等级是脚本数据（没有序列化字段）：`CStarbaseLevelType` 的 `ship_size` 在 Windows 为 `+0xF8`（`next_level` +0x100，`previous_level` +0x108）。桥接在运行时取"每个等级都指向舰船尺寸库条目的那个字段"，显示名 = 舰船尺寸 key 的本地化（`starbase_outpost` → 「哨站」）。
-- 路径与 ETA：引擎的 `CFleetPath(from, to, fleet)` + `CFleetPath::CalcEstimatedDays(fleet)` 是规划航线与天数的正确入口（`CFleetPath {vtable, CPdxArray<SNode> +8 (data +0x10, size +0x1C), CGameDate +0x20}`），Windows 地址尚未定位。
+- 宜居之外，能否殖民由 `sdk::fn::CPlanet_CanColonize(planet, country, CString* reason)` 判定（`CFleetColonizePlanetCommand::IsValid` 传空 reason 调它，再 `CanQueue`）；原因是 `COLONIZABLE_INSIDE_BORDERS`（只能殖民我方边界内的行星）、`COLONIZABLE_UNSURVEYED`、`COLONIZABLE_HOSTILE_FLEETS` 等。扩张规划器隐藏有通讯的他国星系；他国星系本就不能殖民。
+
+## 9. 舰队航线与 ETA (verified 4.5.1)
+
+`DrawMovementDebugLines`（字符串 `"ETA %.1f days"`，Windows 0x9209A0）内联了 `CFleetMovementManager::CalcPath`，全部地址都从它读出：
+
+- `CFleetPath`（栈上 0x40 足够）：`{vt sdk::vt::CFleetPath, CPdxArray<SNode> {vt sdk::vt::CPdxArray_CFleetPath_SNode, nodes +0x10, capacity +0x18, count +0x1C}, CGameDate +0x20}`；节点 0x30 字节 = `CCelestialCoordinate`（0x28：vt `sdk::vt::CCelestialCoordinate`、x +8、y +0x10、origin 星系 +0x20、randomized +0x25）+ `EPathJumpMethod` +0x28（0 = `jump_hyperlane`，1 = `jump_bypass`）+ bypass id +0x2C（入口节点是到达的那座 bypass：中继器 `relay_bypass`、L-星门 `lgate`、星门、虫洞）。
+- 每个星系两个节点（离开点 / 进入点），最后一个是目的地中心。星系中心坐标 = `CCelestialCoordinate(system, 0, 0)`：vt + 全零 + origin。
+- 构建：`settings = sdk::fn::CFleet_PathFindSettingsFlag(fleet) ? 3 : 2`（`CFleet::CalcMovementPathFindSettings`），`sdk::fn::CFleetPath_Create(path, from, to, avoid = *TPdxNullObject<CGalacticObject>, fleet, settings)`。起点取舰队自己的位置：`fleet + sdk::rt::CFleet_coordinate_base` 处的次基类 vtable 第 `sdk::vt::CFleet_GetCoordinate` 槽。
+- 天数：`sdk::fn::CFleetPath_CalcEstimatedDays(path, &out, fleet, per_node[count])`，定点数 ×100000。`per_node[i]` 是进入第 i 段之前的累计时间，所以到达节点 i = `per_node[i + 1]`（最后一个节点用总数）。**第一段总是从舰队实际位置算起**，因此起点只能是舰队所在处。
+- 释放：节点数组用 `sdk::fn::CRT_operator_delete` 释放（引擎的析构也只做这一步）。
+- 已与引擎核对：下达移动后舰队自带的路径在 `fleet + 0x600`（`CFleetMovementManager::path`），其 `CGameDate`（小时）减当前日期即 ETA；三支不同舰队的航线逐节点一致，天数差 < 0.5 天（引擎存整小时）。
+
+## 10. 大地图舰队指令与宣称 (verified 4.5.1)
+
+- 取消全部指令 `fleet_cancel_orders`：`country` + `fleets`（`CPdxArray<TPdxRef<CFleet>>` @ +0x28：data +8、capacity +0x10、size +0x14，数据用引擎堆分配，命令自己释放）。`IsValid` 只要有一支舰队归该国控制且有指令即通过（无原因文本）。
+- 跟随 `follow_command`：`{fleet, target_fleet, attack, cancelled, queue, queue_to_front}`；`IsValid` 用它将加入的 `CFollowFleetOrder` 自检。
+- 姿态 `switch_fleet_stance_command`：`EFleetStance` 0 = passive、1 = aggressive、2 = evasive（名称 `FLEET_STANCE_*`）；当前值 `CFleet::fleet_stance`（+0x460，`CalcMovementPathFindSettings` 里 `cmp [fleet+0x460], 2` 印证）。`IsValid` 只检查舰队支持姿态；跟随别的舰队（舰队编组）时改动不生效。
+- MIA `mia_command`：`fleets` @ +0x20，`EMiaType` @ `sdk::rt::CGoMIACommand_mia_type`（+0x38；`IsValid` 首句 `cmp [rcx+0x38], 9`，9 = 无）；0 = `mia_emergency_ftl`，1 = `mia_return_home`。
+- 宣称：`add_system_claim_command {country, system, claims, date = 今日（g_CurrentGameState + rt::CGameState_date_hours）}`，`IsValid` = `CGalacticObject::IsClaimableBy` + 影响力费用，带原因；`remove_system_claim_command {country, system, claims}`（≤ 已有宣称，与所有者交战时不可）。已有宣称数用 `sdk::fn::CGalacticObject_GetClaimsBy(system, CClaim* out, country)`，`out + CClaim::claims`（星系上的数组在 +0x558/+0x564，元素 0x18；SDK 里同偏移的 `star_class` 是误标）。
+

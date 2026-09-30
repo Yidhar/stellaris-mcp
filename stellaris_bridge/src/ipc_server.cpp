@@ -211,10 +211,36 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([fleet_id, planet_id, queue]() {
             return GalaxyManager::Get().Colonize(fleet_id, planet_id, queue);
         });
+    } else if (method == "cancel_fleet_orders") {
+        std::vector<uint32_t> ids = params.value("fleet_ids", std::vector<uint32_t>{});
+        fut = TaskQueue::Get().Enqueue([ids]() { return GalaxyManager::Get().CancelFleetOrders(ids); });
+    } else if (method == "follow_fleet") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t target = params.value("target_fleet_id", 0xFFFFFFFFu);
+        bool attack = params.value("attack", false);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, target, attack, queue]() {
+            return GalaxyManager::Get().FollowFleet(fleet_id, target, attack, queue);
+        });
+    } else if (method == "set_fleet_stance") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        std::string stance = params.value("stance", "");
+        fut = TaskQueue::Get().Enqueue([fleet_id, stance]() { return GalaxyManager::Get().SetFleetStance(fleet_id, stance); });
+    } else if (method == "fleet_mia") {
+        std::vector<uint32_t> ids = params.value("fleet_ids", std::vector<uint32_t>{});
+        std::string type = params.value("type", "return_home");
+        fut = TaskQueue::Get().Enqueue([ids, type]() { return GalaxyManager::Get().FleetMia(ids, type); });
+    } else if (method == "claim_system") {
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        bool remove = params.value("remove", false);
+        int count = params.value("count", 0);
+        fut = TaskQueue::Get().Enqueue([system_id, remove, count]() {
+            return GalaxyManager::Get().ClaimSystem(system_id, remove, count);
+        });
     } else if (method == "find_path") {
-        uint32_t from = params.value("from_system_id", 0xFFFFFFFFu);
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
         uint32_t to = params.value("to_system_id", 0xFFFFFFFFu);
-        fut = TaskQueue::Get().Enqueue([from, to]() { return GalaxyManager::Get().FindPath(from, to); });
+        fut = TaskQueue::Get().Enqueue([fleet_id, to]() { return GalaxyManager::Get().FindPath(fleet_id, to); });
     } else if (method == "find_systems") {
         std::string purpose = params.value("purpose", "");
         uint32_t from = params.value("from_system_id", 0xFFFFFFFFu);

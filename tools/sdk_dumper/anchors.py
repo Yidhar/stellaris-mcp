@@ -97,6 +97,18 @@ def rip_target(im, i):
     return rva(im, i) + i.size + int(m.group(1), 16) if m else None
 
 
+def rbp_off(op):
+    """Signed displacement of the first [rbp +/- d] operand, or None."""
+    m = re.search(r"\[rbp(?: ([+-]) (0x[0-9a-f]+|\d+))?\]", op)
+    return None if not m else (0 if not m.group(1) else int(m.group(2), 0) * (1 if m.group(1) == "+" else -1))
+
+
+def rsp_off(op):
+    """Displacement of the first [rsp + d] operand, or None."""
+    m = re.search(r"\[rsp(?: \+ (0x[0-9a-f]+|\d+))?\]", op)
+    return None if not m else int(m.group(1) or "0", 0)
+
+
 def data_range(im):
     s = next(s for s in im.pe.sections if s.Name.startswith(b".data"))
     return s.VirtualAddress, s.VirtualAddress + s.Misc_VirtualSize
@@ -633,6 +645,144 @@ def main():
             print(f"UpdateShipParallel grain clamp: 0x{site:X}")
     else:
         failures.append("UpdateShipParallel grain clamp: CGameState_UpdateShipParallel missing")
+
+    # Fleet paths (DrawMovementDebugLines inlines CFleetMovementManager::CalcPath): the call to
+    # CFleetPath::Create takes `lea rcx, [rbp + P]` (path), `lea rdx, [rbp + F]` (from) and
+    # `lea r8, [rbp + T]` (to); the vtables are the rip-relative leas stored to [rbp + P] (CFleetPath),
+    # [rbp + P + 8] (its CPdxArray<SNode>) and [rbp + T] (CCelestialCoordinate). Node count is the
+    # `cmp dword ptr [rbp + P + C], 0` after Create, the node array the `mov rcx, [rbp + P + D]` freed
+    # right after it, the node stride the `add R, S` after `inc reg` in the ETA-label loop. The fleet's
+    # position is a vcall `lea rcx, [rdi + B]; mov rax, [rcx]; call [rax + 8k]` whose result is copied at once (a secondary base)
+    # A node's jump method (EPathJumpMethod) is what CalcEstimatedDays copies into its CFTLJump.
+    ddl = funcs.get("DrawMovementDebugLines", {}).get("rva")
+    create = funcs.get("CFleetPath_Create", {}).get("rva")
+    if ddl and create:
+        ins = im.disasm_fn(ddl, 0x3000)
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        k = next((n for n, i in enumerate(ins) if i.mnemonic == "call" and i.op_str.startswith("0x")
+                  and int(i.op_str, 16) - im.ib == create), None)
+        vals, vts = {}, {}
+        if k is not None:
+            args = {}
+            for o in ops[max(k - 12, 0):k]:
+                m = re.search(r"^lea (rcx|rdx|r8), \[rbp(?: \+ (0x[0-9a-f]+))?\]$", o)
+                if m:
+                    args[m.group(1)] = int(m.group(2) or "0", 16)
+            stores, regs = {}, {}
+            for i, o in zip(ins[:k], ops[:k]):
+                m = re.search(r"^lea (\w+), \[rip \+ 0x[0-9a-f]+\]$", o)
+                if m:
+                    regs[m.group(1)] = rip_target(im, i)
+                    continue
+                m = re.search(r"^mov qword ptr \[rbp(?: \+ (0x[0-9a-f]+))?\], (\w+)$", o)
+                if m and m.group(2) in regs:
+                    stores[int(m.group(1) or "0", 16)] = regs[m.group(2)]
+            p, t = args.get("rcx"), args.get("r8")
+            if p is not None and t is not None:
+                vts = {"CFleetPath": stores.get(p), "CPdxArray_CFleetPath_SNode": stores.get(p + 8),
+                       "CCelestialCoordinate": stores.get(t)}
+                after = ops[k + 1:k + 12]
+                cnt = [int(m.group(1), 16) - p for o in after for m in [re.search(r"^cmp dword ptr \[rbp \+ (0x[0-9a-f]+)\], 0$", o)] if m]
+                data = [int(m.group(1), 16) - p for o in after for m in [re.search(r"^mov rcx, qword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)] if m]
+                vals["CFleetPath_node_count"] = cnt[0] if cnt else None
+                vals["CFleetPath_nodes"] = data[0] if data else None
+            stride = [int(m.group(1), 16) for a, b in zip(ops, ops[1:]) if re.match(r"^inc r\w+$", a)
+                      for m in [re.search(r"^add \w+, (0x[0-9a-f]+)$", b)] if m]
+            vals["CFleetPath_node_size"] = stride[0] if stride else None
+            for j, (a, b, c) in enumerate(zip(ops, ops[1:], ops[2:])):
+                m = re.search(r"^lea rcx, \[rdi \+ (0x[0-9a-f]+)\]$", a)
+                n = re.search(r"^call qword ptr \[rax(?: \+ (0x[0-9a-f]+|\d+))?\]$", c)
+                # the returned coordinate is copied right away (x/y at [rax + 8])
+                if m and b == "mov rax, qword ptr [rcx]" and n and any("[rax + 8]" in o for o in ops[j + 3:j + 6]):
+                    vals["CFleet_coordinate_base"] = int(m.group(1), 16)
+                    result["slots"]["CFleet_GetCoordinate"] = int(n.group(1) or "0", 0) // 8
+                    break
+        # node jump method (EPathJumpMethod: jump_hyperlane / jump_bypass): CalcEstimatedDays builds
+        # a CFTLJump on the stack (`lea R, [rip + CFTLJump vtable]; mov [rbp + B], R`) and stores
+        # `mov dword ptr [rbp + B + jump_method], R32` loaded by `mov R32, dword ptr [node + J]`
+        ced = funcs.get("CFleetPath_CalcEstimatedDays", {}).get("rva")
+        lay = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"].get("CFTLJump::WriteMembers", {})
+        ftl_vt = (lay.get("vtables") or [[None]])[0][0]
+        jm = next((f["win_off"] for f in lay.get("fields", []) if f["name"] == "jump_method"), None)
+        vals["CFleetPath_node_jump_method"] = None
+        if ced and ftl_vt and jm is not None:
+            cins = im.disasm_fn(ced, 0x1400)
+            cops = [f"{i.mnemonic} {i.op_str}" for i in cins]
+
+            base_off = None
+            for j, i in enumerate(cins):
+                if i.mnemonic == "lea" and rip_target(im, i) == ftl_vt:
+                    reg = i.op_str.split(",")[0]
+                    nxt = cops[j + 1] if j + 1 < len(cops) else ""
+                    if nxt.startswith("mov qword ptr [rbp") and nxt.endswith(", " + reg):
+                        base_off = rbp_off(nxt)
+                        break
+            if base_off is not None:
+                for j, o in enumerate(cops):
+                    m = re.search(r"^mov dword ptr \[rbp[^\]]*\], (\w+)$", o)
+                    if m and rbp_off(o) == base_off + jm:
+                        for o2 in reversed(cops[max(j - 40, 0):j]):
+                            m2 = re.search(r"^mov " + m.group(1) + r", dword ptr \[\w+ \+ \w+\*8 \+ (0x[0-9a-f]+)\]$", o2)
+                            if m2:
+                                vals["CFleetPath_node_jump_method"] = int(m2.group(1), 16)
+                                break
+                        break
+        # node bypass (the gateway / wormhole / relay used): CFleetPath::Create fills a CFTLJump at
+        # [rbp + F] and copies its fields into the node it inserts (`lea r8, [rsp + N]` before the
+        # insert call): `mov eax, dword ptr [rbp + F + bypass_to]; mov dword ptr [rsp + N + K], eax`
+        # for an entry node; K must sit next to the jump method copied the same way
+        bto = next((f["win_off"] for f in lay.get("fields", []) if f["name"] == "bypass_to"), None)
+        vals["CFleetPath_node_bypass"] = None
+        if create and ftl_vt and jm is not None and bto is not None:
+            kins = im.disasm_fn(create, 0x1400)
+            kops = [f"{i.mnemonic} {i.op_str}" for i in kins]
+            fbase = None
+            for j, i in enumerate(kins):
+                if i.mnemonic == "lea" and rip_target(im, i) == ftl_vt and j + 1 < len(kops) \
+                        and kops[j + 1].startswith("mov qword ptr [rbp"):
+                    fbase = rbp_off(kops[j + 1])
+                    break
+
+            if fbase is not None:
+                for j in range(len(kops) - 1):
+                    a, b = kops[j], kops[j + 1]
+                    if a.startswith("mov eax, dword ptr [rbp") and rbp_off(a) == fbase + bto and \
+                            b.startswith("mov dword ptr [rsp") and b.endswith(", eax"):
+                        node = next((rsp_off(o) for o in kops[j + 2:j + 8] if o.startswith("lea r8, [rsp")), None)
+                        jm_node = [rsp_off(kops[k + 1]) - node for k in range(max(j - 8, 0), j)
+                                   if node is not None and kops[k].startswith("mov eax, dword ptr [rbp")
+                                   and rbp_off(kops[k]) == fbase + jm and kops[k + 1].startswith("mov dword ptr [rsp")]
+                        if node is not None and jm_node == [vals["CFleetPath_node_jump_method"]]:
+                            vals["CFleetPath_node_bypass"] = rsp_off(b) - node
+                        break
+        if len(vals) != 6 or None in vals.values() or not vts or None in vts.values() \
+                or "CFleet_GetCoordinate" not in result["slots"]:
+            failures.append(f"fleet path: {vals} vtables={vts}")
+        else:
+            result["fields"].update(vals)
+            result["vtables"].update(vts)
+            print("fleet path: " + ", ".join(f"{k}=0x{v:X}" for k, v in {**vals, **vts}.items())
+                  + f", GetCoordinate slot {result['slots']['CFleet_GetCoordinate']}")
+    else:
+        failures.append("fleet path: DrawMovementDebugLines / CFleetPath_Create missing")
+
+    # CGoMIACommand's EMiaType: its serializer converts it with an out-of-line EnumToToken, which
+    # win_extract cannot pair with the token; IsValid starts with `cmp dword ptr [rcx + X], 9`
+    # (9 = no MIA type)
+    sdk_cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))["commands"]
+    mia = next((c for c in sdk_cmds if c["token_name"] == "mia_command"), None)
+    mia_type = None
+    if mia:
+        for i in im.disasm_fn(slot_fn(im, mia["vtable"], 8), 0x40)[:8]:
+            m = re.search(r"^dword ptr \[rcx \+ (0x[0-9a-f]+)\], 9$", i.op_str)
+            if i.mnemonic == "cmp" and m:
+                mia_type = int(m.group(1), 16)
+                break
+    if mia_type is None:
+        failures.append("mia_command mia_type: not found")
+    else:
+        result["fields"]["CGoMIACommand_mia_type"] = mia_type
+        print(f"mia_command mia_type: 0x{mia_type:X}")
 
     # Event targets. CEventTarget: the "is event_target" and "? optional" bytes are the two adjacent
     # `cmp byte ptr [r13 + X], 0` flags in GetScope. CEventScope (CEventScope::Copy): root/from/prev

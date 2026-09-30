@@ -430,6 +430,14 @@ FUNCTIONS = {
         "prefilter_bytes": [b"\x49\x81\xF8\x00\x00\x00\x08"],  # cmp r8, 0x8000000
         "window": 60,
     },
+    "GetDynamicFlag": {
+        "linux": "GetDynamicFlag(CEventScope&, CEventTarget const&, CString const&, CString const&, bool)",
+        # rcx = u16* out, rdx = scope, r8 = @-target, r9 = base name, [rsp+0x28] = location, [rsp+0x30] = log.
+        # Resolves `name@target` (dynamic event targets and flags): a nested GetScope for the target,
+        # a CString build of base + decimal id, then a hash lookup in the flag name table
+        "signature": "uint16_t* (*)(uint16_t* out, void* scope, const void* target, const void* base, const void* where, bool log)",
+        "strings": ["Could not get dynamic flag '%s' with target '%s' in scope: '%s' at %s"],
+    },
     "CInGameIdler_SetPaused": {
         "linux": "CInGameIdler::SetPaused(SPauseGameSettings const&)",
         # rcx = idler, rdx = SPauseGameSettings: +0x10 std::string who (MSVC: 16-byte buffer,
@@ -469,6 +477,61 @@ FUNCTIONS = {
                     (r"^call", ""), (r"^cmp byte ptr \[rcx \+ 0x1280\], 4", "")],
         "prefilter_bytes": [b"\x80\xB9\x80\x12\x00\x00\x0A"],  # cmp byte ptr [rcx + 0x1280], 0xa
         "window": 70,
+    },
+    # --- fleet paths: DrawMovementDebugLines ("ETA %.1f days") inlines CFleetMovementManager::
+    # CalcPath: it builds a CFleetPath on the stack, computes the path-find settings, calls
+    # CFleetPath::Create, then CFleetPath::CalcEstimatedDays, and frees the node array
+    "CPlanet_CanColonize": {
+        "linux": "CPlanet::CanColonize(CCountry const*, CString*) const",
+        # rcx = planet, rdx = country, r8 = CString* reason (nullptr when none); what
+        # CFleetColonizePlanetCommand::IsValid asks (with a null reason) before CanQueue
+        "signature": "bool (*)(const void* planet, const void* country, void* reason)",
+        "strings": ["COLONIZABLE_UNSURVEYED", "COLONIZABLE_INSIDE_OTHER_BORDERS"],
+    },
+    "CGalacticObject_GetClaimsBy": {
+        "linux": "CGalacticObject::GetClaimsBy(CCountry const*) const",
+        # rcx = system, rdx = CClaim* out (vtable, owner +8, date +0xC, claims +0x10; returned in
+        # rax), r8 = country; a default CClaim (claims 0) when the country has none there
+        "signature": "void* (*)(const void* system, void* out_claim, const void* country)",
+        # CRemoveSystemClaimCommand::IsValid compares the claims it removes with this first
+        "vtable_call": {"command": "remove_system_claim_command", "slot": 8, "call_index": 0},
+    },
+    "DrawMovementDebugLines": {
+        "linux": "DrawMovementDebugLines()",
+        # not called by the bridge; anchors.py reads the CFleetPath / coordinate vtables out of it
+        "signature": "void (*)()",
+        "strings": ["ETA %.1f days"],
+    },
+    "CFleetPath_Create": {
+        "linux": "CFleetPath::Create(CCelestialCoordinate const&, CCelestialCoordinate const&, CGalacticObject const*, CFleet const*, CSimpleBitMask<EPathFindSettings>)",
+        # rcx = path (vt, CPdxArray<SNode> +8: data +0x10, size +0x1C; CGameDate +0x20), rdx = from,
+        # r8 = to (CCelestialCoordinate, 0x28 bytes), r9 = avoid system (TPdxNullObject<CGalacticObject>),
+        # [rsp+0x20] = fleet, [rsp+0x28] = settings
+        "signature": "void (*)(void* path, const void* from, const void* to, const void* avoid, const void* fleet, uint32_t settings)",
+        # settings = CalcMovementPathFindSettings: `neg ecx; and ecx, 1; or ecx, 2`, then Create
+        "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^or ecx, 2$", "pick": "first_call_after"},
+    },
+    "CFleet_PathFindSettingsFlag": {
+        "linux": "CFleet::CalcMovementPathFindSettings() const (MSVC: the bool part; settings = flag ? 3 : 2)",
+        # rcx = fleet; true when the fleet is passive, an AI fleet that must avoid danger, or flagged
+        "signature": "bool (*)(const void* fleet)",
+        "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^or ecx, 2$", "pick": "last_call_before"},
+    },
+    "CFleetPath_CalcEstimatedDays": {
+        "linux": "CFleetPath::CalcEstimatedDays(CFleet const*, CFixedPoint*) const",
+        # rcx = path, rdx = CFixedPoint* out (returned in rax), r8 = fleet, r9 = CFixedPoint[size]
+        # per-node days (nullptr when not wanted)
+        "signature": "int64_t* (*)(const void* path, int64_t* out_days, const void* fleet, int64_t* per_node)",
+        # after the red debug-line colour: two __chkstk probes for the alloca'd buffers, then the call
+        "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^mov dword ptr \[rbp \+ 0x[0-9a-f]+\], 0xff0000ff$",
+                      "pick": "first_call_after", "skip": 2},
+    },
+    "CRT_operator_delete": {
+        "linux": "operator delete(void*)",
+        # frees engine allocations (kRvaEngineAlloc); here: the empty path's node array
+        "signature": "void (*)(void* p)",
+        "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^cmp dword ptr \[rbp \+ 0x[0-9a-f]+\], 0$",
+                      "pick": "first_call_after"},
     },
     "CRT_purecall": {
         "linux": "__cxa_pure_virtual (MSVC: _purecall)",

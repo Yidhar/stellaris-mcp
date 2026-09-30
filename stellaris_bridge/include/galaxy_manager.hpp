@@ -34,9 +34,21 @@ public:
     nlohmann::json BuildOutpost(uint32_t fleet_id, uint32_t system_id, bool queue);
     // a colony ship colonizes the planet
     nlohmann::json Colonize(uint32_t fleet_id, uint32_t planet_id, bool queue);
+    // cancel every order of these fleets (they stop where they are)
+    nlohmann::json CancelFleetOrders(const std::vector<uint32_t>& fleet_ids);
+    // follow another fleet (attack: engage it when caught up)
+    nlohmann::json FollowFleet(uint32_t fleet_id, uint32_t target_fleet_id, bool attack, bool queue);
+    // passive / aggressive / evasive
+    nlohmann::json SetFleetStance(uint32_t fleet_id, const std::string& stance);
+    // return_home / emergency_ftl (the fleets go missing in action)
+    nlohmann::json FleetMia(const std::vector<uint32_t>& fleet_ids, const std::string& type);
+    // add (count claims, default 1) or remove (count, default all) the player's claims on a system
+    nlohmann::json ClaimSystem(uint32_t system_id, bool remove, int count);
 
-    // shortest hyperlane route by length between two systems
-    nlohmann::json FindPath(uint32_t from_system, uint32_t to_system);
+    // the route the game plans for this fleet from where it is (CFleetPath::Create: closed
+    // borders, gateways, wormholes and FTL as the fleet may use them) with its
+    // CalcEstimatedDays travel time, the ETA the fleet gets when ordered there
+    nlohmann::json FindPath(uint32_t fleet_id, uint32_t to_system);
     // systems for a purpose ("unsurveyed", "outpost", "deposit"), nearest first
     nlohmann::json FindSystems(const std::string& purpose, uint32_t from_system, int limit, uint32_t fleet_id,
                                const std::string& resource, uint32_t species_id = 0xFFFFFFFF);

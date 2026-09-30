@@ -222,48 +222,48 @@ namespace glob {
     inline constexpr uintptr_t TPdxNullObject_CSpyNetwork_pInstance = 0x3113330;  // TPdxNullObject<CSpyNetwork>::_pInstance  score=0.5 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CStarbase_pInstance = 0x3112FF0;  // TPdxNullObject<CStarbase>::_pInstance  score=0.889 live=not-checked
     inline constexpr uintptr_t TPdxRef_CAmbientObject_pDatabase = 0x3114008;  // TPdxRef<CAmbientObject>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3113E90;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=unverified
-    inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3113F60;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CBuilding_pDatabase = 0x3113FF8;  // TPdxRef<CBuilding>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3113E90;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=ok
+    inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3113F60;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CBuilding_pDatabase = 0x3113FF8;  // TPdxRef<CBuilding>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CBypass_pDatabase = 0x3113FB8;  // TPdxRef<CBypass>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CColony_pDatabase = 0x3114140;  // TPdxRef<CColony>::_pDatabase  score=0.833 live=unverified
-    inline constexpr uintptr_t TPdxRef_CConstructionQueue_pDatabase = 0x3113EB8;  // TPdxRef<CConstructionQueue>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CConstructionQueueItem_pDatabase = 0x31132E0;  // TPdxRef<CConstructionQueueItem>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CColony_pDatabase = 0x3114140;  // TPdxRef<CColony>::_pDatabase  score=0.833 live=ok
+    inline constexpr uintptr_t TPdxRef_CConstructionQueue_pDatabase = 0x3113EB8;  // TPdxRef<CConstructionQueue>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CConstructionQueueItem_pDatabase = 0x3113EA8;  // TPdxRef<CConstructionQueueItem>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CCosmicStormInfluenceField_pDatabase = 0x3113E98;  // TPdxRef<CCosmicStormInfluenceField>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CCouncilPosition_pDatabase = 0x3113528;  // TPdxRef<CCouncilPosition>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CCountry_pDatabase = 0x3113F50;  // TPdxRef<CCountry>::_pDatabase  score=0.663 live=unverified
+    inline constexpr uintptr_t TPdxRef_CCouncilPosition_pDatabase = 0x3113EC0;  // TPdxRef<CCouncilPosition>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CCountry_pDatabase = 0x3113F50;  // TPdxRef<CCountry>::_pDatabase  score=0.663 live=ok
     inline constexpr uintptr_t TPdxRef_CCountryFocusCard_pDatabase = 0x3113EE8;  // TPdxRef<CCountryFocusCard>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDebris_pDatabase = 0x3113FC8;  // TPdxRef<CDebris>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDeposit_pDatabase = 0x3113FB0;  // TPdxRef<CDeposit>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDistrict_pDatabase = 0x3113FF0;  // TPdxRef<CDistrict>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CEspionageAsset_pDatabase = 0x3113F98;  // TPdxRef<CEspionageAsset>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CEspionageOperation_pDatabase = 0x3113E80;  // TPdxRef<CEspionageOperation>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CEspionageOperation_pDatabase = 0x3113E80;  // TPdxRef<CEspionageOperation>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CExhibit_pDatabase = 0x3113FE8;  // TPdxRef<CExhibit>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CFederation_pDatabase = 0x3113F88;  // TPdxRef<CFederation>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CFleet_pDatabase = 0x3111CF8;  // TPdxRef<CFleet>::_pDatabase  score=0.831 live=unverified
-    inline constexpr uintptr_t TPdxRef_CFleetTemplate_pDatabase = 0x3114038;  // TPdxRef<CFleetTemplate>::_pDatabase  score=0.889 live=unverified
-    inline constexpr uintptr_t TPdxRef_CGalacticObject_pDatabase = 0x3114148;  // TPdxRef<CGalacticObject>::_pDatabase  score=0.462 live=unverified
+    inline constexpr uintptr_t TPdxRef_CFederation_pDatabase = 0x3113F88;  // TPdxRef<CFederation>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CFleet_pDatabase = 0x3111CF8;  // TPdxRef<CFleet>::_pDatabase  score=0.831 live=ok
+    inline constexpr uintptr_t TPdxRef_CFleetTemplate_pDatabase = 0x3114038;  // TPdxRef<CFleetTemplate>::_pDatabase  score=0.889 live=ok
+    inline constexpr uintptr_t TPdxRef_CGalacticObject_pDatabase = 0x3114148;  // TPdxRef<CGalacticObject>::_pDatabase  score=0.462 live=ok
     inline constexpr uintptr_t TPdxRef_CGroundCombat_pDatabase = 0x3113EB0;  // TPdxRef<CGroundCombat>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CLawsuit_pDatabase = 0x3113ED8;  // TPdxRef<CLawsuit>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CLeader_pDatabase = 0x3114120;  // TPdxRef<CLeader>::_pDatabase  score=0.846 live=unverified
-    inline constexpr uintptr_t TPdxRef_CMegaStructure_pDatabase = 0x3113F80;  // TPdxRef<CMegaStructure>::_pDatabase  score=0.75 live=unverified
+    inline constexpr uintptr_t TPdxRef_CLeader_pDatabase = 0x3114120;  // TPdxRef<CLeader>::_pDatabase  score=0.846 live=ok
+    inline constexpr uintptr_t TPdxRef_CMegaStructure_pDatabase = 0x3113F80;  // TPdxRef<CMegaStructure>::_pDatabase  score=0.75 live=ok
     inline constexpr uintptr_t TPdxRef_CMissile_pDatabase = 0x31140B0;  // TPdxRef<CMissile>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CMission_pDatabase = 0x3113FD8;  // TPdxRef<CMission>::_pDatabase  score=0.4 live=unverified
     inline constexpr uintptr_t TPdxRef_CNaturalWormhole_pDatabase = 0x3114010;  // TPdxRef<CNaturalWormhole>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_COrbitalLine_pDatabase = 0x3113EE0;  // TPdxRef<COrbitalLine>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CPatronRelation_pDatabase = 0x3113EC8;  // TPdxRef<CPatronRelation>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CPlanet_pDatabase = 0x3114128;  // TPdxRef<CPlanet>::_pDatabase  score=0.571 live=unverified
+    inline constexpr uintptr_t TPdxRef_CPatronRelation_pDatabase = 0x3113EC8;  // TPdxRef<CPatronRelation>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CPlanet_pDatabase = 0x3114128;  // TPdxRef<CPlanet>::_pDatabase  score=0.571 live=ok
     inline constexpr uintptr_t TPdxRef_CPopFaction_pDatabase = 0x3113F90;  // TPdxRef<CPopFaction>::_pDatabase  score=1.0 live=no-type-vtable
-    inline constexpr uintptr_t TPdxRef_CPopGroup_pDatabase = 0x3113F68;  // TPdxRef<CPopGroup>::_pDatabase  score=0.5 live=unverified
+    inline constexpr uintptr_t TPdxRef_CPopGroup_pDatabase = 0x3113F68;  // TPdxRef<CPopGroup>::_pDatabase  score=0.5 live=ok
     inline constexpr uintptr_t TPdxRef_CPopJob_pDatabase = 0x3113FE0;  // TPdxRef<CPopJob>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CResolution_pDatabase = 0x3114040;  // TPdxRef<CResolution>::_pDatabase  score=0.909 live=unverified
-    inline constexpr uintptr_t TPdxRef_CSector_pDatabase = 0x3113FA8;  // TPdxRef<CSector>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CShip_pDatabase = 0x3113F70;  // TPdxRef<CShip>::_pDatabase  score=0.75 live=unverified
+    inline constexpr uintptr_t TPdxRef_CResolution_pDatabase = 0x3114040;  // TPdxRef<CResolution>::_pDatabase  score=0.909 live=ok
+    inline constexpr uintptr_t TPdxRef_CSector_pDatabase = 0x3113FA8;  // TPdxRef<CSector>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CShip_pDatabase = 0x3113F70;  // TPdxRef<CShip>::_pDatabase  score=0.75 live=ok
     inline constexpr uintptr_t TPdxRef_CShipDesign_pDatabase = 0x3113980;  // TPdxRef<CShipDesign>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CSituation_pDatabase = 0x3113FD0;  // TPdxRef<CSituation>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CSpecies_pDatabase = 0x3113F58;  // TPdxRef<CSpecies>::_pDatabase  score=0.538 live=ok
-    inline constexpr uintptr_t TPdxRef_CSpyNetwork_pDatabase = 0x3113FA0;  // TPdxRef<CSpyNetwork>::_pDatabase  score=0.5 live=unverified
-    inline constexpr uintptr_t TPdxRef_CStarbase_pDatabase = 0x3113F78;  // TPdxRef<CStarbase>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CSpyNetwork_pDatabase = 0x3113FA0;  // TPdxRef<CSpyNetwork>::_pDatabase  score=0.5 live=ok
+    inline constexpr uintptr_t TPdxRef_CStarbase_pDatabase = 0x3113F78;  // TPdxRef<CStarbase>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CStrikeCraft_pDatabase = 0x31140A8;  // TPdxRef<CStrikeCraft>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CTradeDeal_pDatabase = 0x3114018;  // TPdxRef<CTradeDeal>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CTruce_pDatabase = 0x3114020;  // TPdxRef<CTruce>::_pDatabase  score=anchor live=anchor
@@ -289,9 +289,9 @@ namespace db {
     inline constexpr uintptr_t CBypass = 0x3113FB8;
     inline constexpr uintptr_t CColony = 0x3114140;
     inline constexpr uintptr_t CConstructionQueue = 0x3113EB8;
-    inline constexpr uintptr_t CConstructionQueueItem = 0x31132E0;
+    inline constexpr uintptr_t CConstructionQueueItem = 0x3113EA8;
     inline constexpr uintptr_t CCosmicStormInfluenceField = 0x3113E98;
-    inline constexpr uintptr_t CCouncilPosition = 0x3113528;
+    inline constexpr uintptr_t CCouncilPosition = 0x3113EC0;
     inline constexpr uintptr_t CCountry = 0x3113F50;
     inline constexpr uintptr_t CCountryFocusCard = 0x3113EE8;
     inline constexpr uintptr_t CDebris = 0x3113FC8;
@@ -342,8 +342,15 @@ namespace rt {
     inline constexpr std::ptrdiff_t CEventTarget_is_event_target = 0x198;
     inline constexpr std::ptrdiff_t CEventTarget_optional = 0x199;
     inline constexpr std::ptrdiff_t CFleetManagerView_reinforce_due = 0x32B8;
+    inline constexpr std::ptrdiff_t CFleetPath_node_bypass = 0x2C;
+    inline constexpr std::ptrdiff_t CFleetPath_node_count = 0x1C;
+    inline constexpr std::ptrdiff_t CFleetPath_node_jump_method = 0x28;
+    inline constexpr std::ptrdiff_t CFleetPath_node_size = 0x30;
+    inline constexpr std::ptrdiff_t CFleetPath_nodes = 0x10;
+    inline constexpr std::ptrdiff_t CFleet_coordinate_base = 0x38;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
     inline constexpr std::ptrdiff_t CGameState_date_hours = 0xC0;
+    inline constexpr std::ptrdiff_t CGoMIACommand_mia_type = 0x38;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_dynamic_size = 0x248;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_flag = 0x220;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_vt_GetFlags = 0xF0;
@@ -376,10 +383,14 @@ namespace vt {
     inline constexpr uintptr_t CBuildableClearDepositBlocker = 0x2391F40;
     inline constexpr uintptr_t CBuildableUpgradeBuilding = 0x2391D30;
     inline constexpr uintptr_t CBuildableZone = 0x2391E90;
+    inline constexpr uintptr_t CCelestialCoordinate = 0x2344C00;
+    inline constexpr uintptr_t CFleetPath = 0x23DB020;
+    inline constexpr uintptr_t CPdxArray_CFleetPath_SNode = 0x2344588;
     inline constexpr int CBuildableBase_CalcCost = 9;
     inline constexpr int CBuildableBase_CalcProgressionSpeed = 10;
     inline constexpr int CBuildableBase_CalcProgressionTimeNeeded = 11;
     inline constexpr int CBuildableBase_GetToken = 16;
+    inline constexpr int CFleet_GetCoordinate = 1;
 }  // namespace vt
 
 // ============================== functions =============================
@@ -427,10 +438,18 @@ namespace fn {
     inline constexpr uintptr_t CFleetManagerTemplateGridController_Update = 0x149D5C0;
     // CFleetManagerView::Update()  --  void (*)(void* view)
     inline constexpr uintptr_t CFleetManagerView_Update = 0x112A050;
+    // CFleetPath::CalcEstimatedDays(CFleet const*, CFixedPoint*) const  --  int64_t* (*)(const void* path, int64_t* out_days, const void* fleet, int64_t* per_node)
+    inline constexpr uintptr_t CFleetPath_CalcEstimatedDays = 0xE21BC0;
+    // CFleetPath::Create(CCelestialCoordinate const&, CCelestialCoordinate const&, CGalacticObject const*, CFleet const*, CSimpleBitMask<EPathFindSettings>)  --  void (*)(void* path, const void* from, const void* to, const void* avoid, const void* fleet, uint32_t settings)
+    inline constexpr uintptr_t CFleetPath_Create = 0xE22410;
     // CFleet::BuildOrdersString(bool, bool) const  --  void* (*)(const void* fleet, void* out_cstring, bool, bool)
     inline constexpr uintptr_t CFleet_BuildOrdersString = 0xC74BA0;
     // CFleet::CalcMilitaryPower(int) const  --  int64_t* (*)(const void* fleet, int64_t* out, int type, bool flag)
     inline constexpr uintptr_t CFleet_CalcMilitaryPower = 0xC7EFF0;
+    // CFleet::CalcMovementPathFindSettings() const (MSVC: the bool part; settings = flag ? 3 : 2)  --  bool (*)(const void* fleet)
+    inline constexpr uintptr_t CFleet_PathFindSettingsFlag = 0xC86950;
+    // CGalacticObject::GetClaimsBy(CCountry const*) const  --  void* (*)(const void* system, void* out_claim, const void* country)
+    inline constexpr uintptr_t CGalacticObject_GetClaimsBy = 0x8659A0;
     // CGameState::HandleTurnTick(CPdxArray<CCommand*, int>&)  --  void (*)(void* game_state, void* commands)
     inline constexpr uintptr_t CGameState_HandleTurnTick = 0x2511D0;
     // CGameState::MicroUpdate() -- the fleet parallel-for (CFleet::MicroUpdateParallel), split out on Windows  --  void (*)(void* game_state)
@@ -457,6 +476,10 @@ namespace fn {
     inline constexpr uintptr_t CPdxModifier_AddModifierInternal = 0x231210;
     // CPersistentName::BuildString() const  --  void* (*)(const void* persistent_name, void* out_cstring)
     inline constexpr uintptr_t CPersistentName_BuildString = 0x33B360;
+    // CPlanet::CanColonize(CCountry const*, CString*) const  --  bool (*)(const void* planet, const void* country, void* reason)
+    inline constexpr uintptr_t CPlanet_CanColonize = 0xE00F90;
+    // operator delete(void*)  --  void (*)(void* p)
+    inline constexpr uintptr_t CRT_operator_delete = 0x2021424;
     // __cxa_pure_virtual (MSVC: _purecall)  --  void (*)()  -- calls the registered purecall handler, then abort()
     inline constexpr uintptr_t CRT_purecall = 0x2023540;
     // CRandomLog::Get() (the random-number log whose config the flush ORs with 2)  --  void* (*)()
@@ -473,6 +496,10 @@ namespace fn {
     inline constexpr uintptr_t CSpeciesRightBase_IsPotential = 0x39BF30;
     // CStrategicResource::GetMaximumForCountry(CCountry const&) const  --  int64_t* (*)(const void* resource, int64_t* out, const void* country)
     inline constexpr uintptr_t CStrategicResource_GetMaximumForCountry = 0x3ADB80;
+    // DrawMovementDebugLines()  --  void (*)()
+    inline constexpr uintptr_t DrawMovementDebugLines = 0x9209A0;
+    // GetDynamicFlag(CEventScope&, CEventTarget const&, CString const&, CString const&, bool)  --  uint16_t* (*)(uint16_t* out, void* scope, const void* target, const void* base, const void* where, bool log)
+    inline constexpr uintptr_t GetDynamicFlag = 0x9F8A10;
     // NEventWindowUtil::GetEventWindowDesc(CEvent const&, CEventScope const&)  --  void* (*)(void* out_cstring, void* event, void* scope)
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077830;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
@@ -938,6 +965,7 @@ namespace CColonyCarrier {  // CColonyCarrier serializer 0xCCA740, match 1.0
 namespace CCombatFormation {  // CCombatFormation serializer 0xD7A870, match 1.0
     inline constexpr std::ptrdiff_t root = 0xC0;  // tok 0x2c92 i32
     inline constexpr std::ptrdiff_t ships = 0xD0;  // tok 0x2c15 ref_array<TPdxRef<CShip>>
+    inline constexpr std::ptrdiff_t parent = 0x100;  // tok 0x87 ref_array<int>
 }
 namespace CCombatTestScenarioDatabase {  // CCombatTestScenarioDatabase serializer 0x5D5140, match 1.0
     inline constexpr std::ptrdiff_t prev = 0x2B80C3C;  // tok 0x2c93 string
@@ -1018,7 +1046,8 @@ namespace CCouncilPositionManager_CSerializer {  // CCouncilPositionManager::CSe
     inline constexpr std::ptrdiff_t council_positions = 0x30;  // tok 0x3da9 other (ptr; value at +0x0)
 }
 namespace CCounterIntelligence {  // CCounterIntelligence serializer 0xB2C560, match 1.0
-    inline constexpr std::ptrdiff_t envoy_assignment = 0x58;  // tok 0x3286 ref_array<TPdxRef<CLeader>>
+    inline constexpr std::ptrdiff_t envoy_assignment = 0x40;  // tok 0x3286 ref_array<TPdxRef<CLeader>>
+    inline constexpr std::ptrdiff_t power = 0x58;  // tok 0x2d19 u64
 }
 namespace CCountry {  // CCountry serializer 0x6E2040, match 1.0
     inline constexpr std::ptrdiff_t visited_objects = 0x28;  // tok 0x2dea ref_array<TPdxRef<CGalacticObject>>
@@ -1242,7 +1271,8 @@ namespace CCountrySectorData_CSerializer {  // CCountrySectorData::CSerializer s
     inline constexpr std::ptrdiff_t owned = 0x38;  // tok 0x339a ref_array<TPdxRef<CSector>> (ptr; value at +0x14)
 }
 namespace CCountryWaystationNetworkManager {  // CCountryWaystationNetworkManager serializer 0x7842A0, match 1.0
-    inline constexpr std::ptrdiff_t waystation_networks = 0x2F40;  // tok 0x45b8 ref_array<TPdxRef<CWaystationNetwork>>
+    inline constexpr std::ptrdiff_t waystation_networks = 0x2F28;  // tok 0x45b8 ref_array<TPdxRef<CWaystationNetwork>>
+    inline constexpr std::ptrdiff_t connected_countries = 0x2F40;  // tok 0x45ba ref_array<TPdxRef<CCountry>>
 }
 namespace CCrisisProgression {  // CCrisisProgression serializer 0x569CE0, match 1.0
     inline constexpr std::ptrdiff_t path = 0x8;  // tok 0x174 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
@@ -1431,6 +1461,7 @@ namespace CEmpireDesign {  // CEmpireDesign serializer 0x51E780, match 1.0
 namespace CEncampmentToggleProcess {  // CEncampmentToggleProcess serializer 0x8A8B60, match 1.0
     inline constexpr std::ptrdiff_t progress = 0x8;  // tok 0x2c79 u64
     inline constexpr std::ptrdiff_t total = 0x10;  // tok 0x4059 u64
+    inline constexpr std::ptrdiff_t carrier = 0x18;  // tok 0x45e7 persistent
 }
 namespace CEspionageAsset {  // CEspionageAsset serializer 0x63AF90, match 1.0
     inline constexpr std::ptrdiff_t type = 0x18;  // tok 0xe1 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
@@ -1476,6 +1507,7 @@ namespace CEventScopeParameter {  // CEventScopeParameter serializer 0x396400, m
 }
 namespace CExcavateSiteFleetOrder {  // CExcavateSiteFleetOrder serializer 0xD0D680, match 1.0
     inline constexpr std::ptrdiff_t archaeological_site = 0x28;  // tok 0x3d24 ref<CArchaeologicalSite>
+    inline constexpr std::ptrdiff_t progress = 0x30;  // tok 0x2c79 u64
 }
 namespace CExecuteEffectFleetAction {  // CExecuteEffectFleetAction serializer 0xE8C940, match 0.833
     inline constexpr std::ptrdiff_t done = 0x8;  // tok 0x3103 bool_cond
@@ -1489,6 +1521,7 @@ namespace CExhibit {  // CExhibit serializer 0x60A940, match 1.0
 }
 namespace CExploreAstralRiftFleetOrder {  // CExploreAstralRiftFleetOrder serializer 0xD122B0, match 1.0
     inline constexpr std::ptrdiff_t astral_rift = 0x28;  // tok 0x421e ref<CAstralRift>
+    inline constexpr std::ptrdiff_t progress = 0x30;  // tok 0x2c79 u64
 }
 namespace CFTLJump {  // CFTLJump serializer 0xE21520, match 1.0
     inline constexpr std::ptrdiff_t from = 0x8;  // tok 0x2c78 persistent
@@ -1705,6 +1738,7 @@ namespace CFleetTemplate {  // CFleetTemplate serializer 0xE14FA0, match 1.0
     inline constexpr std::ptrdiff_t is_edited_by_human = 0x98;  // tok 0x2a32 bool_cond
 }
 namespace CFleetTemplateDesign {  // CFleetTemplateDesign serializer 0xE14840, match 1.0
+    inline constexpr std::ptrdiff_t items = 0x8;  // tok 0x3e03 ref_array<TPdxRef<CConstructionQueueItem>>
     inline constexpr std::ptrdiff_t ship_design_implementation = 0x20;  // tok 0x44f5 persistent
     inline constexpr std::ptrdiff_t count = 0x558;  // tok 0x3fb1 i32
 }
@@ -1793,6 +1827,7 @@ namespace CGalacticObject {  // CGalacticObject serializer 0x861730, match 0.986
 }
 namespace CGalacticObjectCluster {  // CGalacticObjectCluster serializer 0x69F450, match 0.75
     inline constexpr std::ptrdiff_t id = 0x18;  // tok 0xb other
+    inline constexpr std::ptrdiff_t objects = 0x128;  // tok 0x3e ref_array<TPdxRef<CGalacticObject>>
     inline constexpr std::ptrdiff_t position = 0x140;  // tok 0x4c persistent
     inline constexpr std::ptrdiff_t radius = 0x168;  // tok 0x1b5 u64
 }
@@ -2024,6 +2059,7 @@ namespace CLockBypassOrder {  // CLockBypassOrder serializer 0xD00290, match 1.0
     inline constexpr std::ptrdiff_t bypass = 0x28;  // tok 0x4114 ref<CBypass>
     inline constexpr std::ptrdiff_t destination = 0x2C;  // tok 0x3ac2 ref<CBypass>
     inline constexpr std::ptrdiff_t state = 0x30;  // tok 0x1b7 other  [check: positional]
+    inline constexpr std::ptrdiff_t progress = 0x38;  // tok 0x2c79 u64
 }
 namespace CMarket {  // CMarket serializer 0x8F2980, match 0.84
     inline constexpr std::ptrdiff_t fluctuations = 0x28;  // tok 0x33bb ref_array<CFixedPoint>
@@ -2161,6 +2197,7 @@ namespace CMovingPoint {  // CMovingPoint serializer 0xAFD740, match 1.0
     inline constexpr std::ptrdiff_t x = 0x8;  // tok 0x20 u64
     inline constexpr std::ptrdiff_t y = 0x10;  // tok 0x21 u64
     inline constexpr std::ptrdiff_t forward_x = 0x18;  // tok 0x3719 u64
+    inline constexpr std::ptrdiff_t forward_y = 0x20;  // tok 0x371a u64
     inline constexpr std::ptrdiff_t rotation = 0x28;  // tok 0x156 u64
     inline constexpr std::ptrdiff_t speed = 0x30;  // tok 0x6e u64
 }
@@ -2245,6 +2282,7 @@ namespace CPatronRelation_SCompletedCalling {  // CPatronRelation::SCompletedCal
     inline constexpr std::ptrdiff_t id = 0x20;  // tok 0xb i32
     inline constexpr std::ptrdiff_t key = 0x24;  // tok 0xdc i32
     inline constexpr std::ptrdiff_t tier = 0x28;  // tok 0x30ab i32
+    inline constexpr std::ptrdiff_t attunement = 0x30;  // tok 0x4452 u64
 }
 // CPatronRelation::SUnlockedActiveAccord: layout unresolved (this-adjust not found; serializer 0x603A10)
 namespace CPdxIntegerFlags {  // CPdxIntegerFlags serializer 0x1A7D6F0, match 1.0
@@ -2825,6 +2863,7 @@ namespace CStandardEconomyCountryModule {  // CStandardEconomyCountryModule seri
     inline constexpr std::ptrdiff_t resource_conversions = 0x20;  // tok 0x4614 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
 }
 namespace CStandardLeaderCountryModule {  // CStandardLeaderCountryModule serializer 0x7FC480, match 1.0
+    inline constexpr std::ptrdiff_t leaders = 0x20;  // tok 0x409e ref_array<TPdxRef<CLeader>>
     inline constexpr std::ptrdiff_t enabled = 0x58;  // tok 0x305 other
 }
 namespace CStandardSpeciesRightsModule {  // CStandardSpeciesRightsModule serializer 0x7F7BB0, match 1.0
@@ -2878,6 +2917,7 @@ namespace CStrikeCraftComponent {  // CStrikeCraftComponent serializer 0x3C7040,
     inline constexpr std::ptrdiff_t template_ = 0x8;  // tok 0x2cd ptr (object pointer; serialized as its key string) (ptr; value at +0x1B0)
     inline constexpr std::ptrdiff_t component_slot = 0x10;  // tok 0x2c68 ptr (object pointer; serialized as its key string) (ptr; value at +0x18)
     inline constexpr std::ptrdiff_t count = 0x20;  // tok 0x3fb1 u64
+    inline constexpr std::ptrdiff_t launch_time = 0x28;  // tok 0x3234 u64
 }
 namespace CStrikeCraftManager {  // CStrikeCraftManager serializer 0x83E4D0, match 1.0
     inline constexpr std::ptrdiff_t crafts = 0x1C;  // tok 0x3233 ref_array<TPdxRef<CStrikeCraft>>
@@ -2888,6 +2928,7 @@ namespace CSubjectIntegration {  // CSubjectIntegration serializer 0x7F0C90, mat
 namespace CSubjectSpecialization_CSerializer {  // CSubjectSpecialization::CSerializer serializer 0xAFD4C0, match 1.0
     inline constexpr std::ptrdiff_t specialist_type = 0x30;  // tok 0x3ba3 string
     inline constexpr std::ptrdiff_t level = 0x30;  // tok 0x3efc other (ptr; value at +0x28)
+    inline constexpr std::ptrdiff_t experience = 0x30;  // tok 0x3ff5 other (ptr; value at +0x30)
 }
 namespace CSurveyDepositHolderFleetOrder {  // CSurveyDepositHolderFleetOrder serializer 0xCDF410, match 0.643
     inline constexpr std::ptrdiff_t deposit_holder = 0x28;  // tok 0x32a8 persistent
@@ -3023,9 +3064,9 @@ namespace CTurnTickCommand_CPlayerCurrentTick {  // CTurnTickCommand::CPlayerCur
     inline constexpr std::ptrdiff_t tick = 0xC;  // tok 0x385 i32
 }
 namespace CUpgradeDesignAtOrbitableFleetOrder {  // CUpgradeDesignAtOrbitableFleetOrder serializer 0xCDD3C0, match 1.0
-    inline constexpr std::ptrdiff_t orbitable = 0x30;  // tok 0x3db9 persistent
     inline constexpr std::ptrdiff_t status = 0x30;  // tok 0xd0 ref_array<CUpgradeDesignAtOrbitableFleetOrder::SBuildingStatus> (ptr; value at +0x0)
     inline constexpr std::ptrdiff_t queue = 0x40;  // tok 0x4091 ref<CConstructionQueue>
+    inline constexpr std::ptrdiff_t orbitable = 0x48;  // tok 0x3db9 persistent
     inline constexpr std::ptrdiff_t self_upgrading = 0x61;  // tok 0x3e13 other
 }
 namespace CUpgradeDesignAtOrbitableFleetOrder_SBuildingStatus {  // CUpgradeDesignAtOrbitableFleetOrder::SBuildingStatus serializer 0xD0D430, match 1.0
@@ -3145,6 +3186,7 @@ namespace NCombatStats_SFleetCombatStatsData {  // NCombatStats::SFleetCombatSta
     inline constexpr std::ptrdiff_t hit_ratio_outgoing = 0x58;  // tok 0x3564 ref_array<NCombatStats::SCombatStatHitRatio>
     inline constexpr std::ptrdiff_t hit_ratio_incoming = 0x70;  // tok 0x3565 ref_array<NCombatStats::SCombatStatHitRatio>
     inline constexpr std::ptrdiff_t targetables_killed_outgoing = 0x88;  // tok 0x369f ref_array<NCombatStats::SCombatStatTargetablesKilled>
+    inline constexpr std::ptrdiff_t targetables_killed_incoming = 0xA0;  // tok 0x36a0 ref_array<NCombatStats::SCombatStatTargetablesKilled>
 }
 namespace NSpeciesModification_SSpeciesColonyPair {  // NSpeciesModification::SSpeciesColonyPair serializer 0x8EC760, match 1.0
     inline constexpr std::ptrdiff_t species = 0x8;  // tok 0x2b52 ref<CSpecies>
@@ -3179,6 +3221,7 @@ namespace SAmbientObjectInstanceProperties {  // SAmbientObjectInstancePropertie
     inline constexpr std::ptrdiff_t play_animation_once = 0xA5;  // tok 0x3f80 bool_cond
 }
 namespace SAsteroidBelt {  // SAsteroidBelt serializer 0x8609E0, match 1.0
+    inline constexpr std::ptrdiff_t inner_radius = 0x8;  // tok 0x38ed u64
     inline constexpr std::ptrdiff_t type = 0x10;  // tok 0xe1 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
 }
 namespace SAstralActionUsageState {  // SAstralActionUsageState serializer 0xAF7880, match 1.0
@@ -3214,6 +3257,7 @@ namespace SBorrowedDiploWeight {  // SBorrowedDiploWeight serializer 0x6D8540, m
 namespace SBuildingArrayData_CSerializer {  // SBuildingArrayData::CSerializer serializer 0xDA4A90, match 1.0
     inline constexpr std::ptrdiff_t building_owner = 0x30;  // tok 0x3a83 ref<CCountry> (ptr; value at +0x0)
     inline constexpr std::ptrdiff_t owner_type = 0x30;  // tok 0x3a81 other (ptr; value at +0x4)  [check: positional]
+    inline constexpr std::ptrdiff_t buildings = 0x30;  // tok 0x2da7 ref_array<TPdxRef<CBuilding>> (ptr; value at +0x8)
 }
 namespace SColonizationData {  // SColonizationData serializer 0xC96360, match 1.0
     inline constexpr std::ptrdiff_t designation = 0x8;  // tok 0x2ad3 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
@@ -3282,6 +3326,7 @@ namespace SDailyFactionCache {  // SDailyFactionCache serializer 0x68E4E0, match
 }
 namespace SDebrisAddedTechProgress {  // SDebrisAddedTechProgress serializer 0xD673A0, match 1.0
     inline constexpr std::ptrdiff_t technology = 0x8;  // tok 0x2d0d ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
+    inline constexpr std::ptrdiff_t progress = 0x10;  // tok 0x2c79 u64
 }
 namespace SDiplomaticCustomActionSetting {  // SDiplomaticCustomActionSetting serializer 0xA3EE90, match 1.0
     inline constexpr std::ptrdiff_t vote_type = 0xD0;  // tok 0x412c other  [check: positional]
@@ -3313,6 +3358,7 @@ namespace SFleetAutoMoveSettings {  // SFleetAutoMoveSettings serializer 0xC873B
 }
 namespace SFleetDamagingCountry {  // SFleetDamagingCountry serializer 0xC87940, match 1.0
     inline constexpr std::ptrdiff_t country = 0x8;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t damage = 0x10;  // tok 0x3fe2 u64
 }
 namespace SForceReader {  // SForceReader serializer 0x1ADA1D0, match 0.875
     inline constexpr std::ptrdiff_t type = 0x8;  // tok 0xe1 other
@@ -3365,6 +3411,7 @@ namespace SInjectedModifier {  // SInjectedModifier serializer 0x3B4BE0, match 1
 }
 namespace SIntensityLevelDuration_CSerializer {  // SIntensityLevelDuration::CSerializer serializer 0x616B50, match 1.0
     inline constexpr std::ptrdiff_t start = 0x30;  // tok 0x69 other
+    inline constexpr std::ptrdiff_t end = 0x30;  // tok 0x1a0 u64 (ptr; value at +0x8)
 }
 namespace SInternalData {  // SInternalData serializer 0x1A7BE60, match 1.0
     inline constexpr std::ptrdiff_t sender = 0x28;  // tok 0x240 i32
@@ -3483,7 +3530,8 @@ namespace SRejectedAction {  // SRejectedAction serializer 0x9454F0, match 1.0
     inline constexpr std::ptrdiff_t date = 0x10;  // tok 0x2cf7 persistent  [check: positional]
 }
 namespace SRelativePower {  // SRelativePower serializer 0xAFAF40, match 1.0
-    inline constexpr std::ptrdiff_t relative_power = 0x40;  // tok 0x4888 u64
+    inline constexpr std::ptrdiff_t relative_power = 0x38;  // tok 0x4888 u64
+    inline constexpr std::ptrdiff_t reverse_relative_power = 0x40;  // tok 0x3eb6 u64
 }
 namespace SSelectedEventOption {  // SSelectedEventOption serializer 0x904220, match 1.0
     inline constexpr std::ptrdiff_t player_event = 0x8;  // tok 0x2da4 i32
@@ -3514,6 +3562,7 @@ namespace SSpecimenManagementSettings {  // SSpecimenManagementSettings serializ
 }
 namespace SStageDuration_CSerializer {  // SStageDuration::CSerializer serializer 0x616B50, match 1.0
     inline constexpr std::ptrdiff_t start = 0x30;  // tok 0x69 other
+    inline constexpr std::ptrdiff_t end = 0x30;  // tok 0x1a0 u64 (ptr; value at +0x8)
 }
 namespace SSubsystemReader {  // SSubsystemReader serializer 0x1AC7DD0, match 0.8
     inline constexpr std::ptrdiff_t emitter_type = 0x500;  // tok 0x1e1 other
@@ -3801,6 +3850,7 @@ namespace fleet_cancel_orders {  // CFleetCancelOrdersCommand (token-name)
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"fleet_cancel_orders", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t fleets = 0x28;  // tok 0x31f4 ref_array<TPdxRef<CFleet>>
 }
 namespace fleet_cancel_order {  // CFleetCancelOrderCommand (token-name)
     inline constexpr uint32_t kToken = 0x366D;
@@ -3850,7 +3900,7 @@ namespace mia_command {  // CGoMIACommand (serializer)
     inline constexpr uintptr_t kFactoryRva = 0x5A1CB0;
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"mia_command", kToken, kVtableRva, kFactoryRva, kSize};
-    inline constexpr std::ptrdiff_t fleets = 0x38;  // tok 0x31f4 ref_array<TPdxRef<CFleet>>
+    inline constexpr std::ptrdiff_t fleets = 0x20;  // tok 0x31f4 ref_array<TPdxRef<CFleet>>
 }
 namespace change_fleet_name_command {  // CChangeFleetNameCommand (token-name)
     inline constexpr uint32_t kToken = 0x335D;
@@ -4034,6 +4084,7 @@ namespace change_job_priority_command {  // ?
     inline constexpr CmdSpec kSpec{"change_job_priority_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
     inline constexpr std::ptrdiff_t job = 0x24;  // tok 0x2cdc ref<CPopJob>
+    inline constexpr std::ptrdiff_t amount = 0x28;  // tok 0x1a1 u64
 }
 namespace change_job_automated_workforce_limit_command {  // CChangeJobAutomatedWorkforceLimitCommand (token-name)
     inline constexpr uint32_t kToken = 0x2BBC;
@@ -4043,6 +4094,7 @@ namespace change_job_automated_workforce_limit_command {  // CChangeJobAutomated
     inline constexpr CmdSpec kSpec{"change_job_automated_workforce_limit_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
     inline constexpr std::ptrdiff_t job = 0x24;  // tok 0x2cdc ref<CPopJob>
+    inline constexpr std::ptrdiff_t amount = 0x28;  // tok 0x1a1 u64
 }
 namespace set_automated_development_command {  // CSetAutomatedDevelopmentCommand (token-name)
     inline constexpr uint32_t kToken = 0x2AFA;
@@ -4144,6 +4196,7 @@ namespace set_planets_display_order_command {  // CSetColoniesDisplayOrderComman
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"set_planets_display_order_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t planets_display_order = 0x28;  // tok 0x3f6e ref_array<TPdxRef<CColony>>
 }
 namespace set_situation_approach_command {  // CSetSituationApproachCommand (token-name)
     inline constexpr uint32_t kToken = 0x41AB;
@@ -4316,6 +4369,7 @@ namespace set_ai_robot_settings_command {  // CSetAIRobotSettingsCommand (serial
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
     inline constexpr std::ptrdiff_t can_build_robots = 0x24;  // tok 0x39bc other
     inline constexpr std::ptrdiff_t robot_colonies = 0x28;  // tok 0x39bd u64
+    inline constexpr std::ptrdiff_t robot_colonies_with_free_buildings = 0x30;  // tok 0x39be u64
 }
 namespace update_strat_data_command {  // ?
     inline constexpr uint32_t kToken = 0x322B;
@@ -4686,6 +4740,7 @@ namespace chat_new_channel {  // CChatNewChannelCommand (token-name)
     inline constexpr std::size_t kSize = 0x68;
     inline constexpr CmdSpec kSpec{"chat_new_channel", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t name = 0x30;  // tok 0x1b string
+    inline constexpr std::ptrdiff_t userslist = 0x50;  // tok 0xe4 ref_array<int>
 }
 namespace fleet_fly_to_coordinates {  // CFleetFlyToCoordinatesCommand (token-name)
     inline constexpr uint32_t kToken = 0x2C55;
@@ -5197,6 +5252,7 @@ namespace set_ship_design_command {  // CSetShipDesignCommand (token-name)
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"set_ship_design_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t design = 0x38;  // tok 0x2c6b ref<CShipDesign>
+    inline constexpr std::ptrdiff_t ships = 0x20;  // tok 0x2c15 ref_array<TPdxRef<CShip>>
 }
 namespace set_ship_design_upgrade_command {  // CSetShipDesignUpgradeCommand (token-name)
     inline constexpr uint32_t kToken = 0x3B41;
@@ -5205,6 +5261,7 @@ namespace set_ship_design_upgrade_command {  // CSetShipDesignUpgradeCommand (to
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"set_ship_design_upgrade_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t design = 0x38;  // tok 0x2c6b ref<CShipDesign>
+    inline constexpr std::ptrdiff_t ships = 0x20;  // tok 0x2c15 ref_array<TPdxRef<CShip>>
 }
 namespace excavate_archaeological_site_fleet_order_command {  // CExcavateArchaeologicalSiteFleetOrderCommand (token-name)
     inline constexpr uint32_t kToken = 0x3D31;
@@ -5245,6 +5302,7 @@ namespace disband_ships_command {  // CDisbandShipsCommand (token-name)
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"disband_ships_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x38;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t ships = 0x20;  // tok 0x2c15 ref_array<TPdxRef<CShip>>
 }
 namespace set_fleet_ground_support_stance_command {  // CSetFleetGroundSupportStanceCommand (token-name)
     inline constexpr uint32_t kToken = 0x2DDC;
@@ -5440,6 +5498,7 @@ namespace fleet_orbit_planet {  // CFleetOrbitPlanetCommand (token-name)
     inline constexpr std::ptrdiff_t fleet = 0x20;  // tok 0x2c56 ref<CFleet>
     inline constexpr std::ptrdiff_t queue = 0x40;  // tok 0x4091 other
     inline constexpr std::ptrdiff_t queue_to_front = 0x41;  // tok 0x35e3 other
+    inline constexpr std::ptrdiff_t orbitable = 0x28;  // tok 0x3db9 persistent
 }
 namespace set_observed_country {  // CSetObservedCountryCommand (token-name)
     inline constexpr uint32_t kToken = 0x3941;
@@ -5522,6 +5581,7 @@ namespace post_load_sync_country_humans_command {  // CPostSaveGameLoadSyncCount
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"post_load_sync_country_humans_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t human_ids = 0x28;  // tok 0x42ea ref_array<int>
 }
 namespace post_load_sync_done_command {  // ?
     inline constexpr uint32_t kToken = 0x2A6C;
@@ -6217,6 +6277,7 @@ namespace add_experience_command {  // CAddExperienceCommand (token-name)
     inline constexpr std::size_t kSize = 0x30;
     inline constexpr CmdSpec kSpec{"add_experience_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t leader = 0x20;  // tok 0x4033 ref<CLeader>
+    inline constexpr std::ptrdiff_t level = 0x28;  // tok 0x3efc u64
 }
 namespace change_council_position_titles_command {  // CChangeCouncilPositionTitlesCommand (token-name)
     inline constexpr uint32_t kToken = 0x3C23;
@@ -6902,6 +6963,7 @@ namespace downgrade_designable_starbase_command {  // CDowngradeDesignableStarba
     inline constexpr std::ptrdiff_t starbase = 0x20;  // tok 0x3a36 ref<CStarbase>
     inline constexpr std::ptrdiff_t actor = 0x24;  // tok 0x2d58 ref<CCountry>
     inline constexpr std::ptrdiff_t level = 0x28;  // tok 0x3efc ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
+    inline constexpr std::ptrdiff_t design = 0x30;  // tok 0x2c6b persistent
 }
 namespace dismantle_starbase_command {  // CDismantleStarbaseCommand (token-name)
     inline constexpr uint32_t kToken = 0x3A4C;

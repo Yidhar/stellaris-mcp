@@ -108,8 +108,12 @@ def main():
     record("find_systems deposit filter", "PASS" if ok else "FAIL", f"{len(fdp.get('systems', []))} systems")
     fc = p.call("find_systems", {"purpose": "colonizable", "limit": 5})
     pl = fc.get("planets", [])
-    ok = "error" not in fc and all(x["habitability_percent"] > 0 for x in pl) and         all(pl[i]["habitability_percent"] >= pl[i + 1]["habitability_percent"] for i in range(len(pl) - 1))
+    ok = "error" not in fc and all(x["habitability_percent"] > 0 for x in pl) and \
+        all(pl[i]["habitability_percent"] >= pl[i + 1]["habitability_percent"] for i in range(len(pl) - 1))
     record("find_systems colonizable: habitable, best first", "PASS" if ok else "FAIL", f"{len(pl)} planets")
+    ok = all(isinstance(x.get("can_colonize"), bool) and (x["can_colonize"] or x.get("reason")) for x in pl)
+    record("colonizable rows carry the engine's CanColonize verdict", "PASS" if ok else "FAIL",
+           json.dumps([(x["planet_id"], x.get("can_colonize"), x.get("reason")) for x in pl[:2]], ensure_ascii=False)[:150])
     sb = sysj.get("starbase") or {}
     record("capital starbase has a level name", "PASS" if sb.get("level_name") and sb.get("level_name") != sb.get("level") else "FAIL",
            f"{sb.get('level')} -> {sb.get('level_name')}")
@@ -117,17 +121,50 @@ def main():
     record("find_systems rejects an unknown purpose", "PASS" if "error" in bad else "FAIL")
     lanes = {(a, b) for a, b, _ in p.call("get_galaxy_map", {"jumps": 12}).get("hyperlanes", [])}
     target = rows[-1]["id"] if rows else capital
-    fp = p.call("find_path", {"to_system_id": target})
-    ids = [x["id"] for x in fp.get("systems", [])]
-    ok = fp.get("reachable") and ids[0] == capital and ids[-1] == target and         all((min(a, b), max(a, b)) in lanes for a, b in zip(ids, ids[1:]))
-    record("find_path follows hyperlanes from the capital", "PASS" if ok else "FAIL", f"{fp.get('jumps')} jumps")
+    if constructors:
+        # the engine's route for the construction ship from where it is
+        fp = p.call("find_path", {"fleet_id": constructors[0], "to_system_id": target})
+        rows_fp = fp.get("systems", [])
+        ids = [x["id"] for x in rows_fp]
+        arr = [x["arrival_days"] for x in rows_fp]
+        # hyperlane legs join neighbours; bypass legs (relays, gateways, wormholes) need not.
+        # Arrival is at the system's entry point; the estimate adds the last leg to the star
+        lane_ok = all((min(a["id"], b["id"]), max(a["id"], b["id"])) in lanes
+                      for a, b in zip(rows_fp, rows_fp[1:]) if b.get("via") == "hyperlane")
+        via_ok = all(b.get("via") in ("hyperlane", "bypass") for b in rows_fp[1:])
+        days_ok = (fp.get("estimated_days") or 0) > 0 and all(a <= b for a, b in zip(arr, arr[1:])) \
+            and arr[-1] <= fp["estimated_days"]
+        ok = fp.get("reachable") and ids[0] == fp.get("from_system_id") and ids[-1] == target \
+            and lane_ok and via_ok and days_ok
+        record("find_path: engine route along hyperlanes with arrival days", "PASS" if ok else "FAIL",
+               f"{fp.get('jumps')} jumps, {fp.get('estimated_days')} days")
+    r = p.call("find_path", {"to_system_id": target})
+    record("find_path requires a player fleet", "PASS" if "error" in r else "FAIL", r.get("error", ""))
 
     # orders that must be refused with a reason
     if constructors:
         r = p.call("colonize", {"fleet_id": constructors[0], "planet_id": 0})
-        record("colonize refuses a construction ship", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+        record("colonize refuses an owned planet with the game's reason",
+               "PASS" if r.get("success") is False and r.get("error") else "FAIL", r.get("error", ""))
     r = p.call("build_outpost", {"fleet_id": 999999, "system_id": capital})
     record("build_outpost refuses a fleet that is not ours", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    r = p.call("claim_system", {"system_id": capital})
+    record("claim_system refuses our own system with the game's reason",
+           "PASS" if r.get("success") is False and r.get("error") else "FAIL", r.get("error", ""))
+    r = p.call("cancel_fleet_orders", {"fleet_ids": [999999]})
+    record("cancel_fleet_orders refuses a fleet that is not ours", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    if constructors:
+        r = p.call("set_fleet_stance", {"fleet_id": constructors[0], "stance": "sideways"})
+        record("set_fleet_stance rejects an unknown stance", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+        r = p.call("fleet_mia", {"fleet_ids": [constructors[0]], "type": "nowhere"})
+        record("fleet_mia rejects an unknown type", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+
+    # system detail: player claims and own fleets' stance
+    ok = isinstance(sysj.get("player_claims"), int) and \
+        all(f.get("stance") in ("passive", "aggressive", "evasive") for f in sysj.get("fleets", [])
+            if f.get("own") and f.get("ship_class") not in ("shipclass_starbase",) and "stance" in f)
+    record("get_system: player_claims and own fleet stances", "PASS" if ok else "FAIL",
+           f"claims {sysj.get('player_claims')}")
 
     ok = p.call("ping").get("status") == "pong"
     record("bridge alive", "PASS" if ok else "FAIL")
