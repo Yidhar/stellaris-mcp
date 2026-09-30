@@ -22,10 +22,15 @@ struct SpecialProjectItem {
     uint32_t id{ 0 };
     std::string key;
     std::string name;
+    std::string kind;                   // project, species_modification, uplift, debris
+    int32_t days_left{ -1 };            // -1: no deadline
+    uint32_t species_id{ 0xFFFFFFFF };  // species modification / uplift: the resulting species
 };
 
+// A discovered anomaly the country has not researched yet (the planet still holds its category).
 struct AnomalyItem {
-    uint32_t id{ 0 };
+    uint32_t planet_id{ 0xFFFFFFFF };
+    std::string planet_name;
     std::string key;
     std::string name;
 };
@@ -59,6 +64,10 @@ public:
     // Layer 2: Detailed domain query
     FullSituationLogState GetSituationLogState(bool player_only = true);
     nlohmann::json GetSituationLogJson(bool player_only = true);
+
+    // CCountry::events (CCountryEventManager) of the country
+    std::vector<SpecialProjectItem> ReadSpecialProjects(void* country);
+    std::vector<AnomalyItem> ReadAnomalies(void* country);
 
     // Layer 3: Action command execution
     nlohmann::json SetSituationApproach(uint32_t situation_id, const std::string& approach_key);

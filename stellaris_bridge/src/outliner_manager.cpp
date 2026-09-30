@@ -1,5 +1,6 @@
 #include "outliner_manager.hpp"
 #include "command_builder.hpp"
+#include "game_state.hpp"
 #include "fleet_access.hpp"
 #include "army_access.hpp"
 #include "sdk/stellaris_sdk.hpp"
@@ -18,17 +19,18 @@ namespace bridge {
 // Buildables queued through CAddBuildableToQueueCommand. The SDK sees only their CSerializer
 // helpers (which confirm the field layouts), not the buildable classes' own vtables, so these
 // stay hand-maintained (4.5.1):
-//   CBuildableBuilding             0x2391FF0  new-building items in live construction queues
-//   CBuildableUpgradeBuilding      0x2391D30  only buildable vtable using BUILD_QUEUE_SUFFIX_UPGRADE
-//   CBuildableClearDepositBlocker  0x2391F40  live queue items {deposit, colony}; CLEAR_BLOCKER_* strings
-//   CBuildableArmy                 0x2376748
+//   CBuildableBuilding             new-building items in live construction queues
+//   CBuildableUpgradeBuilding      only buildable vtable using BUILD_QUEUE_SUFFIX_UPGRADE
+//   CBuildableClearDepositBlocker  live queue items {deposit, colony}; CLEAR_BLOCKER_* strings
+//   CBuildableArmy                 (vtables: sdk::vt, located by tools/sdk_dumper/anchors.py)
 // Every CBuildable vtable shares the base implementation in slots 2 and 3; QueueBuildable
 // checks that before handing an object to the engine (a wrong pointer here once crashed the
 // game with a pure virtual call).
-constexpr uintptr_t kBuildableBuildingVt = 0x2391FF0;
-constexpr uintptr_t kBuildableUpgradeBuildingVt = 0x2391D30;
-constexpr uintptr_t kBuildableClearDepositBlockerVt = 0x2391F40;
-constexpr uintptr_t kBuildableArmyVt = 0x2376748;
+constexpr uintptr_t kBuildableBuildingVt = sdk::vt::CBuildableBuilding;
+constexpr uintptr_t kBuildableUpgradeBuildingVt = sdk::vt::CBuildableUpgradeBuilding;
+constexpr uintptr_t kBuildableClearDepositBlockerVt = sdk::vt::CBuildableClearDepositBlocker;
+constexpr uintptr_t kBuildableArmyVt = sdk::vt::CBuildableArmy;
+constexpr uintptr_t kBuildingTypeDb = sdk::glob::TGameDatabase_CBuildingTypeDatabase_pInstance;  // +0x50 items, +0x5C count
 
 // Raw Clausewitz String Layout
 struct RawPdxString {
@@ -179,6 +181,49 @@ static bool SafeReadPdxString(const void* str_addr, std::string& out_str) {
 
 
 
+namespace {
+constexpr int kBuildableSlotCalcCost = sdk::vt::CBuildableBase_CalcCost;
+constexpr int kBuildableSlotTimeNeeded = sdk::vt::CBuildableBase_CalcProgressionTimeNeeded;
+
+// CFixedResourceTable: +0 points at the {data, capacity, size} holder at +8, +0x18 allocator.
+// Pre-sized to every resource, so the engine only writes into it and never reallocates.
+struct StackResourceTable {
+    void* holder;
+    int64_t* data;
+    int32_t capacity;
+    int32_t size;
+    void* allocator;
+    int64_t values[256];
+};
+
+struct BuildableCostCtx {
+    void* buildable;
+    StackResourceTable* cost;
+    StackResourceTable* other;
+    int64_t days;
+};
+
+void CallBuildableCost(void* c, void*) {
+    auto* x = (BuildableCostCtx*)c;
+    void** vt = *(void***)x->buildable;
+    ((void (*)(void*, void*, void*, void*))vt[kBuildableSlotCalcCost])(x->buildable, x->cost, x->other, nullptr);
+    ((int64_t* (*)(void*, int64_t*, void*))vt[kBuildableSlotTimeNeeded])(x->buildable, &x->days, nullptr);
+}
+
+struct MaxBuildingsCtx {
+    uintptr_t fn;
+    void* colony;
+    void* zone;
+    void* country;
+    int result;
+};
+
+void CallMaxBuildings(void* c, void*) {
+    auto* x = (MaxBuildingsCtx*)c;
+    x->result = ((int (*)(const void*, const void*, int, const void*))x->fn)(x->colony, x->zone, 0, x->country);
+}
+}  // namespace
+
 static void* FindDbElementByKey(uintptr_t base_address, uintptr_t db_rva, const std::string& target_key) {
     if (!base_address) return nullptr;
     void* db_ptr = nullptr;
@@ -251,7 +296,7 @@ void* OutlinerManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) { return nullptr; }
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) { return nullptr; }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
         void* countries_arr = nullptr;
         uint32_t count = 0;
@@ -267,58 +312,7 @@ void* OutlinerManager::GetPlayerCountry() {
 }
 
 std::string OutlinerManager::LocalizeKey(const std::string& key) {
-    if (key.empty()) return key;
-
-    static const std::unordered_map<std::string, std::string> kStaticLocMap = {
-        {"d_decrepit_dwellings", "贫民窟 (Sprawling Slums)"},
-        {"d_decrepit_dwellings_desc", "这片破旧的住宅区条件极为恶劣，清理它可以腾出更多可用土地，并安置其居民。"},
-        {"d_failing_infrastructure_earth", "工业废土 (Failing Infrastructure)"},
-        {"d_failing_infrastructure", "工业废土 (Failing Infrastructure)"},
-        {"d_failing_infrastructure_earth_desc", "过去废弃的工业设施与崩塌的基础设施占据了大片土地。"},
-        {"d_great_pacific_garbage_patch", "太平洋垃圾带 (Great Pacific Garbage Patch)"},
-        {"d_great_pacific_garbage_patch_desc", "漂浮在海洋上的庞大垃圾聚合体，需要彻底清理。"},
-        {"col_capital", "帝国首都 (Empire Capital)"},
-        {"col_industrial", "工业星球 (Industrial World)"},
-        {"col_farming", "农业星球 (Agri-World)"},
-        {"col_mining", "采矿星球 (Mining World)"},
-        {"col_generator", "发电星球 (Generator World)"},
-        {"col_forge", "铸造星球 (Forge World)"},
-        {"col_factory", "工业星球 (Factory World)"},
-        {"col_refinery", "精炼星球 (Refinery World)"},
-        {"col_research", "科研星球 (Tech-World)"},
-        {"col_urban", "城市星球 (Urban World)"},
-        {"col_rural", "农业星球 (Rural World)"},
-        {"NAME_Earth", "地球 (Earth)"},
-        {"NAME_Sol", "太阳 (Sol)"},
-        {"councilor_state", "国务卿"},
-        {"councilor_defense", "国防部长"},
-        {"councilor_research", "科技部长"},
-        {"councilor_ruler_democratic", "总统"},
-        {"trait_ruler_fertility_preacher", "重视农耕"},
-        {"trait_ruler_fertility_preacher_2", "重视农耕 II"},
-        {"leader_trait_lawless", "法外之徒"},
-        {"leader_trait_lawless_2", "法外之徒 II"},
-        {"trait_ruler_eye_for_talent", "慧眼识珠"},
-        {"leader_trait_resilient", "坚韧不拔"},
-        {"leader_trait_adaptable", "适应力强"},
-        {"leader_trait_archaeologist", "考古学家"},
-        {"trait_ruler_warlike", "好战者"},
-        {"trait_ruler_warlike_2", "好战者 II"},
-        {"PRESCRIPTED_ruler_name_humans1", "多洛雷丝·穆万加"},
-        {"Khor", "科尔 (Khor)"},
-        {"NEW_COLONY_NAME_1", "科尔-I (Khor-I)"},
-        {"HUMAN1_CHR_Juan", "娟"},
-        {"HUMAN1_CHR_Zhang", "张"},
-        {"HUMAN1_CHR_Fang", "芳"},
-        {"HUMAN1_CHR_Mao", "毛"},
-        {"leader_trait_homesteader_2", "自耕农 II"}
-    };
-    auto it = kStaticLocMap.find(key);
-    if (it != kStaticLocMap.end()) {
-        return it->second;
-    }
-
-    return SafeLocalize(base_address_, key);
+    return key.empty() ? key : SafeLocalize(base_address_, key);
 }
 
 void* OutlinerManager::FindFleet(uint32_t fleet_id) {
@@ -329,7 +323,7 @@ void* OutlinerManager::FindColony(uint32_t colony_id) {
     if (!base_address_) return nullptr;
 
     void* colony_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114140), &colony_mgr) || !colony_mgr || (uintptr_t)colony_mgr < 0x10000) { return nullptr; }
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CColony), &colony_mgr) || !colony_mgr || (uintptr_t)colony_mgr < 0x10000) { return nullptr; }
     if (!colony_mgr || (uintptr_t)colony_mgr < 0x10000) {
         return nullptr;
     }
@@ -352,74 +346,28 @@ void* OutlinerManager::FindColony(uint32_t colony_id) {
 }
 
 void* OutlinerManager::FindPlanet(uint32_t planet_id) {
-    if (!base_address_) return nullptr;
-
+    if (!base_address_ || planet_id == 0xFFFFFFFF) return nullptr;
     void* planet_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114128), &planet_mgr) || !planet_mgr || (uintptr_t)planet_mgr < 0x10000) { return nullptr; }
-    if (!planet_mgr || (uintptr_t)planet_mgr < 0x10000) {
-        return nullptr;
-    }
-
     void* arr = nullptr;
     uint32_t cap = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)planet_mgr + 0x18), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)planet_mgr + 0x20), &cap) || cap == 0) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CPlanet), &planet_mgr) || !planet_mgr ||
+        !SafeReadPtr((const void*)((uintptr_t)planet_mgr + 0x18), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)planet_mgr + 0x20), &cap)) {
         return nullptr;
     }
-
-    // 1. Direct match by Planet ID if it has an active colony
     uint32_t slot = planet_id & 0xFFFFFF;
-    if (slot < cap) {
-        void* ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)arr + slot * 16 + 8), &ptr) && ptr) {
-            uint32_t pid = 0;
-            SafeReadU32((const void*)((uintptr_t)ptr + 0x18), &pid);
-            if (pid == planet_id) {
-                uint32_t cid = 0xFFFFFFFF;
-                SafeReadU32((const void*)((uintptr_t)ptr + 0xe0), &cid);
-                if (cid != 0xFFFFFFFF) {
-                    return ptr;
-                }
-            }
-        }
-    }
-
-    // 2. Match by System ID (+0x50) where a colony is present (supports queries using system ID like 11, 63)
-    for (uint32_t s = 0; s < cap; ++s) {
-        void* ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)arr + s * 16 + 8), &ptr) && ptr) {
-            uint32_t sys_id = 0;
-            SafeReadU32((const void*)((uintptr_t)ptr + 0x50), &sys_id);
-            if (sys_id == planet_id) {
-                uint32_t cid = 0xFFFFFFFF;
-                SafeReadU32((const void*)((uintptr_t)ptr + 0xe0), &cid);
-                if (cid != 0xFFFFFFFF) {
-                    return ptr;
-                }
-            }
-        }
-    }
-
-    // 3. Fallback direct match (even if uncolonized)
-    if (slot < cap) {
-        void* ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)arr + slot * 16 + 8), &ptr) && ptr) {
-            uint32_t pid = 0;
-            SafeReadU32((const void*)((uintptr_t)ptr + 0x18), &pid);
-            if (pid == planet_id) {
-                return ptr;
-            }
-        }
-    }
-
-    return nullptr;
+    void* ptr = nullptr;
+    if (slot >= cap || !SafeReadPtr((const void*)((uintptr_t)arr + slot * 16 + 8), &ptr) || !ptr) return nullptr;
+    // TPdxRef<CPlanet> lookups compare the planet's own id (+0x18), generation included
+    uint32_t pid = 0xFFFFFFFF;
+    return SafeReadU32((const void*)((uintptr_t)ptr + 0x18), &pid) && pid == planet_id ? ptr : nullptr;
 }
 
 void* OutlinerManager::FindSystem(uint32_t system_id) {
     if (!base_address_) return nullptr;
 
     void* sys_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114148), &sys_mgr) || !sys_mgr || (uintptr_t)sys_mgr < 0x10000) { return nullptr; }
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CGalacticObject), &sys_mgr) || !sys_mgr || (uintptr_t)sys_mgr < 0x10000) { return nullptr; }
     if (!sys_mgr || (uintptr_t)sys_mgr < 0x10000) {
         return nullptr;
     }
@@ -454,7 +402,7 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
     uint32_t slot = (uint32_t)(f_f78 & 0xFFFFFFFF);
 
     void* mgr_3113128 = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114128), &mgr_3113128) || !mgr_3113128 || (uintptr_t)mgr_3113128 < 0x10000) { return std::nullopt; }
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CPlanet), &mgr_3113128) || !mgr_3113128 || (uintptr_t)mgr_3113128 < 0x10000) { return std::nullopt; }
     if (!mgr_3113128 || (uintptr_t)mgr_3113128 < 0x10000) {
         return std::nullopt;
     }
@@ -475,8 +423,8 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
     }
 
     void* mgr_eb8 = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
-        SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8);
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8);
     }
     if (!mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
         return std::nullopt;
@@ -507,8 +455,8 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
     }
 
     void* mgr_ea8 = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8) || !mgr_ea8 || (uintptr_t)mgr_ea8 < 0x10000) {
-        SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8);
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8) || !mgr_ea8 || (uintptr_t)mgr_ea8 < 0x10000) {
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8);
     }
     if (!mgr_ea8 || (uintptr_t)mgr_ea8 < 0x10000) {
         return std::nullopt;
@@ -551,16 +499,7 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
         card.type = "construction";
     }
 
-    std::string loc_name = LocalizeKey(key);
-    if (loc_name.empty() || loc_name == key) {
-        if (key == "building_physics_lab_1") loc_name = "场动力学中心 (Physics Lab)";
-        else if (key == "district_city") loc_name = "城市区划 (City District)";
-        else loc_name = key;
-    } else {
-        if (key == "building_physics_lab_1") loc_name += " (Physics Lab)";
-        else if (key == "district_city") loc_name += " (City District)";
-    }
-    card.name = loc_name;
+    card.name = LocalizeKey(key);
 
     if (tot > 0) {
         card.progress = std::round(((double)prog / (double)tot) * 100.0) / 100.0;
@@ -593,71 +532,6 @@ struct StatusFrameCtx {
 void CallShouldShowStatusFrame(void* c, void*) {
     auto* x = (StatusFrameCtx*)c;
     x->result = ((bool (*)(void*, int, void*, uint32_t, int))x->fn)(x->controller, x->frame, x->colony, x->country, 0);
-}
-
-// TPdxNullObject-style references: vtable slot 1 reports whether the pointee is a real object.
-struct ValidCtx {
-    void* obj;
-    bool result;
-};
-
-void CallIsValidObject(void* c, void*) {
-    auto* x = (ValidCtx*)c;
-    x->result = (*(bool (**)(void*))(*(uintptr_t*)x->obj + 8))(x->obj);
-}
-
-bool IsRealObject(void* obj) {
-    if (!obj) return false;
-    ValidCtx ctx{ obj, false };
-    return CommandBuilder::Get().CallGuarded(&CallIsValidObject, &ctx) && ctx.result;
-}
-
-// PdxLocalize with one named parameter ("$NAME$" / "$NAME|fmt$" in the text), as the outliner
-// tooltips build "OUTLINER_PLANET_BLOCKADED" with BLOCKADER. The value is an engine CString that
-// the function only reads, so it can borrow our buffer.
-struct LocParamCtx {
-    uintptr_t fn;
-    const char* key;
-    int32_t key_len;
-    const char* param;
-    const void* value;
-};
-
-void CallLocalizeParam(void* c, void* out) {
-    auto* x = (LocParamCtx*)c;
-    struct KeyView {
-        const char* ptr;
-        int32_t len;
-        uint8_t flag;
-        uint8_t pad[3];
-    } key{ x->key, x->key_len, 0, {} };
-    ((void* (*)(void*, const void*, const char*, const void*))x->fn)(out, &key, x->param, x->value);
-}
-
-std::string LocalizeWithParam(uintptr_t base, const std::string& key, const char* param, const std::string& value) {
-    struct BorrowedCString {
-        uint8_t header[16];
-        union {
-            char buf[16];
-            const char* heap_ptr;
-        };
-        uint64_t size;
-        uint64_t capacity;
-    } v{};
-    if (value.size() < 16) {
-        memcpy(v.buf, value.c_str(), value.size() + 1);
-        v.capacity = 15;
-    } else {
-        v.heap_ptr = value.c_str();
-        v.capacity = value.size();
-    }
-    v.size = value.size();
-    LocParamCtx ctx{ base + sdk::fn::PdxLocalize_OneParam, key.c_str(), (int32_t)key.size(), param, &v };
-    std::string text;
-    if (!CommandBuilder::Get().CallForText(&CallLocalizeParam, &ctx, &text) || text.empty()) {
-        return SafeLocalize(base, key);
-    }
-    return text;
 }
 
 // NDefines::NGameplay::LOW_PLANET_STABILITY, read through the frame-10 case of
@@ -837,8 +711,8 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         return;
     }
 
-    uint32_t capital_cid = 0;
-    SafeReadU32((const void*)((uintptr_t)country + 0x15E0), &capital_cid);
+    uint32_t capital_cid = 0xFFFFFFFF;  // CCountry::capital is the capital colony
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::capital), &capital_cid);
 
     // 2. Discover colonies and their carrier planets
     std::unordered_map<uint32_t, ColonyCard> colony_card_map; // key: cid
@@ -860,29 +734,9 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         // Planet size at +0x150
         SafeReadU32((const void*)((uintptr_t)p_obj + 0x150), &card.size);
 
-        // Planet name at +0x108
-        std::string raw_pname;
-        SafeReadPdxString((const void*)((uintptr_t)p_obj + 0x108), raw_pname);
-        card.name = LocalizeKey(raw_pname);
-        if (card.name.empty()) {
-            card.name = "Planet " + std::to_string(planet_id);
-        }
-
-        // System ID at +0x50 & system name
-        uint32_t sys_id = 0;
-        SafeReadU32((const void*)((uintptr_t)p_obj + 0x50), &sys_id);
-        if (void* sys_obj = FindSystem(sys_id)) {
-            std::string raw_sys;
-            if (SafeReadPdxString((const void*)((uintptr_t)sys_obj + 0x450), raw_sys)) {
-                card.system_name = LocalizeKey(raw_sys);
-            }
-        }
-        if (card.system_name.empty()) {
-            card.system_name = (planet_id == 3 || sys_id == 11) ? "太阳 (Sol)" : ("System " + std::to_string(sys_id));
-        }
-
-        // Capital
-        card.is_capital = (cid == capital_cid || planet_id == 3 || sys_id == 11);
+        card.name = PlanetName(p_obj);
+        card.system_name = SystemName(PlanetSystemId(p_obj));
+        card.is_capital = cid == capital_cid;
 
         // Pops demographics
         void* sp_arr = nullptr;
@@ -899,21 +753,14 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         }
         card.pops = total_pops;
 
-        // Colonizing detection
-        card.is_colonizing = (total_pops == 0);
-        if (card.is_capital) {
-            card.status = "帝国首都 (Empire Capital)";
-            card.colonization_progress = 1.0;
-            card.remaining_days = 0;
-        } else if (card.is_colonizing) {
-            card.status = "建立殖民地中";
-            card.colonization_progress = 0.5;
-            card.remaining_days = 180;
-        } else {
-            card.status = "已建立殖民地";
-            card.colonization_progress = 1.0;
-            card.remaining_days = 0;
-        }
+        // CColony::IsUnderColonization: the colonizing species is a real species; progress is
+        // CColony::CalcColonizationProgressPerc (colony pops / COLONY_POPS_REQUIRED)
+        uint32_t colonizing_species = 0xFFFFFFFF;
+        SafeReadU32((const void*)((uintptr_t)colony_obj + sdk::ent::CColony::colonizing_species), &colonizing_species);
+        card.is_colonizing = colonizing_species != 0xFFFFFFFF &&
+                             SpeciesManager::Get().FindSpeciesPtr(colonizing_species) != nullptr;
+        card.status = card.is_colonizing ? "colonizing" : "established";
+        card.colonization_progress = card.is_colonizing ? ColonizationProgress(colony_obj) : 1.0;
 
         card.current_construction = ExtractColonyConstruction(colony_obj);
         if (!card.is_colonizing) card.status_alerts = ReadColonyStatus(colony_obj, p_obj, planet_id);
@@ -927,9 +774,9 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
 
     uint32_t country_id = GetPlayerCountryId();
 
-    // 3. Match with Galaxy Sectors from CSectorManager (base + 0x3113FA8)
+    // 3. Match with Galaxy Sectors from CSectorManager (base + sdk::db::CSector)
     void* sec_mgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FA8), &sec_mgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CSector), &sec_mgr);
     void* sec_arr = nullptr;
     uint32_t sec_cap = 0;
     if (sec_mgr) {
@@ -945,25 +792,22 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
             if (!SafeReadPtr((const void*)((uintptr_t)sec_arr + sid * 16 + 8), &sec_ptr) || !sec_ptr) continue;
 
             uint32_t owner = 0xFFFFFFFF;
-            SafeReadU32((const void*)((uintptr_t)sec_ptr + 0x168), &owner);
+            SafeReadU32((const void*)((uintptr_t)sec_ptr + sdk::ent::CSector::owner), &owner);
             if (owner != country_id) continue;
 
             SectorGroup group{};
             group.sector_id = (int32_t)sid;
-            group.is_core = (sid == 0);
-
-            std::string raw_sname;
-            SafeReadPdxString((const void*)((uintptr_t)sec_ptr + 0xF8), raw_sname);
-            group.sector_name = LocalizeKey(raw_sname);
-            if (group.sector_name.empty()) {
-                group.sector_name = group.is_core ? "核心星域" : ("Sector " + std::to_string(sid));
+            void* sector_type = nullptr;
+            if (SafeReadPtr((const void*)((uintptr_t)sec_ptr + sdk::ent::CSector::type), &sector_type) && sector_type) {
+                SafeReadPdxString((const void*)((uintptr_t)sector_type + 0x20), group.focus_type);
             }
+            group.is_core = group.focus_type == "core_sector";
+            group.sector_name = PersistentNameText((const void*)((uintptr_t)sec_ptr + sdk::ent::CSector::name));
 
             uint32_t cap_cid = 0xFFFFFFFF;
-            SafeReadU32((const void*)((uintptr_t)sec_ptr + 0x16C), &cap_cid);
+            SafeReadU32((const void*)((uintptr_t)sec_ptr + sdk::ent::CSector::local_capital), &cap_cid);
             group.capital_planet_id = (cap_cid != 0xFFFFFFFF && colony_card_map.count(cap_cid)) ? colony_card_map[cap_cid].planet_id : 0xFFFFFFFF;
             group.capital_planet_name = (cap_cid != 0xFFFFFFFF && colony_card_map.count(cap_cid)) ? colony_card_map[cap_cid].name : "";
-            group.focus_type = group.is_core ? "core_focus" : "balanced";
 
             void* c_vec = nullptr;
             uint32_t c_cnt = 0;
@@ -989,13 +833,12 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         }
     }
 
-    // 4. Frontier Sector for colonies not assigned to a named sector
+    // 4. Colonies in no sector (the game labels them NO_SECTOR)
     SectorGroup frontier{};
-    frontier.sector_id = 9999;
-    frontier.sector_name = "边境星域 (Frontier Sector)";
-    frontier.capital_planet_id = 0;
-    frontier.capital_planet_name = "无";
-    frontier.focus_type = "none";
+    frontier.unassigned = true;
+    frontier.sector_id = -2;
+    frontier.sector_name = LocalizeKey("NO_SECTOR");
+    frontier.capital_planet_id = 0xFFFFFFFF;
     frontier.is_core = false;
 
     for (const auto& [cid, card] : colony_card_map) {
@@ -1045,7 +888,7 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
         }
 
         sectors_list.push_back({
-            {"sector_id", s.sector_id},
+            {"sector_id", SectorIdJson(s)},
             {"sector_name", s.sector_name},
             {"capital_planet_id", s.capital_planet_id},
             {"capital_planet_name", s.capital_planet_name},
@@ -1067,7 +910,7 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
 
     if (vec_ptr && template_cnt > 0) {
         void* ft_mgr = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x3114038), &ft_mgr);
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CFleetTemplate), &ft_mgr);
         void* ft_arr = nullptr;
         uint32_t ft_cap = 0;
         if (ft_mgr) {
@@ -1111,12 +954,21 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
         }
     }
 
+    // the capital colony's planet (CColony::carrier) and its system
+    std::string capital_system;
+    uint32_t capital_cid = 0xFFFFFFFF, capital_pid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::capital), &capital_cid);
+    if (void* cap_colony = capital_cid != 0xFFFFFFFF ? FindColony(capital_cid) : nullptr) {
+        SafeReadU32((const void*)((uintptr_t)cap_colony + sdk::ent::CColony::carrier), &capital_pid);
+        capital_system = SystemName(PlanetSystemId(FindPlanet(capital_pid)));
+    }
+
     return {
         {"sectors_summary", {
             {"total_sectors", (uint32_t)sector_groups.size()},
             {"total_colonies", total_colonies},
             {"total_pops", total_pops},
-            {"capital_system", "Sol"},
+            {"capital_system", capital_system},
             {"sectors", sectors_list}
         }},
         {"military_fleets_summary", {
@@ -1160,10 +1012,7 @@ nlohmann::json OutlinerManager::GetSectorsJson(int32_t sector_id) {
             {"is_colonizing", c.is_colonizing},
             {"status", c.status}
         };
-        if (c.is_colonizing) {
-            j["colonization_progress"] = c.colonization_progress;
-            j["remaining_days"] = c.remaining_days;
-        }
+        if (c.is_colonizing) j["colonization_progress"] = c.colonization_progress;
         if (c.current_construction.has_value()) {
             const auto& cc = c.current_construction.value();
             j["current_construction"] = {
@@ -1198,12 +1047,12 @@ nlohmann::json OutlinerManager::GetSectorsJson(int32_t sector_id) {
                 colonies_arr.push_back(build_colony_json(c));
             }
             res_arr.push_back({
-                {"sector_id", s.sector_id},
+                {"sector_id", SectorIdJson(s)},
                 {"sector_name", s.sector_name},
                 {"capital_planet_id", s.capital_planet_id},
                 {"capital_planet_name", s.capital_planet_name},
                 {"is_core", s.is_core},
-                {"focus_type", s.focus_type},
+                {"sector_type", s.focus_type},
                 {"total_colonies", s.total_colonies},
                 {"total_pops", s.total_pops},
                 {"colonies", colonies_arr}
@@ -1226,7 +1075,7 @@ nlohmann::json OutlinerManager::GetSectorsJson(int32_t sector_id) {
     if (!target) {
         nlohmann::json avail = nlohmann::json::array();
         for (const auto& s : sector_groups) {
-            avail.push_back({ {"sector_id", s.sector_id}, {"sector_name", s.sector_name} });
+            avail.push_back({ {"sector_id", SectorIdJson(s)}, {"sector_name", s.sector_name} });
         }
         return {
             {"error", "Sector not found. Please provide a valid sector_id."},
@@ -1240,12 +1089,12 @@ nlohmann::json OutlinerManager::GetSectorsJson(int32_t sector_id) {
     }
 
     return {
-        {"sector_id", target->sector_id},
+        {"sector_id", SectorIdJson(*target)},
         {"sector_name", target->sector_name},
         {"capital_planet_id", target->capital_planet_id},
         {"capital_planet_name", target->capital_planet_name},
         {"is_core", target->is_core},
-        {"focus_type", target->focus_type},
+        {"sector_type", target->focus_type},
         {"total_colonies", target->total_colonies},
         {"total_pops", target->total_pops},
         {"colonies", colonies_arr}
@@ -1370,11 +1219,7 @@ nlohmann::json OutlinerManager::GetArmiesJson() {
         }
         j["colony_id"] = army.colony;
         j["planet_id"] = planet_id;
-        std::string raw_pname;
-        if (void* planet = FindPlanet(planet_id)) {
-            SafeReadPdxString((const void*)((uintptr_t)planet + 0x108), raw_pname);
-        }
-        j["planet_name"] = raw_pname.empty() ? "" : LocalizeKey(raw_pname);
+        j["planet_name"] = PlanetName(FindPlanet(planet_id));
         garrison_armies.push_back(j);
     }
 
@@ -1408,33 +1253,16 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
     void* colony_obj = (cid != 0xFFFFFFFF) ? FindColony(cid) : nullptr;
 
-    // 2. Resolve Capital & Basic Identification
+    // 2. Resolve Capital & Basic Identification (CCountry::capital is the capital colony)
     void* country = GetPlayerCountry();
-    uint32_t capital_planet_id = 11;
+    uint32_t capital_cid = 0xFFFFFFFF;
     if (country) {
-        SafeReadU32((const void*)((uintptr_t)country + 0x1D04), &capital_planet_id);
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::capital), &capital_cid);
     }
-    uint32_t sys_id = 0;
-    SafeReadU32((const void*)((uintptr_t)p_obj + 0x50), &sys_id);
-    bool is_capital = (planet_id == capital_planet_id || sys_id == capital_planet_id || planet_id == 3 || planet_id == 11);
-
-    std::string raw_name;
-    SafeReadPdxString((const void*)((uintptr_t)p_obj + 0x108), raw_name);
-    std::string p_name = LocalizeKey(raw_name);
-    if (p_name.empty()) {
-        p_name = "Planet " + std::to_string(planet_id);
-    }
-
-    std::string sys_name;
-    if (void* sys_obj = FindSystem(sys_id)) {
-        std::string raw_sys_name;
-        if (SafeReadPdxString((const void*)((uintptr_t)sys_obj + 0x450), raw_sys_name)) {
-            sys_name = LocalizeKey(raw_sys_name);
-        }
-    }
-    if (sys_name.empty()) {
-        sys_name = is_capital ? "太阳 (Sol)" : ("System " + std::to_string(sys_id));
-    }
+    uint32_t sys_id = PlanetSystemId(p_obj);
+    bool is_capital = cid != 0xFFFFFFFF && cid == capital_cid;
+    std::string p_name = PlanetName(p_obj);
+    std::string sys_name = SystemName(sys_id);
 
     // 2.1 Designation & Designation / Ascension Tier
     std::string desig_key;
@@ -1452,9 +1280,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1020), &desig_tier);
         SafeReadU32((const void*)((uintptr_t)colony_obj + 0xFC), &gov_id);
     }
-    if (desig_name.empty()) {
-        desig_name = desig_key.empty() ? (is_capital ? "帝国首都 (Empire Capital)" : "未设定 (None)") : desig_key;
-    }
+    // no colony (or no designation): nothing to show
 
     // 2.2 Governor & Leader Info
     nlohmann::json governor_json = nullptr;
@@ -1546,7 +1372,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     }
 
     // 5. Planet Overview
-    std::string planet_type = "大陆星球 (Continental World)";
+    std::string planet_type;
     void* p_class_def = nullptr;
     if (SafeReadPtr((const void*)((uintptr_t)p_obj + 0x148), &p_class_def) && p_class_def) {
         std::string class_key;
@@ -1555,9 +1381,15 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         }
     }
 
-    uint32_t habitability_percent = is_capital ? 100 : 70;
-    uint32_t planet_size = 18;
-    SafeReadU32((const void*)((uintptr_t)p_obj + 0x150), &planet_size);
+    // habitability for the player's founder species (NHabitability::CalcHabitability)
+    uint32_t founder = 0xFFFFFFFF;
+    if (country) SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::founder_species_ref), &founder);
+    void* founder_sp = SpeciesManager::Get().FindSpeciesPtr(founder);
+    double habitability = founder_sp ? Habitability(base_address_, founder_sp, p_obj, country) : -1;
+    nlohmann::json habitability_percent = habitability >= 0 ? nlohmann::json(std::round(habitability * 1000.0) / 10.0)
+                                                            : nlohmann::json(nullptr);
+    uint32_t planet_size = 0;
+    SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::planet_size), &planet_size);
 
     std::string colony_date = "2016.05.09";
     if (colony_obj) {
@@ -1579,9 +1411,9 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         void* d_mgr = nullptr;
         void* z_mgr = nullptr;
         void* b_mgr = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x3113FF0), &d_mgr);
-        SafeReadPtr((const void*)(base_address_ + 0x3114030), &z_mgr);
-        SafeReadPtr((const void*)(base_address_ + 0x3113FF8), &b_mgr);
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CDistrict), &d_mgr);
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CZone), &z_mgr);
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CBuilding), &b_mgr);
 
         if (d_mgr && z_mgr && b_mgr && (uintptr_t)d_mgr >= 0x10000 && (uintptr_t)z_mgr >= 0x10000 && (uintptr_t)b_mgr >= 0x10000) {
             void* d_arr = nullptr;
@@ -1656,21 +1488,13 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
                         });
                     }
 
-                    std::string slot_id = "slot_" + std::to_string(z_slot_idx);
-                    if (d_key == "district_city") {
-                        if (z_slot_idx == 0) slot_id = "slot_city_government";
-                        else if (z_slot_idx == 1) slot_id = "slot_city_01";
-                        else if (z_slot_idx == 2) slot_id = "slot_city_02";
-                    } else if (d_key == "district_generator") slot_id = "slot_energy";
-                    else if (d_key == "district_mining") slot_id = "slot_minerals";
-                    else if (d_key == "district_farming") slot_id = "slot_food";
-
+                    MaxBuildingsCtx mctx{ base_address_ + sdk::fn::CColony_CalcMaxBuildings, colony_obj, z_obj, GetPlayerCountry(), 0 };
+                    int max_buildings = CommandBuilder::Get().CallGuarded(&CallMaxBuildings, &mctx) ? mctx.result : -1;
                     zones.push_back({
-                        {"slot_id", slot_id},
-                        {"slot_index", z_slot_idx},
+                        {"slot_index", z_slot_idx},  // the zone id (build_building slot_index)
                         {"key", z_key},
                         {"name", LocalizeKey(z_key)},
-                        {"max_buildings", slot_id == "slot_city_government" ? 6 : 3},
+                        {"max_buildings", max_buildings},
                         {"buildings", bldgs}
                     });
                 }
@@ -1689,35 +1513,14 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     // 7. Dynamic Construction Queue
     nlohmann::json queue = ExtractPlanetConstructionQueue(planet_id);
 
-    // 8. Monthly Production (Aligned with 4.5.0 Colony Economy)
-    nlohmann::json monthly_production;
-    if (is_capital) {
-        monthly_production = {
-            {"energy", 96.0},
-            {"minerals", 38.0},
-            {"food", 116.0},
-            {"physics_research", 22.0},
-            {"society_research", 13.0},
-            {"engineering_research", 13.0},
-            {"unity", 3.0},
-            {"trade_value", 31.0},
-            {"consumer_goods", 50.0},
-            {"alloys", 5.0}
-        };
-    } else {
-        monthly_production = {
-            {"energy", 0.0},
-            {"minerals", 0.0},
-            {"food", 0.0},
-            {"physics_research", 0.0},
-            {"society_research", 0.0},
-            {"engineering_research", 0.0},
-            {"unity", 0.0},
-            {"trade_value", 0.0},
-            {"consumer_goods", 0.0},
-            {"alloys", 0.0}
-        };
-    }
+    // 8. Monthly Production: the colony's cached economy tables (CColony +0xE80 produced,
+    // +0xEA0 upkeep, +0xEC0 profits = produced - upkeep, as CColony::GetResourceProfits reads).
+    auto& gs = GameState::Get();
+    nlohmann::json monthly_production = {
+        {"produced", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xE80))},
+        {"upkeep", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xEA0))},
+        {"net", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xEC0))}
+    };
 
     // 8. Dynamic Blockers
     nlohmann::json blockers = nlohmann::json::array();
@@ -1766,6 +1569,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
         {"overview", {
             {"planet_type", planet_type},
             {"habitability_percent", habitability_percent},
+            {"habitability_species_id", founder},
             {"colony_date", colony_date},
             {"planet_size", planet_size}
         }},
@@ -1801,7 +1605,7 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
     if (queue_id == 0xFFFFFFFF) return queue;
 
     void* mgr_eb8 = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8) || !mgr_eb8) return queue;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8) || !mgr_eb8) return queue;
     void* arr_eb8 = nullptr;
     uint32_t cap_eb8 = 0;
     uint32_t q_slot = queue_id & 0xFFFFFF;
@@ -1817,7 +1621,7 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
     if (!q_items || q_cnt == 0 || q_cnt > 200) return queue;
 
     void* mgr_ea8 = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8) || !mgr_ea8) return queue;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8) || !mgr_ea8) return queue;
     void* arr_ea8 = nullptr;
     uint32_t cap_ea8 = 0;
     SafeReadPtr((const void*)((uintptr_t)mgr_ea8 + 0x18), &arr_ea8);
@@ -1849,7 +1653,7 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
                 uint32_t dep_id = 0;
                 SafeReadU32((const void*)((uintptr_t)action_obj + 8), &dep_id);
                 void* d_mgr = nullptr;
-                if (SafeReadPtr((const void*)(base_address_ + 0x3113FB0), &d_mgr) && d_mgr) {
+                if (SafeReadPtr((const void*)(base_address_ + sdk::db::CDeposit), &d_mgr) && d_mgr) {
                     void* d_arr = nullptr;
                     uint32_t d_cap = 0;
                     SafeReadPtr((const void*)((uintptr_t)d_mgr + 0x18), &d_arr);
@@ -1900,382 +1704,305 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
     return queue;
 }
 
-nlohmann::json OutlinerManager::GetAvailableDistrictZonesJson(uint32_t planet_id, const std::string& district_type) {
-    if (!base_address_) {
-        return { {"error", "Base address not initialized"} };
-    }
-
-    void* p_obj = FindPlanet(planet_id);
-    if (!p_obj) {
-        return { {"error", "Planet not found: " + std::to_string(planet_id)} };
-    }
-
-    uint32_t cid = 0xFFFFFFFF;
-    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
-    void* colony_obj = (cid != 0xFFFFFFFF) ? FindColony(cid) : nullptr;
-
-    bool has_upgraded_capital = false;
-    if (colony_obj) {
-        void* d_mgr = nullptr;
-        void* z_mgr = nullptr;
-        void* b_mgr = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x3113FF0), &d_mgr);
-        SafeReadPtr((const void*)(base_address_ + 0x3114030), &z_mgr);
-        SafeReadPtr((const void*)(base_address_ + 0x3113FF8), &b_mgr);
-        if (d_mgr && z_mgr && b_mgr && (uintptr_t)d_mgr >= 0x10000 && (uintptr_t)z_mgr >= 0x10000 && (uintptr_t)b_mgr >= 0x10000) {
-            void* d_arr = nullptr;
-            uint32_t d_cap = 0;
-            SafeReadPtr((const void*)((uintptr_t)d_mgr + 0x18), &d_arr);
-            SafeReadU32((const void*)((uintptr_t)d_mgr + 0x20), &d_cap);
-
-            void* z_arr = nullptr;
-            uint32_t z_cap = 0;
-            SafeReadPtr((const void*)((uintptr_t)z_mgr + 0x18), &z_arr);
-            SafeReadU32((const void*)((uintptr_t)z_mgr + 0x20), &z_cap);
-
-            void* b_arr = nullptr;
-            uint32_t b_cap = 0;
-            SafeReadPtr((const void*)((uintptr_t)b_mgr + 0x18), &b_arr);
-            SafeReadU32((const void*)((uintptr_t)b_mgr + 0x20), &b_cap);
-
-            for (uint32_t ds = 0; ds < d_cap; ++ds) {
-                void* d_obj = nullptr;
-                if (!SafeReadPtr((const void*)((uintptr_t)d_arr + ds * 16 + 8), &d_obj) || !d_obj) continue;
-                void* col_ptr = nullptr;
-                SafeReadPtr((const void*)((uintptr_t)d_obj + 0x18), &col_ptr);
-                if (col_ptr != colony_obj) continue;
-
-                for (uint32_t zs = 0; zs < z_cap; ++zs) {
-                    void* z_obj = nullptr;
-                    if (!SafeReadPtr((const void*)((uintptr_t)z_arr + zs * 16 + 8), &z_obj) || !z_obj) continue;
-                    void* p_dist = nullptr;
-                    SafeReadPtr((const void*)((uintptr_t)z_obj + 0x18), &p_dist);
-                    if (p_dist != d_obj) continue;
-
-                    uint32_t z_slot_idx = 0;
-                    SafeReadU32((const void*)((uintptr_t)z_obj + 8), &z_slot_idx);
-                    if (z_slot_idx == 0) {
-                        for (uint32_t bs = 0; bs < b_cap; ++bs) {
-                            void* b_obj = nullptr;
-                            if (!SafeReadPtr((const void*)((uintptr_t)b_arr + bs * 16 + 8), &b_obj) || !b_obj) continue;
-                            void* p_zone = nullptr;
-                            SafeReadPtr((const void*)((uintptr_t)b_obj + 0x18), &p_zone);
-                            if (p_zone != z_obj) continue;
-
-                            void* b_def = nullptr;
-                            SafeReadPtr((const void*)((uintptr_t)b_obj + 0x20), &b_def);
-                            std::string b_key;
-                            if (b_def) SafeReadPdxString((const void*)((uintptr_t)b_def + 0x20), b_key);
-                            if (b_key == "building_capital" || b_key == "building_major_capital" || b_key == "building_system_capital") {
-                                has_upgraded_capital = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    nlohmann::json res_slots = nlohmann::json::array();
-
-    if (district_type.empty() || district_type == "district_city" || district_type == "city") {
-        // Slot 0: Government
-        res_slots.push_back({
-            {"slot_id", "slot_city_government"},
-            {"slot_index", 0},
-            {"name", "首府市政核心"},
-            {"is_locked", false},
-            {"available_zones", nlohmann::json::array({
-                {
-                    {"key", "zone_default"},
-                    {"name", LocalizeKey("zone_default")},
-                    {"max_buildings", 6},
-                    {"description", "首府行政核心特化，提供帝国行政岗位与高级政务建筑槽位。"}
-                }
-            })}
-        });
-
-        // Slot 1: Urban Specialization 1
-        nlohmann::json urban_zones_1 = nlohmann::json::array({
-            {{"key", "zone_urban"}, {"name", LocalizeKey("zone_urban")}, {"max_buildings", 3}, {"description", "城市场所，提供大量住房与文员岗位"}},
-            {{"key", "zone_industrial"}, {"name", LocalizeKey("zone_industrial")}, {"max_buildings", 3}, {"description", "混合工业特化，同时生产合金与消费品"}},
-            {{"key", "zone_foundry"}, {"name", LocalizeKey("zone_foundry")}, {"max_buildings", 3}, {"description", "铸造工业特化，专注于合金冶炼"}},
-            {{"key", "zone_factory"}, {"name", LocalizeKey("zone_factory")}, {"max_buildings", 3}, {"description", "民工工业特化，专注于消费品制造"}},
-            {{"key", "zone_research_unity"}, {"name", LocalizeKey("zone_research_unity")}, {"max_buildings", 3}, {"description", "科研与凝聚力综合特化"}},
-            {{"key", "zone_research"}, {"name", LocalizeKey("zone_research")}, {"max_buildings", 3}, {"description", "综合科学研究特化"}},
-            {{"key", "zone_research_physics"}, {"name", LocalizeKey("zone_research_physics")}, {"max_buildings", 3}, {"description", "物理学研究特化"}},
-            {{"key", "zone_research_society"}, {"name", LocalizeKey("zone_research_society")}, {"max_buildings", 3}, {"description", "社会学研究特化"}},
-            {{"key", "zone_research_engineering"}, {"name", LocalizeKey("zone_research_engineering")}, {"max_buildings", 3}, {"description", "工程学研究特化"}},
-            {{"key", "zone_unity"}, {"name", LocalizeKey("zone_unity")}, {"max_buildings", 3}, {"description", "国家凝聚力特化"}},
-            {{"key", "zone_fortress"}, {"name", LocalizeKey("zone_fortress")}, {"max_buildings", 3}, {"description", "要塞戍卫特化"}},
-            {{"key", "zone_trade"}, {"name", LocalizeKey("zone_trade")}, {"max_buildings", 3}, {"description", "商业贸易特化"}}
-        });
-
-        res_slots.push_back({
-            {"slot_id", "slot_city_01"},
-            {"slot_index", 1},
-            {"name", "城市第一特化槽位"},
-            {"is_locked", false},
-            {"available_zones", urban_zones_1}
-        });
-
-        // Slot 2: Urban Specialization 2 (requires upgraded capital)
-        if (has_upgraded_capital) {
-            res_slots.push_back({
-                {"slot_id", "slot_city_02"},
-                {"slot_index", 2},
-                {"name", "城市第二特化槽位"},
-                {"is_locked", false},
-                {"available_zones", urban_zones_1}
-            });
-        } else {
-            res_slots.push_back({
-                {"slot_id", "slot_city_02"},
-                {"slot_index", 2},
-                {"name", "城市第二特化槽位 (未解锁)"},
-                {"is_locked", true},
-                {"unlock_requirement", "特化需求: 行星都城升级 (Upgraded Capital Required)"},
-                {"available_zones", nlohmann::json::array()}
-            });
-        }
-    }
-
-    if (district_type.empty() || district_type == "district_generator" || district_type == "generator") {
-        res_slots.push_back({
-            {"slot_id", "slot_energy"},
-            {"slot_index", 63},
-            {"name", "发电区划特化槽位"},
-            {"is_locked", false},
-            {"available_zones", nlohmann::json::array({
-                {
-                    {"key", "zone_energy"},
-                    {"name", LocalizeKey("zone_energy")},
-                    {"max_buildings", 3},
-                    {"description", "基础发电特化，提升技术员产出并支持电网类建筑"}
-                }
-            })}
-        });
-    }
-
-    if (district_type.empty() || district_type == "district_mining" || district_type == "mining") {
-        res_slots.push_back({
-            {"slot_id", "slot_minerals"},
-            {"slot_index", 64},
-            {"name", "采矿区划特化槽位"},
-            {"is_locked", false},
-            {"available_zones", nlohmann::json::array({
-                {
-                    {"key", "zone_minerals"},
-                    {"name", LocalizeKey("zone_minerals")},
-                    {"max_buildings", 3},
-                    {"description", "基础采矿特化，提升矿工产出并支持矿物提炼建筑"}
-                }
-            })}
-        });
-    }
-
-    if (district_type.empty() || district_type == "district_farming" || district_type == "farming") {
-        res_slots.push_back({
-            {"slot_id", "slot_food"},
-            {"slot_index", 65},
-            {"name", "农业区划特化槽位"},
-            {"is_locked", false},
-            {"available_zones", nlohmann::json::array({
-                {
-                    {"key", "zone_food"},
-                    {"name", LocalizeKey("zone_food")},
-                    {"max_buildings", 3},
-                    {"description", "基础农业特化，提升农民产出并支持食品加工建筑"}
-                }
-            })}
-        });
-    }
-
-    return {
-        {"planet_id", planet_id},
-        {"district_type", district_type.empty() ? "all" : district_type},
-        {"has_upgraded_capital", has_upgraded_capital},
-        {"slots", res_slots}
-    };
+// CBuildableZone {vtable, CZoneType* +8, colony +0x10, district +0x14, zone slot +0x18}
+// (CBuildableZone::CSerializer); CDistrict {id +8, CColony* +0x18, CDistrictType* +0x20, zones:
+// CPdxArray of CZone ids, data +0x30, size +0x3C (CBuildableZone::CanBuild only builds into
+// slot < size)}.
+void OutlinerManager::FillZoneBuildable(uint8_t (&obj)[0x20], void* zone_type, uint32_t colony_id, uint32_t district_id,
+                                        int32_t slot) {
+    memset(obj, 0, sizeof(obj));
+    *(void**)(obj + 0x00) = (void*)(base_address_ + sdk::vt::CBuildableZone);
+    *(void**)(obj + 0x08) = zone_type;
+    *(uint32_t*)(obj + 0x10) = colony_id;
+    *(uint32_t*)(obj + 0x14) = district_id;
+    *(int32_t*)(obj + 0x18) = slot;
 }
 
-nlohmann::json OutlinerManager::GetBuildableBuildingsJson(uint32_t planet_id, const std::string& district_type, int32_t slot_index) {
-    if (!base_address_) {
-        return { {"error", "Base address not initialized"} };
+std::vector<OutlinerManager::DistrictSlots> OutlinerManager::ColonyDistrictSlots(void* colony_obj) {
+    constexpr std::ptrdiff_t kDistrictId = 0x8, kDistrictColony = 0x18, kDistrictType = 0x20;
+    constexpr std::ptrdiff_t kDistrictZones = 0x30, kDistrictZonesSize = 0x3C;
+    std::vector<DistrictSlots> out;
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t cap = 0;
+    if (!colony_obj || !SafeReadPtr((const void*)(base_address_ + sdk::db::CDistrict), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x18), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x20), &cap)) {
+        return out;
+    }
+    for (uint32_t i = 0; i < cap; ++i) {
+        void* d = nullptr;
+        void* col = nullptr;
+        if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 16 + 8), &d) || !d ||
+            !SafeReadPtr((const void*)((uintptr_t)d + kDistrictColony), &col) || col != colony_obj) {
+            continue;
+        }
+        DistrictSlots ds{};
+        SafeReadU32((const void*)((uintptr_t)d + kDistrictId), &ds.id);
+        void* type = nullptr;
+        if (SafeReadPtr((const void*)((uintptr_t)d + kDistrictType), &type) && type) {
+            SafeReadPdxString((const void*)((uintptr_t)type + 0x20), ds.type_key);
+        }
+        void* zones = nullptr;
+        int32_t n = 0;
+        if (SafeReadPtr((const void*)((uintptr_t)d + kDistrictZones), &zones) && zones &&
+            SafeReadU32((const void*)((uintptr_t)d + kDistrictZonesSize), (uint32_t*)&n) && n > 0 && n < 32) {
+            for (int32_t k = 0; k < n; ++k) {
+                uint32_t zid = 0xFFFFFFFF;
+                SafeReadU32((const void*)((uintptr_t)zones + k * 4), &zid);
+                ds.zone_ids.push_back(zid);
+            }
+        }
+        out.push_back(ds);
+    }
+    return out;
+}
+
+nlohmann::json OutlinerManager::GetAvailableDistrictZonesJson(uint32_t planet_id, const std::string& district_type,
+                                                              bool include_blocked) {
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) return { {"success", false}, {"error", "Planet not found: " + std::to_string(planet_id)} };
+    uint32_t cid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::colony), &cid);
+    void* colony_obj = cid != 0xFFFFFFFF ? FindColony(cid) : nullptr;
+    if (!colony_obj) return { {"success", false}, {"error", "Planet has no colony"} };
+    uint32_t queue_id = GetPlanetQueueId(planet_id);
+    uint32_t country_id = GetPlayerCountryId();
+
+    void* zdb = nullptr;
+    void* zarr = nullptr;
+    uint32_t zn = 0;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CZoneTypeDatabase_pInstance), &zdb) || !zdb ||
+        !SafeReadPtr((const void*)((uintptr_t)zdb + 0x50), &zarr) || !zarr ||
+        !SafeReadU32((const void*)((uintptr_t)zdb + 0x5C), &zn) || zn > 5000) {
+        return { {"success", false}, {"error", "Zone type database not readable"} };
     }
 
-    nlohmann::json result_buildings = nlohmann::json::array();
-
-    if (district_type == "district_generator" || district_type == "generator" || slot_index == 63) {
-        result_buildings.push_back({
-            {"key", "building_energy_grid"},
-            {"name", LocalizeKey("building_energy_grid")},
-            {"category", "resource"},
-            {"district_type", "district_generator"},
-            {"slot_index", 63},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "能量电网: 提高发电岗位产出与电网效率"}
-        });
-        result_buildings.push_back({
-            {"key", "building_resource_silo"},
-            {"name", LocalizeKey("building_resource_silo")},
-            {"category", "resource"},
-            {"district_type", "district_generator"},
-            {"slot_index", 63},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "资源仓库: 扩展国家资源储备上限"}
-        });
-    } else if (district_type == "district_mining" || district_type == "mining" || slot_index == 64) {
-        result_buildings.push_back({
-            {"key", "building_mineral_purification_plant"},
-            {"name", LocalizeKey("building_mineral_purification_plant")},
-            {"category", "resource"},
-            {"district_type", "district_mining"},
-            {"slot_index", 64},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "矿物提炼厂: 提高采矿岗位产出与矿物提炼效率"}
-        });
-        result_buildings.push_back({
-            {"key", "building_resource_silo"},
-            {"name", LocalizeKey("building_resource_silo")},
-            {"category", "resource"},
-            {"district_type", "district_mining"},
-            {"slot_index", 64},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "资源仓库: 扩展国家资源储备上限"}
-        });
-    } else if (district_type == "district_farming" || district_type == "farming" || slot_index == 65) {
-        result_buildings.push_back({
-            {"key", "building_food_processing_facility"},
-            {"name", LocalizeKey("building_food_processing_facility")},
-            {"category", "resource"},
-            {"district_type", "district_farming"},
-            {"slot_index", 65},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "食物处理设施: 提高农民岗位产出与食品加工效率"}
-        });
-        result_buildings.push_back({
-            {"key", "building_resource_silo"},
-            {"name", LocalizeKey("building_resource_silo")},
-            {"category", "resource"},
-            {"district_type", "district_farming"},
-            {"slot_index", 65},
-            {"cost", {{"minerals", 200}}},
-            {"buildtime", 360},
-            {"description", "资源仓库: 扩展国家资源储备上限"}
-        });
-    } else {
-        // District City
-        if (slot_index == 0 || slot_index == -1) {
-            result_buildings.push_back({
-                {"key", "building_autochthon_monument"},
-                {"name", LocalizeKey("building_autochthon_monument")},
-                {"category", "unity"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_government"},
-                {"slot_index", 0},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "行政纪念碑: 记录国家历程，产出凝聚力并提升公民认同度"}
-            });
-            result_buildings.push_back({
-                {"key", "building_stronghold"},
-                {"name", LocalizeKey("building_stronghold")},
-                {"category", "army"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_government"},
-                {"slot_index", 0},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "要塞: 提供防卫军岗位与防御加固"}
-            });
-            result_buildings.push_back({
-                {"key", "building_clinic"},
-                {"name", LocalizeKey("building_clinic")},
-                {"category", "amenity"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_government"},
-                {"slot_index", 0},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "基因诊所: 提高人口增长与舒适度"}
-            });
+    nlohmann::json districts = nlohmann::json::array();
+    for (const auto& ds : ColonyDistrictSlots(colony_obj)) {
+        if (ds.zone_ids.empty()) continue;  // districts without zone slots
+        if (!district_type.empty() && ds.type_key != district_type && ds.type_key != "district_" + district_type) continue;
+        nlohmann::json slots = nlohmann::json::array();
+        for (int32_t slot = 0; slot < (int32_t)ds.zone_ids.size(); ++slot) {
+            nlohmann::json sj = { {"slot", slot} };
+            uint32_t zid = ds.zone_ids[slot];
+            void* zone = nullptr;
+            if (zid != 0xFFFFFFFF) {
+                void* zmgr = nullptr;
+                void* zarr2 = nullptr;
+                if (SafeReadPtr((const void*)(base_address_ + sdk::db::CZone), &zmgr) && zmgr &&
+                    SafeReadPtr((const void*)((uintptr_t)zmgr + 0x18), &zarr2) && zarr2) {
+                    SafeReadPtr((const void*)((uintptr_t)zarr2 + (zid & 0xFFFFFF) * 16 + 8), &zone);
+                }
+            }
+            if (zone) {
+                std::string cur;
+                void* ztype = nullptr;
+                if (SafeReadPtr((const void*)((uintptr_t)zone + sdk::ent::CZone::type), &ztype) && ztype) {
+                    SafeReadPdxString((const void*)((uintptr_t)ztype + 0x20), cur);
+                }
+                sj["zone_id"] = zid;
+                sj["zone"] = cur;
+                sj["zone_name"] = LocalizeKey(cur);
+            } else {
+                sj["zone"] = nullptr;
+            }
+            nlohmann::json buildable = nlohmann::json::array();
+            nlohmann::json blocked = nlohmann::json::array();
+            for (uint32_t i = 0; i < zn; ++i) {
+                void* t = nullptr;
+                std::string key;
+                if (!SafeReadPtr((const void*)((uintptr_t)zarr + i * 8), &t) || !t ||
+                    !SafeReadPdxString((const void*)((uintptr_t)t + 0x20), key) || key.empty()) {
+                    continue;
+                }
+                uint8_t obj[0x20];
+                FillZoneBuildable(obj, t, cid, ds.id, slot);
+                std::string why;
+                if (QueueBuildable(obj, sizeof(obj), country_id, queue_id, false, &why)) {
+                    nlohmann::json bj = { {"zone", key}, {"name", LocalizeKey(key)} };
+                    bj.update(BuildableCostJson(obj));
+                    buildable.push_back(bj);
+                } else if (include_blocked) {
+                    blocked.push_back({ {"zone", key}, {"reason", why} });
+                }
+            }
+            sj["buildable_zones"] = buildable;
+            if (include_blocked) sj["blocked_zones"] = blocked;
+            slots.push_back(sj);
         }
+        districts.push_back({ {"district_id", ds.id}, {"district_type", ds.type_key},
+                              {"district_name", LocalizeKey(ds.type_key)}, {"slots", slots} });
+    }
+    return { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"districts", districts} };
+}
 
-        if (slot_index == 1 || slot_index == -1) {
-            result_buildings.push_back({
-                {"key", "building_biolab_1"},
-                {"name", LocalizeKey("building_biolab_1")},
-                {"category", "research"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_01"},
-                {"slot_index", 1},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "生物实验室: 进行生命科学研究，产出社会学点数"}
-            });
-            result_buildings.push_back({
-                {"key", "building_engineering_facility_1"},
-                {"name", LocalizeKey("building_engineering_facility_1")},
-                {"category", "research"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_01"},
-                {"slot_index", 1},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "工程实验室: 进行工程制造研究，产出工程学点数"}
-            });
-            result_buildings.push_back({
-                {"key", "building_physics_lab_1"},
-                {"name", LocalizeKey("building_physics_lab_1")},
-                {"category", "research"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_01"},
-                {"slot_index", 1},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "物理实验室: 进行理论物理与能源研究，产出物理学点数"}
-            });
-        }
+nlohmann::json OutlinerManager::SetDistrictZoneJson(uint32_t planet_id, uint32_t district_id, int32_t slot,
+                                                    const std::string& zone_key) {
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) return { {"success", false}, {"error", "Planet not found: " + std::to_string(planet_id)} };
+    uint32_t cid = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::colony), &cid);
+    void* colony_obj = cid != 0xFFFFFFFF ? FindColony(cid) : nullptr;
+    if (!colony_obj) return { {"success", false}, {"error", "Planet has no colony"} };
+    auto districts = ColonyDistrictSlots(colony_obj);
+    auto it = std::find_if(districts.begin(), districts.end(), [&](const DistrictSlots& d) { return d.id == district_id; });
+    if (it == districts.end()) return { {"success", false}, {"error", "District " + std::to_string(district_id) + " is not on this planet"} };
+    if (slot < 0 || slot >= (int32_t)it->zone_ids.size()) {
+        return { {"success", false}, {"error", "The district has " + std::to_string(it->zone_ids.size()) + " zone slots"} };
+    }
+    void* zone_type = FindDbElementByKey(base_address_, sdk::glob::TGameDatabase_CZoneTypeDatabase_pInstance, zone_key);
+    if (!zone_type) return { {"success", false}, {"error", "Unknown zone type: " + zone_key} };
+    uint8_t obj[0x20];
+    FillZoneBuildable(obj, zone_type, cid, district_id, slot);
+    std::string why;
+    if (!QueueBuildable(obj, sizeof(obj), GetPlayerCountryId(), GetPlanetQueueId(planet_id), true, &why)) {
+        return { {"success", false}, {"error", why.empty() ? "The game refused the zone" : why} };
+    }
+    return { {"success", true}, {"planet_id", planet_id}, {"district_id", district_id}, {"slot", slot},
+             {"zone", zone_key}, {"zone_name", LocalizeKey(zone_key)}, {"message", "Zone construction queued"} };
+}
 
-        if (slot_index == 2 || slot_index == -1) {
-            result_buildings.push_back({
-                {"key", "building_foundry_1"},
-                {"name", LocalizeKey("building_foundry_1")},
-                {"category", "manufacturing"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_02"},
-                {"slot_index", 2},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "合金锻造厂: 冶炼矿物为军工合金"}
-            });
-            result_buildings.push_back({
-                {"key", "building_factory_1"},
-                {"name", LocalizeKey("building_factory_1")},
-                {"category", "manufacturing"},
-                {"district_type", "district_city"},
-                {"slot_id", "slot_city_02"},
-                {"slot_index", 2},
-                {"cost", {{"minerals", 200}}},
-                {"buildtime", 360},
-                {"description", "民用工厂: 加工矿物为民用消费品"}
-            });
+// ---- building construction -------------------------------------------------------------------
+// CBuildableBuilding (0x20 bytes): vtable, CBuildingType*, colony id, zone id, building id
+// (0xFFFFFFFF: new). Its vtable slot 9 is CBuildableBuildingBase::CalcCost(CResourceTable& cost,
+// CResourceTable&, CString*) and slot 11 CalcProgressionTimeNeeded(CString*) -> CFixedPoint days
+// (CBuildingType::CalcBuildTime with the colony's modifiers), as the build queue uses them.
+
+void OutlinerManager::FillBuildable(uint8_t (&obj)[0x20], void* building_type, uint32_t colony_id, uint32_t zone_id) {
+    memset(obj, 0, sizeof(obj));
+    *(void**)(obj + 0x00) = (void*)(base_address_ + kBuildableBuildingVt);
+    *(void**)(obj + 0x08) = building_type;
+    *(uint32_t*)(obj + 0x10) = colony_id;
+    *(uint32_t*)(obj + 0x14) = zone_id;
+    *(uint32_t*)(obj + 0x18) = 0xFFFFFFFF;  // a new building
+}
+
+nlohmann::json OutlinerManager::BuildableCostJson(uint8_t (&obj)[0x20]) {
+    const auto& names = GameState::Get().ResourceNames();
+    StackResourceTable cost{}, other{};
+    for (StackResourceTable* t : { &cost, &other }) {
+        t->holder = &t->data;
+        t->data = t->values;
+        t->capacity = t->size = (int32_t)std::min<size_t>(names.size(), 256);
+    }
+    BuildableCostCtx ctx{ obj, &cost, &other, 0 };
+    nlohmann::json out = { {"cost", nlohmann::json::object()} };
+    if (!CommandBuilder::Get().CallGuarded(&CallBuildableCost, &ctx)) return out;
+    for (int32_t i = 0; i < cost.size; ++i) {
+        if (cost.values[i] > 0 && !names[i].empty()) out["cost"][names[i]] = std::round(cost.values[i] / 1000.0) / 100.0;
+    }
+    out["build_days"] = std::round(ctx.days / 1000.0) / 100.0;
+    return out;
+}
+
+std::vector<OutlinerManager::ZoneRef> OutlinerManager::ColonyZones(void* colony_obj) {
+    // Zones of the colony's districts: CZone +0x8 id, +0x18 CDistrict*, +0x20 CZoneType* (key +0x20),
+    // +0x1A0 buildings CPdxArray (size +0x1B4); CDistrict +0x18 CColony*, +0x20 CDistrictType*.
+    std::vector<ZoneRef> out;
+    void* z_mgr = nullptr;
+    void* z_arr = nullptr;
+    uint32_t z_cap = 0;
+    if (!colony_obj || !SafeReadPtr((const void*)(base_address_ + sdk::db::CZone), &z_mgr) || !z_mgr ||
+        !SafeReadPtr((const void*)((uintptr_t)z_mgr + 0x18), &z_arr) || !z_arr ||
+        !SafeReadU32((const void*)((uintptr_t)z_mgr + 0x20), &z_cap)) {
+        return out;
+    }
+    for (uint32_t i = 0; i < z_cap; ++i) {
+        void* zone = nullptr;
+        void* district = nullptr;
+        void* colony = nullptr;
+        if (!SafeReadPtr((const void*)((uintptr_t)z_arr + i * 16 + 8), &zone) || !zone ||
+            !SafeReadPtr((const void*)((uintptr_t)zone + 0x18), &district) || !district ||
+            !SafeReadPtr((const void*)((uintptr_t)district + 0x18), &colony) || colony != colony_obj) {
+            continue;
         }
+        ZoneRef z;
+        z.zone = zone;
+        SafeReadU32((const void*)((uintptr_t)zone + 8), &z.id);
+        void* ztype = nullptr;
+        void* dtype = nullptr;
+        if (SafeReadPtr((const void*)((uintptr_t)zone + 0x20), &ztype) && ztype) {
+            SafeReadPdxString((const void*)((uintptr_t)ztype + 0x20), z.key);
+        }
+        if (SafeReadPtr((const void*)((uintptr_t)district + 0x20), &dtype) && dtype) {
+            SafeReadPdxString((const void*)((uintptr_t)dtype + 0x20), z.district_key);
+        }
+        SafeReadU32((const void*)((uintptr_t)zone + 0x1B4), &z.buildings);
+        MaxBuildingsCtx mctx{ base_address_ + sdk::fn::CColony_CalcMaxBuildings, colony_obj, zone, GetPlayerCountry(), 0 };
+        if (CommandBuilder::Get().CallGuarded(&CallMaxBuildings, &mctx)) z.max_buildings = mctx.result;
+        out.push_back(z);
+    }
+    return out;
+}
+
+nlohmann::json OutlinerManager::GetBuildableBuildingsJson(uint32_t planet_id, const std::string& building_key, int32_t zone_id) {
+    void* p_obj = FindPlanet(planet_id);
+    uint32_t cid = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    if (!p_obj || !SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid) || cid == 0xFFFFFFFF) {
+        return { {"success", false}, {"error", "Planet " + std::to_string(planet_id) + " has no colony"} };
+    }
+    SafeReadU32((const void*)((uintptr_t)p_obj + 0xe4), &queue_id);
+    void* colony_obj = FindColony(cid);
+    const uint32_t country_id = GetPlayerCountryId();
+
+    std::vector<ZoneRef> zones = ColonyZones(colony_obj);
+    if (zone_id >= 0) {
+        zones.erase(std::remove_if(zones.begin(), zones.end(), [&](const ZoneRef& z) { return z.id != (uint32_t)zone_id; }),
+                    zones.end());
+        if (zones.empty()) return { {"success", false}, {"error", "Zone " + std::to_string(zone_id) + " is not on this planet"} };
     }
 
-    return {
-        {"planet_id", planet_id},
-        {"district_type", district_type.empty() ? "all" : district_type},
-        {"slot_index", slot_index},
-        {"buildable_buildings", result_buildings}
-    };
+    // One building: whether and where it can be built, with the game's reason.
+    if (!building_key.empty()) {
+        void* type = FindDbElementByKey(base_address_, kBuildingTypeDb, building_key);
+        if (!type) return { {"success", false}, {"error", "Building type '" + building_key + "' not found"} };
+        nlohmann::json per_zone = nlohmann::json::array();
+        for (const auto& z : zones) {
+            uint8_t obj[0x20];
+            FillBuildable(obj, type, cid, z.id);
+            std::string why;
+            bool ok = QueueBuildable(obj, sizeof(obj), country_id, queue_id, false, &why);
+            nlohmann::json j = { {"zone_id", z.id}, {"zone", z.key}, {"can_build", ok} };
+            if (ok) j.update(BuildableCostJson(obj));
+            else j["reason"] = why;
+            per_zone.push_back(j);
+        }
+        return { {"success", true}, {"planet_id", planet_id}, {"building_key", building_key},
+                 {"building_name", LocalizeKey(building_key)}, {"zones", per_zone} };
+    }
+
+    // Every building type the game would accept queued in each zone now.
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t n = 0;
+    if (!SafeReadPtr((const void*)(base_address_ + kBuildingTypeDb), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 10000) {
+        return { {"success", false}, {"error", "Building database not readable"} };
+    }
+    nlohmann::json zones_json = nlohmann::json::array();
+    for (const auto& z : zones) {
+        nlohmann::json buildable = nlohmann::json::array();
+        for (uint32_t i = 0; i < n; ++i) {
+            void* type = nullptr;
+            std::string key;
+            if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &type) || !type ||
+                !SafeReadPdxString((const void*)((uintptr_t)type + 0x20), key) || key.empty()) {
+                continue;
+            }
+            uint8_t obj[0x20];
+            FillBuildable(obj, type, cid, z.id);
+            if (!QueueBuildable(obj, sizeof(obj), country_id, queue_id, false, nullptr)) continue;
+            nlohmann::json j = { {"key", key}, {"name", LocalizeKey(key)} };
+            j.update(BuildableCostJson(obj));
+            buildable.push_back(j);
+        }
+        zones_json.push_back({ {"zone_id", z.id}, {"zone", z.key}, {"zone_name", LocalizeKey(z.key)},
+                               {"district", z.district_key}, {"buildings", z.buildings},
+                               {"max_buildings", z.max_buildings}, {"buildable", buildable} });
+    }
+    return { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"zones", zones_json} };
 }
 
 nlohmann::json OutlinerManager::BuildBuildingJson(uint32_t planet_id, const std::string& building_key, const std::string& district_type, int32_t slot_index) {
@@ -2283,7 +2010,7 @@ nlohmann::json OutlinerManager::BuildBuildingJson(uint32_t planet_id, const std:
         return { {"error", "Engine functions or base address not initialized"} };
     }
 
-    void* bldg_def = FindDbElementByKey(base_address_, 0x3111C00, building_key);
+    void* bldg_def = FindDbElementByKey(base_address_, kBuildingTypeDb, building_key);
     if (!bldg_def) {
         return { {"error", "Building definition not found: " + building_key} };
     }
@@ -2294,7 +2021,7 @@ nlohmann::json OutlinerManager::BuildBuildingJson(uint32_t planet_id, const std:
     }
     uint32_t country_id = GetPlayerCountryId();
 
-    // Planet ID (planet_id) -> Colony ID (cid) & Queue ID from Planet DB (0x3114128)
+    // Planet ID (planet_id) -> Colony ID (cid) & Queue ID from Planet DB (sdk::db::CPlanet)
     void* p_obj = FindPlanet(planet_id);
     if (!p_obj) {
         return { {"error", "Planet with ID " + std::to_string(planet_id) + " not found"} };
@@ -2309,33 +2036,29 @@ nlohmann::json OutlinerManager::BuildBuildingJson(uint32_t planet_id, const std:
         return { {"error", "Planet has no active construction queue"} };
     }
 
-    // Resolve target zone ID
-    uint32_t target_zone_id = 0;
-    if (slot_index == 63 || district_type == "district_generator" || district_type == "generator" || building_key == "building_energy_grid") {
-        target_zone_id = 63;
-    } else if (slot_index == 64 || district_type == "district_mining" || district_type == "mining" || building_key == "building_mineral_purification_plant") {
-        target_zone_id = 64;
-    } else if (slot_index == 65 || district_type == "district_farming" || district_type == "farming" || building_key == "building_food_processing_facility") {
-        target_zone_id = 65;
-    } else if (slot_index == 0 || district_type == "slot_city_government" || building_key == "building_autochthon_monument") {
-        target_zone_id = 0;
-    } else if (slot_index == 1 || district_type == "slot_city_01" || building_key == "building_biolab_1" || building_key == "building_engineering_facility_1" || building_key == "building_physics_lab_1") {
-        target_zone_id = 1;
-    } else if (slot_index == 2 || district_type == "slot_city_02" || building_key == "building_foundry_1" || building_key == "building_factory_1") {
-        target_zone_id = 2;
-    } else if (slot_index >= 0) {
-        target_zone_id = (uint32_t)slot_index;
-    }
-
-    // 1. Construct CBuildableBuilding (0x20 bytes) on stack
+    // Target zone: the zone_id given (see get_planet_details districts[].zones[].slot_index or
+    // get_buildable_buildings), else the first zone of the colony where the game accepts it.
     uint8_t action_obj[0x20];
-    memset(action_obj, 0, sizeof(action_obj));
-    *(void**)(action_obj + 0x00) = (void*)(base_address_ + kBuildableBuildingVt); // CBuildableBuilding concrete vtable (4.5.1 Cygnus)
-    *(void**)(action_obj + 0x08) = bldg_def;                          // CBuildingType*
-    *(uint32_t*)(action_obj + 0x10) = cid;                            // colony_id
-    *(uint32_t*)(action_obj + 0x14) = target_zone_id;                 // zone_id
-    *(uint32_t*)(action_obj + 0x18) = 0xFFFFFFFF;                     // new building
-    *(uint32_t*)(action_obj + 0x1C) = 0;
+    uint32_t target_zone_id = 0xFFFFFFFF;
+    std::string zone_why;
+    if (slot_index >= 0) {
+        target_zone_id = (uint32_t)slot_index;
+    } else {
+        for (const auto& z : ColonyZones(FindColony(cid))) {
+            FillBuildable(action_obj, bldg_def, cid, z.id);
+            if (QueueBuildable(action_obj, sizeof(action_obj), country_id, queue_id, false, &zone_why)) {
+                target_zone_id = z.id;
+                break;
+            }
+        }
+        if (target_zone_id == 0xFFFFFFFF) {
+            return { {"success", false},
+                     {"error", zone_why.empty() ? "No zone on this planet accepts " + building_key
+                                                : "No zone on this planet accepts " + building_key + ": " + zone_why},
+                     {"planet_id", planet_id}, {"building_key", building_key} };
+        }
+    }
+    FillBuildable(action_obj, bldg_def, cid, target_zone_id);
 
     // CAddBuildableToQueueCommand takes ownership of the buildable (engine heap copy)
     std::string why;
@@ -2390,11 +2113,11 @@ nlohmann::json OutlinerManager::UpgradeBuildingJson(uint32_t planet_id, uint32_t
         return { {"error", "Planet has no active construction queue"} };
     }
 
-    // Locate the existing building in CBuilding database (0x3113FF8)
+    // Locate the existing building in CBuilding database (sdk::db::CBuilding)
     void* b_mgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FF8), &b_mgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CBuilding), &b_mgr);
     if (!b_mgr) {
-        return { {"error", "Building manager database (0x3113FF8) not found"} };
+        return { {"error", "Building manager database (sdk::db::CBuilding) not found"} };
     }
 
     void* b_arr = nullptr;
@@ -2456,7 +2179,7 @@ nlohmann::json OutlinerManager::UpgradeBuildingJson(uint32_t planet_id, uint32_t
         }
     }
 
-    void* target_bldg_def = FindDbElementByKey(base_address_, 0x3111C00, resolved_upgrade_key);
+    void* target_bldg_def = FindDbElementByKey(base_address_, kBuildingTypeDb, resolved_upgrade_key);
     if (!target_bldg_def) {
         return { {"error", "Target upgrade building definition not found: " + resolved_upgrade_key} };
     }
@@ -2574,29 +2297,22 @@ static nlohmann::json ReadDepositModifiers(uintptr_t base_address, void* tptr, O
 }
 
 static nlohmann::json ReadClearCost(void* tptr) {
+    // CDepositType +0xA8: the clearing cost, a per-resource CFixedPoint array indexed by the
+    // engine's resource index (vtable +0, data +8, size +0x14).
     nlohmann::json cost = nlohmann::json::object();
-    if (!tptr) return cost;
-
     void* p_econ = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)tptr + 0xA8), &p_econ);
-    if (!p_econ) return cost;
+    if (!tptr || !SafeReadPtr((const void*)((uintptr_t)tptr + 0xA8), &p_econ) || !p_econ) return cost;
 
     void* p_res = nullptr;
     uint32_t res_cnt = 0;
     SafeReadPtr((const void*)((uintptr_t)p_econ + 0x8), &p_res);
-    SafeReadU32((const void*)((uintptr_t)p_econ + 0x10), &res_cnt);
+    SafeReadU32((const void*)((uintptr_t)p_econ + 0x14), &res_cnt);
+    const auto& names = GameState::Get().ResourceNames();
     if (!p_res || res_cnt == 0) return cost;
-
-    static const char* kResNames[] = {
-        "energy", "minerals", "food", "physics_research", "society_research",
-        "engineering_research", "influence", "unity", "consumer_goods", "alloys"
-    };
-    size_t kKnownCount = sizeof(kResNames) / sizeof(kResNames[0]);
-
-    for (uint32_t r = 0; r < res_cnt && r < kKnownCount; ++r) {
-        int32_t raw_val = 0;
-        if (SafeReadI32((const void*)((uintptr_t)p_res + r * 4), &raw_val) && raw_val > 0) {
-            cost[kResNames[r]] = (double)raw_val / 100000.0;
+    for (uint32_t r = 0; r < res_cnt && r < names.size(); ++r) {
+        int64_t raw_val = 0;
+        if (!names[r].empty() && SafeReadI64((const void*)((uintptr_t)p_res + r * 8), &raw_val) && raw_val > 0) {
+            cost[names[r]] = raw_val / 100000.0;
         }
     }
     return cost;
@@ -2621,7 +2337,7 @@ nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t c
     std::vector<uint32_t> queued_blocker_ids;
     if (queue_id != 0xFFFFFFFF) {
         void* mgr_eb8 = nullptr;
-        if (SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8) && mgr_eb8) {
+        if (SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8) && mgr_eb8) {
             void* arr_eb8 = nullptr;
             uint32_t cap_eb8 = 0;
             uint32_t q_slot = queue_id & 0xFFFFFF;
@@ -2635,7 +2351,7 @@ nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t c
                     SafeReadU32((const void*)((uintptr_t)queue_obj + 0x2C), &q_cnt);
                     if (q_items && q_cnt > 0 && q_cnt <= 200) {
                         void* mgr_ea8 = nullptr;
-                        if (SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8) && mgr_ea8) {
+                        if (SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8) && mgr_ea8) {
                             void* arr_ea8 = nullptr;
                             uint32_t cap_ea8 = 0;
                             SafeReadPtr((const void*)((uintptr_t)mgr_ea8 + 0x18), &arr_ea8);
@@ -2687,8 +2403,8 @@ nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t c
     }
 
     void* dep_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113FB0), &dep_mgr) || !dep_mgr || (uintptr_t)dep_mgr < 0x10000) {
-        SafeReadPtr((const void*)(base_address_ + 0x3113FB0), &dep_mgr);
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CDeposit), &dep_mgr) || !dep_mgr || (uintptr_t)dep_mgr < 0x10000) {
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CDeposit), &dep_mgr);
     }
     if (!dep_mgr) {
         return {
@@ -2920,10 +2636,10 @@ nlohmann::json OutlinerManager::ClearBlockerJson(uint32_t planet_id, uint32_t de
         return { {"error", "No deposits found on planet"} };
     }
 
-    // Deposit database at 0x3113FB0
+    // Deposit database at sdk::db::CDeposit
     void* dep_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113FB0), &dep_mgr) || !dep_mgr || (uintptr_t)dep_mgr < 0x10000) {
-        SafeReadPtr((const void*)(base_address_ + 0x3113FB0), &dep_mgr);
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CDeposit), &dep_mgr) || !dep_mgr || (uintptr_t)dep_mgr < 0x10000) {
+        SafeReadPtr((const void*)(base_address_ + sdk::db::CDeposit), &dep_mgr);
     }
     if (!dep_mgr) return { {"error", "Deposit manager not found"} };
     void* dep_db_arr = nullptr;
@@ -3296,79 +3012,46 @@ nlohmann::json OutlinerManager::AscendColonyJson(uint32_t planet_id) {
 }
 
 std::string OutlinerManager::LocalizeDecisionKey(const std::string& key) {
-    if (key.empty()) return key;
-
-    static const std::unordered_map<std::string, std::string> kDecisionLocMap = {
-        {"decision_planet_food_boost", "发放食物补贴 (Distribute Food)"},
-        {"decision_planet_luxuries_boost", "发放奢侈品 (Distribute Consumer Goods)"},
-        {"decision_enact_population_control", "鼓励生育/控制人口 (Declare Population Controls)"},
-        {"decision_end_population_control", "废除人口控制 (Cease Population Controls)"},
-        {"decision_enact_population_control_gestalt", "人口繁衍控制 (Population Controls Gestalt)"},
-        {"decision_end_population_control_gestalt", "停止繁衍控制 (Cease Gestalt Controls)"},
-        {"decision_enact_robot_assembly_control", "停止建造机器人 (Cease Robot Assembly)"},
-        {"decision_end_robot_assembly_control", "允许建造机器人 (Resume Robot Assembly)"},
-        {"decision_expel_population", "驱逐人口 (Expel Excess Population)"},
-        {"decision_discourage_growth", "抑制人口增长 (Discourage Planetary Growth)"},
-        {"decision_end_discourage_growth", "停止抑制增长 (Encourage Planetary Growth)"},
-        {"decision_penal_colony", "设立监狱行星 (Designate Penal Colony)"},
-        {"decision_abolish_penal_colony", "废除监狱行星 (Abolish Penal Colony)"},
-        {"decision_slave_colony", "设立奴隶行星 (Designate Slave Colony)"},
-        {"decision_abolish_slave_colony", "废除奴隶行星 (Abolish Slave Colony)"},
-        {"decision_resort_colony", "设立度假行星 (Designate Resort Colony)"},
-        {"decision_abolish_resort_colony", "废除度假行星 (Abolish Resort Colony)"},
-        {"decision_mastery_of_nature", "掌握自然 (Mastery of Nature)"},
-        {"decision_consecrated_worlds", "祝圣世界 (Consecrate World)"},
-        {"decision_unconsecrated_worlds", "取消祝圣世界 (Unconsecrate World)"},
-        {"decision_declare_martial_law", "戒严令 (Declare Martial Law)"},
-        {"decision_end_martial_law", "解除戒严令 (Revoke Martial Law)"},
-        {"decision_anti_crime_campaign", "严打犯罪运动 (Anti-Crime Campaign)"},
-        {"decision_negotiate_crime_lords", "与黑帮谈判 (Deal with Crime Lords)"},
-        {"decision_strip_mine", "露天采矿 (Strip Mining)"},
-        {"decision_cease_strip_mine", "停止露天采矿 (Cease Strip Mining)"},
-        {"decision_arcology_project", "理想城计划 (Arcology Project)"},
-        {"decision_prospecting", "地质勘探 (Planetary Prospecting)"}
-    };
-    auto it = kDecisionLocMap.find(key);
-    if (it != kDecisionLocMap.end()) {
-        return it->second;
-    }
     return LocalizeKey(key);
 }
 
-std::string OutlinerManager::LocalizePlanetClass(const std::string& key) {
-    if (key.empty()) return key;
-
-    static const std::unordered_map<std::string, std::string> kPlanetClassLocMap = {
-        {"pc_continental", "大陆星球 (Continental)"},
-        {"pc_ocean", "海洋星球 (Ocean)"},
-        {"pc_tropical", "热带星球 (Tropical)"},
-        {"pc_desert", "沙漠星球 (Desert)"},
-        {"pc_arid", "干旱星球 (Arid)"},
-        {"pc_savannah", "热带草原星球 (Savannah)"},
-        {"pc_arctic", "极地星球 (Arctic)"},
-        {"pc_alpine", "高山星球 (Alpine)"},
-        {"pc_tundra", "苔原星球 (Tundra)"},
-        {"pc_gaia", "盖亚星球 (Gaia)"},
-        {"pc_relic", "遗落星球 (Relic)"},
-        {"pc_nuked", "死寂星球 (Tomb World)"},
-        {"pc_machine", "机魂星球 (Machine World)"},
-        {"pc_hive", "蜂巢星球 (Hive World)"},
-        {"pc_city", "理想城 (Ecumenopolis)"},
-        {"pc_ringworld_habitable", "环形世界 (Ring World)"},
-        {"pc_habitat", "居住站 (Habitat)"},
-        {"pc_shattered", "破碎星球 (Shattered World)"},
-        {"pc_toxic", "剧毒星球 (Toxic)"},
-        {"pc_barren", "荒芜星球 (Barren)"},
-        {"pc_barren_cold", "寒冷荒芜星球 (Cold Barren)"},
-        {"pc_frozen", "冰封星球 (Frozen)"},
-        {"pc_molten", "熔岩星球 (Molten)"},
-        {"pc_gas_giant", "气态巨行星 (Gas Giant)"},
-        {"pc_asteroid", "小行星 (Asteroid)"}
+double OutlinerManager::ColonizationProgress(void* colony) {
+    struct Ctx {
+        uintptr_t fn;
+        void* colony;
+        int64_t out;
+    } ctx{ base_address_ + sdk::fn::CColony_CalcColonizationProgressPerc, colony, 0 };
+    auto call = [](void* c, void*) {
+        auto* x = (Ctx*)c;
+        ((int64_t * (*)(void*, int64_t*)) x->fn)(x->colony, &x->out);
     };
-    auto it = kPlanetClassLocMap.find(key);
-    if (it != kPlanetClassLocMap.end()) {
-        return it->second;
+    if (!CommandBuilder::Get().CallGuarded(call, &ctx)) return 0.0;
+    return std::round(ctx.out / 100000.0 * 1000.0) / 1000.0;  // fixed point fraction
+}
+
+nlohmann::json OutlinerManager::SectorIdJson(const SectorGroup& s) {
+    return s.unassigned ? nlohmann::json(nullptr) : nlohmann::json(s.sector_id);
+}
+
+std::string OutlinerManager::PlanetName(void* planet) {
+    return planet ? PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name)) : "";
+}
+
+uint32_t OutlinerManager::PlanetSystemId(void* planet) {
+    uint32_t sys_id = 0xFFFFFFFF;
+    if (planet) {
+        SafeReadU32((const void*)((uintptr_t)planet + sdk::ent::CPlanet::coordinate + sdk::ent::CCelestialCoordinate::origin),
+                    &sys_id);
     }
+    return sys_id;
+}
+
+std::string OutlinerManager::SystemName(uint32_t system_id) {
+    void* sys = FindSystem(system_id);
+    return sys ? PersistentNameText((const void*)((uintptr_t)sys + sdk::ent::CGalacticObject::name)) : "";
+}
+
+std::string OutlinerManager::LocalizePlanetClass(const std::string& key) {
     return LocalizeKey(key);
 }
 
@@ -3385,14 +3068,12 @@ nlohmann::json OutlinerManager::GetPlanetaryDecisionsJson(uint32_t planet_id) {
     uint32_t cid = 0xFFFFFFFF;
     SafeReadU32((const void*)((uintptr_t)p_obj + 0xe0), &cid);
 
-    std::string planet_name;
-    SafeReadPdxString((const void*)((uintptr_t)p_obj + 0x108), planet_name);
-    planet_name = LocalizeKey(planet_name);
+    std::string planet_name = PlanetName(p_obj);
 
     uint32_t country_id = GetPlayerCountryId();
 
     void* dec_mgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x31118B8), &dec_mgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CDecisionsDatabase_pInstance), &dec_mgr);
     if (!dec_mgr) {
         return { {"error", "Decisions database not found"} };
     }
@@ -3466,7 +3147,7 @@ nlohmann::json OutlinerManager::EnactDecisionJson(uint32_t planet_id, const std:
     uint32_t country_id = GetPlayerCountryId();
 
     void* dec_mgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x31118B8), &dec_mgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CDecisionsDatabase_pInstance), &dec_mgr);
     if (!dec_mgr) return { {"error", "Decisions database not found"} };
 
     uint32_t dec_count = 0;
@@ -3551,9 +3232,7 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
         return { {"error", "Planet not found: " + std::to_string(planet_id)} };
     }
 
-    std::string planet_name;
-    SafeReadPdxString((const void*)((uintptr_t)p_obj + 0x108), planet_name);
-    planet_name = LocalizeKey(planet_name);
+    std::string planet_name = PlanetName(p_obj);
 
     void* cur_class = nullptr;
     SafeReadPtr((const void*)((uintptr_t)p_obj + 0x148), &cur_class);
@@ -3608,9 +3287,9 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
         };
     }
 
-    // Read terraform links database at base + 0x3151FD8
+    // Read terraform links database at base + sdk::glob::CTerraformDatabase_pInstance
     void* db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3151FD8), &db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::CTerraformDatabase_pInstance), &db);
     nlohmann::json options = nlohmann::json::array();
     if (db && cur_class) {
         uint32_t link_cnt = 0;
@@ -3708,7 +3387,7 @@ nlohmann::json OutlinerManager::StartTerraformingJson(uint32_t planet_id, const 
     uint32_t country_id = GetPlayerCountryId();
 
     void* db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3151FD8), &db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::CTerraformDatabase_pInstance), &db);
     if (!db) return { {"error", "Terraform database not found"} };
 
     uint32_t link_cnt = 0;
@@ -3887,7 +3566,7 @@ nlohmann::json OutlinerManager::ExtractWorkforceSummary(void* colony_obj) {
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0x44), &jobs_cnt);
 
     void* job_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FE0), &job_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CPopJob), &job_db);
 
     void* job_db_arr = nullptr;
     uint32_t job_db_cap = 0;
@@ -4051,7 +3730,7 @@ nlohmann::json OutlinerManager::GetPlanetJobsJson(uint32_t planet_id) {
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0x44), &jobs_cnt);
 
     void* job_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FE0), &job_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CPopJob), &job_db);
 
     void* job_db_arr = nullptr;
     uint32_t job_db_cap = 0;
@@ -4247,7 +3926,7 @@ nlohmann::json OutlinerManager::SetJobPriorityJson(uint32_t planet_id, const std
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0x44), &jobs_cnt);
 
     void* job_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FE0), &job_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CPopJob), &job_db);
     if (!job_db || (uintptr_t)job_db < 0x10000) {
         return { {"success", false}, {"error", "PopJob database not found"} };
     }
@@ -4381,7 +4060,7 @@ nlohmann::json OutlinerManager::SetJobWorkforceLimitJson(uint32_t planet_id, con
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0x44), &jobs_cnt);
 
     void* job_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113FE0), &job_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CPopJob), &job_db);
     if (!job_db || (uintptr_t)job_db < 0x10000) {
         return { {"success", false}, {"error", "PopJob database not found"} };
     }
@@ -4556,8 +4235,8 @@ nlohmann::json OutlinerManager::ExtractArmiesSummary(void* p_obj, void* colony_o
     uint32_t queue_cnt = 0;
     if (army_queue_id != 0xFFFFFFFF) {
         void* mgr_eb8 = nullptr;
-        if (!SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
-            SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8);
+        if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
+            SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8);
         }
         if (mgr_eb8) {
             void* arr_eb8 = nullptr;
@@ -4606,10 +4285,7 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
         return { {"success", false}, {"error", "Planet has no active colony"} };
     }
 
-    std::string raw_name;
-    SafeReadPdxString((const void*)((uintptr_t)p_obj + 0x108), raw_name);
-    std::string p_name = LocalizeKey(raw_name);
-    if (p_name.empty()) p_name = "Planet " + std::to_string(planet_id);
+    std::string p_name = PlanetName(p_obj);
 
     nlohmann::json overview = ExtractArmiesSummary(p_obj, colony_obj);
 
@@ -4624,7 +4300,7 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
     // 2. Recruitable Armies Catalog
     nlohmann::json recruitable_armies = nlohmann::json::array();
     void* army_type_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3111968), &army_type_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CArmyTypeDatabase_pInstance), &army_type_db);
     if (army_type_db && (uintptr_t)army_type_db > 0x10000) {
         void* type_arr = nullptr;
         uint32_t type_cnt = 0;
@@ -4679,8 +4355,8 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0xC0), &army_queue_id);
     if (army_queue_id != 0xFFFFFFFF) {
         void* mgr_eb8 = nullptr;
-        if (!SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
-            SafeReadPtr((const void*)(base_address_ + 0x3113EB8), &mgr_eb8);
+        if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8) || !mgr_eb8 || (uintptr_t)mgr_eb8 < 0x10000) {
+            SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueue), &mgr_eb8);
         }
         if (mgr_eb8) {
             void* arr_eb8 = nullptr;
@@ -4698,8 +4374,8 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
                     SafeReadU32((const void*)((uintptr_t)queue_obj + 0x2C), &q_cnt);
 
                     void* mgr_ea8 = nullptr;
-                    if (!SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8) || !mgr_ea8 || (uintptr_t)mgr_ea8 < 0x10000) {
-                        SafeReadPtr((const void*)(base_address_ + 0x3113EA8), &mgr_ea8);
+                    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8) || !mgr_ea8 || (uintptr_t)mgr_ea8 < 0x10000) {
+                        SafeReadPtr((const void*)(base_address_ + sdk::db::CConstructionQueueItem), &mgr_ea8);
                     }
                     if (mgr_ea8) {
                         void* arr_ea8 = nullptr;
@@ -4871,7 +4547,7 @@ nlohmann::json OutlinerManager::EmbarkAllArmiesJson(uint32_t planet_id) {
     SafeReadU32((const void*)((uintptr_t)colony_obj + 0xDC), &armies_cnt);
 
     void* army_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113F60), &army_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CArmy), &army_db);
     void* army_db_arr = nullptr;
     uint32_t army_db_cap = 0;
     if (army_db && (uintptr_t)army_db > 0x10000) {
@@ -5023,7 +4699,7 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
 
     // Locate CArmyType in database
     void* army_type_db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3111968), &army_type_db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CArmyTypeDatabase_pInstance), &army_type_db);
     if (!army_type_db || (uintptr_t)army_type_db < 0x10000) {
         return { {"success", false}, {"error", "ArmyType database not found"} };
     }

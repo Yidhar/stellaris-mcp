@@ -48,6 +48,36 @@ def linux_symbols(classes):
     return per_class
 
 
+# Databases that a command reads in its ReadCommandMember (vtable slot 21) under a specific
+# save token. When one command references several TGameDatabases, voting cannot tell them apart;
+# the token branch can: `cmp r8d, <token>; je <branch>`, and the branch loads the database.
+TOKEN_BRANCH_HINTS = {
+    "TGameDatabase<CGovernmentCivicTypeDatabase>::_pInstance": ("CChangeGovernmentCommand", 0x38DB),
+    "TGameDatabase<CGovernmentAuthorityTypeDatabase>::_pInstance": ("CChangeGovernmentCommand", 0x2D24),
+}
+READ_COMMAND_MEMBER_SLOT = 21
+
+
+def token_branch_global(im, vtable, token, data0, data1):
+    """The first .data global loaded in the ReadCommandMember branch taken for `token`."""
+    fn = im.q(vtable + READ_COMMAND_MEMBER_SLOT * 8) - im.ib
+    insns = im.disasm_fn(fn, 0x400)
+    for n, ins in enumerate(insns):
+        if ins.mnemonic == "cmp" and ins.op_str.endswith(hex(token)) and n + 1 < len(insns):
+            jmp = insns[n + 1]
+            if jmp.mnemonic != "je" or not jmp.op_str.startswith("0x"):
+                return None
+            for b in im.disasm_fn(int(jmp.op_str, 16) - im.ib, 0x80):
+                for op in b.operands:
+                    if op.type == X86_OP_MEM and b.reg_name(op.mem.base) == "rip":
+                        t = b.address - im.ib + b.size + op.mem.disp
+                        if data0 <= t < data1:
+                            return t
+                if b.mnemonic in ("ret", "jmp"):
+                    break
+    return None
+
+
 def main():
     sdk = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))
     im = Image(EXE)
@@ -117,6 +147,14 @@ def main():
     # placed first: their NullObject twins co-occur in exactly the same functions and would
     # otherwise tie with them.
     result, taken = {}, set()
+    by_class = {c["class"]: c for c in cmds}
+    for sym, (cls, token) in TOKEN_BRANCH_HINTS.items():
+        if cls in by_class:
+            a = token_branch_global(im, by_class[cls]["vtable"], token, data0, data1)
+            if a is not None and a not in taken:
+                result[sym] = {"rva": a, "score": 1.0, "recall": 1.0, "precision": 1.0, "classes": 1,
+                               "db_shape": False, "source": f"{cls} token 0x{token:X} branch"}
+                taken.add(a)
     cands = collections.defaultdict(list)
     for _, score, sym, a, recall, precision, ncls in sorted(pairs, key=lambda p: (p[0], -p[1])):
         if score >= 0.2 and len(cands[sym]) < 5:

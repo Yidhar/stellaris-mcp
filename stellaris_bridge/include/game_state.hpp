@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include <unordered_map>
 
 namespace bridge {
@@ -17,6 +18,7 @@ struct ResourceDetail {
     double income{ 0.0 };
     double expense{ 0.0 };
     double net{ 0.0 };
+    double max{ -1.0 };  // storage cap for this country, -1 when the resource has none
 };
 
 struct CapacityInfo {
@@ -62,13 +64,20 @@ public:
     GameDate ReadDate();
     EmpireStats ReadEmpireStats(void* country = nullptr);
     std::unordered_map<std::string, ResourceDetail> ReadResources(void* country = nullptr);
+    // Script keys of the strategic resources, in the engine's resource index order (the index
+    // every per-resource array uses).
+    const std::vector<std::string>& ResourceNames();
+    // A per-resource CFixedPoint table as {key: value}, for tables reached as
+    // `holder -> {data, ..., size at +0xC}` (CColony produced/upkeep/profits, ...). Zeros are skipped.
+    nlohmann::json ResourceTableJson(const void* table_ptr_field);
 
 private:
     GameState() = default;
     uintptr_t base_address_{ 0 };
-    uintptr_t in_game_idler_rva_{ 0x3114180 };
+    uintptr_t in_game_idler_rva_{ sdk::glob::g_CurrentInGameIdler };
 
     std::vector<std::string> cached_resource_names_;
+    std::vector<void*> cached_resource_ptrs_;  // CStrategicResource*, same order
     void EnsureResourceNamesLoaded();
 };
 

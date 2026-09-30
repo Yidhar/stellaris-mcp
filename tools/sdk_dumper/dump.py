@@ -42,6 +42,7 @@ def main():
         stale = HERE / "out" / "globals_verified.json"
         if stale.exists():
             stale.unlink()
+    run("anchors.py")
     run("emit_sdk.py")
     if rc:
         raise SystemExit("validate.py reported mismatches against hand-verified layouts -- review before use")

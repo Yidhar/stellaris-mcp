@@ -1,6 +1,7 @@
 #include "fleet_access.hpp"
 #include "command_builder.hpp"
 #include "sdk/stellaris_sdk.hpp"
+#include <cstring>
 
 namespace bridge::fleets {
 namespace {
@@ -133,6 +134,108 @@ std::string OrdersText(void* fleet) {
 }  // namespace bridge::fleets
 
 namespace bridge {
+
+namespace {
+
+// TPdxNullObject-style references: vtable slot 1 reports whether the pointee is a real object.
+struct ValidCtx {
+    void* obj;
+    bool result;
+};
+
+void CallIsValidObject(void* c, void*) {
+    auto* x = (ValidCtx*)c;
+    x->result = (*(bool (**)(void*))(*(uintptr_t*)x->obj + 8))(x->obj);
+}
+
+// PdxLocalize with one named parameter ("$NAME$" / "$NAME|fmt$" in the text), as the outliner
+// tooltips build "OUTLINER_PLANET_BLOCKADED" with BLOCKADER. The value is an engine CString that
+// the function only reads, so it can borrow our buffer.
+struct LocParamCtx {
+    uintptr_t fn;
+    const char* key;
+    int32_t key_len;
+    const char* param;
+    const void* value;
+};
+
+void CallLocalizeParam(void* c, void* out) {
+    auto* x = (LocParamCtx*)c;
+    struct KeyView {
+        const char* ptr;
+        int32_t len;
+        uint8_t flag;
+        uint8_t pad[3];
+    } key{ x->key, x->key_len, 0, {} };
+    ((void* (*)(void*, const void*, const char*, const void*))x->fn)(out, &key, x->param, x->value);
+}
+
+}  // namespace
+
+namespace {
+struct HabitabilityCtx {
+    uintptr_t fn;
+    const void* species;
+    const void* carrier;
+    const void* country;
+    const void* planet_class;
+    int64_t out;
+};
+void CallHabitability(void* c, void*) {
+    auto* x = (HabitabilityCtx*)c;
+    using Fn = int64_t* (*)(int64_t*, const void*, const void*, const void*, const void*, const void*, const void*);
+    ((Fn)x->fn)(&x->out, x->species, x->carrier, x->country, x->planet_class, nullptr, nullptr);
+}
+}  // namespace
+
+double Habitability(uintptr_t base, const void* species, const void* planet, const void* country) {
+    // the colony carrier is the planet's CDepositHolder base (+0x20); its planet class is the
+    // carrier's +0x128, i.e. CPlanet::planet_class
+    const void* planet_class = nullptr;
+    if (!species || !planet || !country) return -1;
+    __try {
+        planet_class = *(const void* const*)((uintptr_t)planet + sdk::ent::CPlanet::planet_class);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    if (!planet_class) return -1;
+    HabitabilityCtx ctx{ base + sdk::fn::NHabitability_CalcHabitability, species, (const void*)((uintptr_t)planet + 0x20),
+                         country, planet_class, 0 };
+    if (!CommandBuilder::Get().CallGuarded(&CallHabitability, &ctx)) return -1;
+    return ctx.out / 100000.0;
+}
+
+bool IsRealObject(void* obj) {
+    if (!obj) return false;
+    ValidCtx ctx{ obj, false };
+    return CommandBuilder::Get().CallGuarded(&CallIsValidObject, &ctx) && ctx.result;
+}
+
+std::string LocalizeWithParam(uintptr_t base, const std::string& key, const char* param, const std::string& value) {
+    struct BorrowedCString {
+        uint8_t header[16];
+        union {
+            char buf[16];
+            const char* heap_ptr;
+        };
+        uint64_t size;
+        uint64_t capacity;
+    } v{};
+    if (value.size() < 16) {
+        memcpy(v.buf, value.c_str(), value.size() + 1);
+        v.capacity = 15;
+    } else {
+        v.heap_ptr = value.c_str();
+        v.capacity = value.size();
+    }
+    v.size = value.size();
+    LocParamCtx ctx{ base + sdk::fn::PdxLocalize_OneParam, key.c_str(), (int32_t)key.size(), param, &v };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText(&CallLocalizeParam, &ctx, &text) || text.empty()) {
+        return SafeLocalize(base, key);
+    }
+    return text;
+}
 
 std::string PersistentNameText(const void* persistent_name) {
     if (!persistent_name) return "";

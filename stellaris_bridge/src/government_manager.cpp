@@ -1,5 +1,7 @@
 #include "government_manager.hpp"
 #include "command_builder.hpp"
+#include "game_state.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include <cstring>
 #include <cmath>
 
@@ -121,7 +123,7 @@ void* GovernmentManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -156,7 +158,7 @@ void* GovernmentManager::FindLeaderPtr(uint32_t leader_id) {
     if (!base_address_ || leader_id == 0 || leader_id == 0xFFFFFFFF) return nullptr;
 
     void* leader_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114120), &leader_mgr) || !leader_mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CLeader), &leader_mgr) || !leader_mgr) {
         return nullptr;
     }
 
@@ -323,7 +325,7 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
         void* civics_arr = nullptr;
         uint32_t civics_cnt = 0;
         if (SafeReadPtr((const void*)((uintptr_t)council + 0x28), &civics_arr) && civics_arr &&
-            SafeReadU32((const void*)((uintptr_t)council + 0x30), &civics_cnt) && civics_cnt > 0) {
+            SafeReadU32((const void*)((uintptr_t)council + 0x34), &civics_cnt) && civics_cnt > 0) {
             for (uint32_t i = 0; i < civics_cnt && i < 16; ++i) {
                 void* civic_ptr = nullptr;
                 if (SafeReadPtr((const void*)((uintptr_t)civics_arr + i * 8), &civic_ptr) && civic_ptr) {
@@ -518,7 +520,7 @@ nlohmann::json GovernmentManager::LaunchCouncilAgenda() {
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
@@ -604,6 +606,321 @@ std::string GovernmentManager::AgendaName(const std::string& key) {
     std::string loc_key = "council_agenda_" + key + "_name";
     std::string name = LocalizeKey(loc_key);
     return name == loc_key ? key : name;
+}
+
+// ---- civics -------------------------------------------------------------------------------
+// CGovernment (CCountry::government): civics CPdxArray<CGovernmentCivicType const*> with data at
+// +0x28 and size at +0x34. CGovernmentCivicType: key at +0x20, civic point cost at +0x48 (what
+// CGovernmentCivicType::CalcCivicCosts sums). CChangeGovernmentCommand: +0x20 country, +0x28
+// authority, +0x30 CPdxArray of civic pointers (data +0x38, capacity +0x40, size +0x44), owned by
+// the command. Its IsValid checks CanChangeGovernment and each civic's IsPossible/CanRemove, but
+// not civic points, so those are checked here as the government screen does.
+namespace {
+constexpr std::ptrdiff_t kGovCivicsData = 0x28;
+constexpr std::ptrdiff_t kGovCivicsSize = 0x34;
+constexpr std::ptrdiff_t kCivicKey = 0x20;
+constexpr std::ptrdiff_t kCivicCost = 0x48;
+constexpr std::ptrdiff_t kCmdCivics = 0x30;
+
+struct CivicPointsCtx {
+    uintptr_t fn;
+    void* country;
+    int result;
+};
+
+void CallTotalCivicPoints(void* c, void*) {
+    auto* x = (CivicPointsCtx*)c;
+    x->result = ((int (*)(void*))x->fn)(x->country);
+}
+
+// CGovernmentCivicType::IsPossible against the country's current SEthicGovernmentConfiguration,
+// built and destroyed by the engine (the struct owns CPdxArrays), with the requirements text.
+struct CivicPossibleCtx {
+    uintptr_t base;
+    void* civic;
+    void* country;
+    uint16_t flags;  // EModdableCivicCondition: 1 = can add, 2 = can remove
+    bool result;
+};
+
+void CallCivicIsPossible(void* c, void* reason) {
+    auto* x = (CivicPossibleCtx*)c;
+    alignas(16) uint8_t config[0x100]{};  // SEthicGovernmentConfiguration is 0x98 bytes
+    ((void* (*)(void*, const void*))(x->base + sdk::fn::SEthicGovernmentConfiguration_ctor_country))(config, x->country);
+    x->result = ((bool (*)(const void*, const void*, uint16_t, const void*, void*))(x->base + sdk::fn::CGovernmentCivicType_IsPossible))(
+        x->civic, config, x->flags, x->country, reason);
+    ((void (*)(void*))(x->base + sdk::fn::SEthicGovernmentConfiguration_dtor))(config);
+}
+
+struct CountryReasonCtx {
+    uintptr_t fn;
+    void* country;
+    bool result;
+};
+
+void CallCanChangeGovernment(void* c, void* reason) {
+    auto* x = (CountryReasonCtx*)c;
+    x->result = ((bool (*)(const void*, void*))x->fn)(x->country, reason);
+}
+
+struct FixedCtx {
+    uintptr_t fn;
+    void* country;
+    int64_t result;
+};
+
+void CallReformCost(void* c, void*) {
+    auto* x = (FixedCtx*)c;
+    ((int64_t* (*)(const void*, int64_t*))x->fn)(x->country, &x->result);
+}
+}  // namespace
+
+nlohmann::json GovernmentManager::ReformStatusJson(void* country) {
+    auto& cb = CommandBuilder::Get();
+    CountryReasonCtx can{ base_address_ + sdk::fn::CCountry_CanChangeGovernment, country, false };
+    std::string why;
+    cb.CallForText(&CallCanChangeGovernment, &can, &why);
+    FixedCtx cost{ base_address_ + sdk::fn::CCountry_CalcGovernmentReformCost, country, 0 };
+    cb.CallGuarded(&CallReformCost, &cost);
+    double unity = 0.0;
+    auto res = GameState::Get().ReadResources(country);
+    if (res.count("unity")) unity = res["unity"].stockpile;
+    nlohmann::json j = {
+        {"can_reform", can.result},
+        {"reform_cost_unity", std::round(cost.result / 1000.0) / 100.0},
+        {"unity_stockpile", unity}
+    };
+    if (!can.result && !why.empty()) j["reason"] = why;
+    return j;
+}
+
+std::string GovernmentManager::CivicRequirementsText(void* country, void* civic, bool* possible) {
+    CivicPossibleCtx ctx{ base_address_, civic, country, 1, false };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText(&CallCivicIsPossible, &ctx, &text)) {
+        text = "requirements could not be evaluated";
+    }
+    if (possible) *possible = ctx.result;
+    return text;
+}
+
+std::vector<void*> GovernmentManager::CurrentCivics(void* country) {
+    std::vector<void*> out;
+    void* gov = nullptr;
+    void* data = nullptr;
+    uint32_t n = 0;
+    if (!country || !SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::government), &gov) || !gov ||
+        !SafeReadPtr((const void*)((uintptr_t)gov + kGovCivicsData), &data) ||
+        !SafeReadU32((const void*)((uintptr_t)gov + kGovCivicsSize), &n) || n > 64) {
+        return out;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        void* civic = nullptr;
+        if (data && SafeReadPtr((const void*)((uintptr_t)data + i * 8), &civic) && civic) out.push_back(civic);
+    }
+    return out;
+}
+
+void* GovernmentManager::FindCivicType(const std::string& key) {
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t n = 0;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CGovernmentCivicTypeDatabase_pInstance), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 10000) {
+        return nullptr;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        void* civic = nullptr;
+        std::string k;
+        if (SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &civic) && civic &&
+            SafeReadPdxString((const void*)((uintptr_t)civic + kCivicKey), k) && k == key) {
+            return civic;
+        }
+    }
+    return nullptr;
+}
+
+bool GovernmentManager::CheckCivics(void* country, const std::vector<void*>& civics, bool post, std::string* why) {
+    namespace cg = sdk::cmd::change_government;
+    void* gov = nullptr;
+    void* authority = nullptr;
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::government), &gov);
+    if (gov) SafeReadPtr((const void*)((uintptr_t)gov + sdk::ent::CGovernment::authority), &authority);
+    if (!authority) {
+        if (why) *why = "government not readable";
+        return false;
+    }
+    auto cmd = CommandBuilder::Get().Create(cg::kSpec);
+    void* data = civics.empty() ? nullptr : CommandBuilder::Get().EngineAlloc(civics.size() * sizeof(void*));
+    if (!civics.empty() && !data) {
+        if (why) *why = "engine allocation failed";
+        return false;
+    }
+    if (data) memcpy(data, civics.data(), civics.size() * sizeof(void*));
+    cmd.Set<uint32_t>(cg::country, GetPlayerCountryId())
+       .Set<void*>(cg::government, authority)
+       .Set<void*>(kCmdCivics + 0x08, data)
+       .Set<uint32_t>(kCmdCivics + 0x10, (uint32_t)civics.size())
+       .Set<uint32_t>(kCmdCivics + 0x14, (uint32_t)civics.size());
+    if (!cmd.IsValid(why)) return false;
+    if (!post) return true;
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json GovernmentManager::GetCivicsJson(const std::string& civic_key) {
+    void* country = GetPlayerCountry();
+    if (!country) return { {"success", false}, {"error", "Player country not found"} };
+
+    auto key_of = [&](void* civic) {
+        std::string k;
+        SafeReadPdxString((const void*)((uintptr_t)civic + kCivicKey), k);
+        return k;
+    };
+    auto cost_of = [&](void* civic) {
+        int32_t c = 0;
+        SafeReadU32((const void*)((uintptr_t)civic + kCivicCost), (uint32_t*)&c);
+        return c;
+    };
+
+    std::vector<void*> current = CurrentCivics(country);
+    int used = 0;
+    nlohmann::json current_json = nlohmann::json::array();
+    for (void* c : current) {
+        used += cost_of(c);
+        current_json.push_back({ {"key", key_of(c)}, {"name", LocalizeKey(key_of(c))}, {"cost", cost_of(c)} });
+    }
+    CivicPointsCtx pts{ base_address_ + sdk::fn::CCountry_CalcTotalCivicPoints, country, 0 };
+    CommandBuilder::Get().CallGuarded(&CallTotalCivicPoints, &pts);
+    const int total = pts.result;
+    const int free_points = total - used;
+
+    nlohmann::json result = {
+        {"success", true},
+        {"civics", current_json},
+        {"civic_points", { {"total", total}, {"used", used}, {"free", free_points} }},
+        {"reform", ReformStatusJson(country)}
+    };
+
+    auto check = [&](void* civic, std::string* why) {
+        if (std::find(current.begin(), current.end(), civic) != current.end()) {
+            if (why) *why = "already adopted";
+            return false;
+        }
+        if (cost_of(civic) > free_points) {
+            if (why) *why = "not enough civic points (" + std::to_string(free_points) + " free, costs " +
+                            std::to_string(cost_of(civic)) + ")";
+            return false;
+        }
+        auto with = current;
+        with.push_back(civic);
+        return CheckCivics(country, with, false, why);
+    };
+
+    if (!civic_key.empty()) {
+        void* civic = FindCivicType(civic_key);
+        if (!civic) return { {"success", false}, {"error", "Civic '" + civic_key + "' not found"} };
+        std::string why;
+        bool ok = check(civic, &why);
+        bool requirements_met = false;
+        std::string requirements = CivicRequirementsText(country, civic, &requirements_met);
+        result["civic"] = { {"key", civic_key}, {"name", LocalizeKey(civic_key)}, {"cost", cost_of(civic)},
+                            {"can_adopt", ok}, {"requirements_met", requirements_met} };
+        // The civic's own requirements, one line each, [trigger_yes]/[trigger_no] per condition.
+        if (!requirements.empty()) result["civic"]["requirements"] = requirements;
+        if (!ok) {
+            // every obstacle, not just the first check that failed
+            nlohmann::json blockers = nlohmann::json::array();
+            if (std::find(current.begin(), current.end(), civic) != current.end()) blockers.push_back("already adopted");
+            if (cost_of(civic) > free_points) {
+                blockers.push_back("not enough civic points (" + std::to_string(free_points) + " free, costs " +
+                                   std::to_string(cost_of(civic)) + ")");
+            }
+            if (!requirements_met) blockers.push_back("civic requirements not met (see requirements)");
+            if (!result["reform"].value("can_reform", true)) {
+                blockers.push_back("government reform not possible now: " + result["reform"].value("reason", std::string()));
+            }
+            if (blockers.empty()) blockers.push_back(why);
+            result["civic"]["blocked_by"] = blockers;
+        }
+        return result;
+    }
+
+    // Every civic the game would accept added now (only when points are free).
+    nlohmann::json available = nlohmann::json::array();
+    if (free_points > 0) {
+        void* db = nullptr;
+        void* arr = nullptr;
+        uint32_t n = 0;
+        if (SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CGovernmentCivicTypeDatabase_pInstance), &db) && db &&
+            SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) && arr &&
+            SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) && n < 10000) {
+            for (uint32_t i = 0; i < n; ++i) {
+                void* civic = nullptr;
+                if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &civic) || !civic) continue;
+                if (!check(civic, nullptr)) continue;
+                available.push_back({ {"key", key_of(civic)}, {"name", LocalizeKey(key_of(civic))}, {"cost", cost_of(civic)} });
+            }
+        }
+    }
+    result["available_civics"] = available;
+    return result;
+}
+
+nlohmann::json GovernmentManager::ChangeCivics(const std::vector<std::string>& add, const std::vector<std::string>& remove) {
+    void* country = GetPlayerCountry();
+    if (!country) return { {"success", false}, {"error", "Player country not found"} };
+    if (add.empty() && remove.empty()) return { {"success", false}, {"error", "Nothing to change: give add and/or remove"} };
+
+    std::vector<void*> civics = CurrentCivics(country);
+    for (const auto& key : remove) {
+        void* civic = FindCivicType(key);
+        auto it = std::find(civics.begin(), civics.end(), civic);
+        if (!civic || it == civics.end()) return { {"success", false}, {"error", "Civic '" + key + "' is not adopted"} };
+        civics.erase(it);
+    }
+    for (const auto& key : add) {
+        void* civic = FindCivicType(key);
+        if (!civic) return { {"success", false}, {"error", "Civic '" + key + "' not found"} };
+        if (std::find(civics.begin(), civics.end(), civic) != civics.end()) {
+            return { {"success", false}, {"error", "Civic '" + key + "' is already adopted"} };
+        }
+        civics.push_back(civic);
+    }
+
+    int cost = 0;
+    for (void* c : civics) {
+        int32_t v = 0;
+        SafeReadU32((const void*)((uintptr_t)c + kCivicCost), (uint32_t*)&v);
+        cost += v;
+    }
+    CivicPointsCtx pts{ base_address_ + sdk::fn::CCountry_CalcTotalCivicPoints, country, 0 };
+    CommandBuilder::Get().CallGuarded(&CallTotalCivicPoints, &pts);
+    if (cost > pts.result) {
+        return { {"success", false},
+                 {"error", "Not enough civic points: the civics cost " + std::to_string(cost) + ", the empire has " +
+                               std::to_string(pts.result)} };
+    }
+
+    std::string why;
+    if (!CheckCivics(country, civics, true, &why)) {
+        nlohmann::json err = { {"success", false},
+                               {"error", why.empty() ? "Government change rejected" : "Government change rejected: " + why},
+                               {"reform", ReformStatusJson(country)} };
+        nlohmann::json unmet = nlohmann::json::object();
+        for (const auto& key : add) {
+            bool met = false;
+            std::string req = CivicRequirementsText(country, FindCivicType(key), &met);
+            if (!met) unmet[key] = req;
+        }
+        if (!unmet.empty()) err["unmet_requirements"] = unmet;
+        return err;
+    }
+    return { {"success", true}, {"message", "Government reform posted"}, {"civic_count", civics.size()} };
 }
 
 } // namespace bridge

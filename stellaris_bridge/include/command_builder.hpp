@@ -106,6 +106,11 @@ public:
     // stores into ctx itself. Returns false if the engine call raised.
     bool CallGuarded(FnTextCall call, void* ctx);
 
+    // Runs one console command line (e.g. "effect ...", "smooth") through
+    // CConsole::RunCommandNow, exactly as if typed into the in-game console. Main thread only.
+    // The command's own output goes to the console and the game logs, not back to the caller.
+    bool RunConsoleCommand(const std::string& line, std::string* error);
+
     // Engine operator new; memory handed to engine-owned objects must come from here.
     void* EngineAlloc(size_t n) const;
 

@@ -390,10 +390,133 @@ export function registerTools(server: McpServer, client: PipeClient) {
     }
   );
 
+  // Galaxy map. Everything follows the player's knowledge: all systems and hyperlanes are
+  // visible (as on the in-game map); owners, planets, deposits and foreign fleets depend on the
+  // engine's intel level for the system (0 none .. 4 full) and on what the player has surveyed.
+  const galaxyCall = async (method: string, params: Record<string, unknown>, compact = false) => {
+    try {
+      const result = await client.request(method, params);
+      return { content: [{ type: "text" as const, text: compact ? JSON.stringify(result) : JSON.stringify(result, null, 2) }] };
+    } catch (err: any) {
+      return { isError: true, content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  };
+
+  server.tool(
+    "stellaris_get_galaxy_overview",
+    "Galaxy overview (Layer 1): system and hyperlane totals, a topology_version (a cached stellaris_get_galaxy_map topology stays valid while it is unchanged), the player's capital system and owned systems, how many systems the player has each intel level on, surveyed / unsurveyed systems, unclaimed systems bordering the player's space, known empires with the number of their systems the player can see, and unresearched anomalies. Only what the player knows.",
+    {},
+    async () => galaxyCall("get_galaxy_overview", {})
+  );
+
+  server.tool(
+    "stellaris_get_galaxy_map",
+    "Galaxy map around a system (Layer 1.5): every system within `jumps` hyperlane jumps of center_system_id (default: the player's capital system) as table rows [id, name, x, y, owner_id, intel, jumps, flags] plus the hyperlanes between them as [a, b, length] and the names of the owners shown. flags: S surveyed, C colonized, B starbase, F own fleet present, A unresearched anomaly. owner_id is null when the system is unowned or its owner is unknown to the player. Use stellaris_get_system for one system's planets, starbase and fleets.",
+    {
+      center_system_id: z.number().int().optional().describe("System to center on (default: the player's capital system)"),
+      jumps: z.number().int().min(0).max(12).optional().default(3).describe("Hyperlane jumps around the center (0-12, default 3)"),
+    },
+    async ({ center_system_id, jumps }) =>
+      galaxyCall("get_galaxy_map", { ...(center_system_id !== undefined ? { center_system_id } : {}), jumps: jumps ?? 3 }, true)
+  );
+
+  server.tool(
+    "stellaris_get_system",
+    "One star system (Layer 2) as the player knows it: position, intel level, owner, whether it is fully surveyed, hyperlanes (neighbor id, name, length), the starbase (level) when the owner is known, planets (class, size, owner, colony, surveyed; deposits only on surveyed planets; an unresearched anomaly if the player has discovered one) when intel is medium or better or the planets are surveyed, and fleets (own fleets always, other fleets only with high intel). unknown_planets counts planets the player cannot see yet.",
+    {
+      system_id: z.number().int().describe("System id (from stellaris_get_galaxy_map)"),
+    },
+    async ({ system_id }) => galaxyCall("get_system", { system_id })
+  );
+
+  server.tool(
+    "stellaris_move_fleet",
+    "Orders one of the player's fleets to fly to a star system (native CSendFleetToLocationCommand, a move to the system's centre; the engine plans the route). queue=true appends the move after the fleet's current orders instead of replacing them. Rejected with the engine's reason for stations or immobile fleets. The fleet's new orders show in stellaris_get_fleets on a later call.",
+    {
+      fleet_id: z.number().int().describe("One of the player's fleet ids"),
+      system_id: z.number().int().describe("Target system id"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, system_id, queue }) => galaxyCall("move_fleet", { fleet_id, system_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_find_systems",
+    "Finds systems for a purpose, nearest first by hyperlane jumps from from_system_id (default: the capital), using only what the player knows. purpose: 'unsurveyed' (systems not fully surveyed), 'outpost' (unowned systems; with a construction ship, can_build and the game's reason come from the build order's own check), 'deposit' (surveyed planets whose deposit key contains `resource`, e.g. 'minerals', 'energy', 'alloys'), 'colonizable' (the expansion planner's list: unowned surveyed planets in systems with medium+ intel, with the game's habitability for species_id (default: the founder species) and the player's modifiers, best first).",
+    {
+      purpose: z.enum(["unsurveyed", "outpost", "deposit", "colonizable"]).describe("What to look for"),
+      species_id: z.number().int().optional().describe("colonizable: species to rate planets for (default: the founder species)"),
+      from_system_id: z.number().int().optional().describe("Start system (default: the capital system)"),
+      limit: z.number().int().min(1).max(50).optional().default(10).describe("Maximum systems to return"),
+      fleet_id: z.number().int().optional().describe("outpost: the construction ship to check with (default: the first one)"),
+      resource: z.string().optional().describe("deposit: substring of the deposit key, e.g. 'minerals'"),
+    },
+    async ({ purpose, from_system_id, limit, fleet_id, resource, species_id }) =>
+      galaxyCall("find_systems", {
+        purpose,
+        ...(species_id !== undefined ? { species_id } : {}),
+        ...(from_system_id !== undefined ? { from_system_id } : {}),
+        ...(fleet_id !== undefined ? { fleet_id } : {}),
+        limit: limit ?? 10,
+        resource: resource ?? "",
+      })
+  );
+
+  server.tool(
+    "stellaris_find_path",
+    "Shortest hyperlane route between two systems by hyperlane length (the systems on the way, jumps, length). Closed borders, gateways, wormholes and jump drives are not considered; the engine plans the actual route when stellaris_move_fleet is used.",
+    {
+      from_system_id: z.number().int().optional().describe("Start system (default: the capital system)"),
+      to_system_id: z.number().int().describe("Destination system"),
+    },
+    async ({ from_system_id, to_system_id }) =>
+      galaxyCall("find_path", { ...(from_system_id !== undefined ? { from_system_id } : {}), to_system_id })
+  );
+
+  server.tool(
+    "stellaris_build_outpost",
+    "Orders a player construction ship to build an outpost (a starbase) in a star system (native CFleetBuildOrbitalStationCommand). Rejected with the game's reason (for example the system is owned, not surveyed, not bordering your space, or influence is short). Candidates: stellaris_find_systems purpose=outpost.",
+    {
+      fleet_id: z.number().int().describe("The construction ship's fleet id"),
+      system_id: z.number().int().describe("Target system id"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, system_id, queue }) => galaxyCall("build_outpost", { fleet_id, system_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_colonize",
+    "Orders a player colony ship to colonize a planet (native CFleetColonizePlanetCommand). Rejected with the game's reason (for example uninhabitable, not surveyed, outside your borders).",
+    {
+      fleet_id: z.number().int().describe("The colony ship's fleet id"),
+      planet_id: z.number().int().describe("Target planet id"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, planet_id, queue }) => galaxyCall("colonize", { fleet_id, planet_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_survey",
+    "Orders a player science ship fleet to survey (native CFleetSurveyDepositHolderCommand): one planet when planet_id is given, otherwise every planet of system_id. The ship travels there first. Rejected with the engine's reason (for example no scientist, already surveyed, no access).",
+    {
+      fleet_id: z.number().int().describe("The science ship's fleet id"),
+      system_id: z.number().int().optional().describe("System to survey completely (when planet_id is not given)"),
+      planet_id: z.number().int().optional().describe("A single planet to survey"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, system_id, planet_id, queue }) =>
+      galaxyCall("survey", {
+        fleet_id,
+        ...(system_id !== undefined ? { system_id } : {}),
+        ...(planet_id !== undefined ? { planet_id } : {}),
+        queue: queue ?? false,
+      })
+  );
+
   // Tool 13: stellaris_get_situation_log
   server.tool(
     "stellaris_get_situation_log",
-    "Retrieves the detailed situation log state, including active situations (stage progress, monthly change rate, current approach, owner country), special projects, and anomalies. Implements progressive disclosure (Layer 2) for F1 Situation Log.",
+    "Retrieves the detailed situation log state, including active situations (stage progress, monthly change rate, current approach, owner country), the player's special projects (kind, days left, species for species modification / uplift) and the anomalies it has discovered but not researched (planet and anomaly category). Implements progressive disclosure (Layer 2) for F1 Situation Log.",
     {
       player_only: z
         .boolean()
@@ -557,6 +680,41 @@ export function registerTools(server: McpServer, client: PipeClient) {
             },
           ],
         };
+      }
+    }
+  );
+
+  // stellaris_get_civics
+  server.tool(
+    "stellaris_get_civics",
+    "Government civics (Layer 2): adopted civics with their civic point cost, civic points (total/used/free), and every civic the game would accept added now (each checked with the engine's own government validation). Also returns `reform`: can_reform (with the game's reason, e.g. the 20-year reform cooldown), reform_cost_unity and unity_stockpile. Pass civic_key to check one civic: `requirements` lists the civic's own conditions for this empire, one per line with [trigger_yes]/[trigger_no] (ethics, authority, conflicting civics, origin), and `blocked_by` lists every obstacle (civic points, requirements, reform).",
+    {
+      civic_key: z.string().optional().describe("Optional civic key, e.g. 'civic_technocracy', to check just that civic."),
+    },
+    async ({ civic_key }) => {
+      try {
+        const result = await client.request("get_civics", civic_key ? { civic_key } : {});
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: "text", text: `Error getting civics: ${err.message}` }] };
+      }
+    }
+  );
+
+  // stellaris_change_civics
+  server.tool(
+    "stellaris_change_civics",
+    "Reforms the government's civics via native CChangeGovernmentCommand (Layer 3 Action Command), keeping the authority: adds the civics in `add` and removes those in `remove`. Refused when the civics would cost more civic points than the empire has, or when the game rejects the reform: the error carries the game's reason, `reform` (cooldown/unity cost) and `unmet_requirements` per added civic. Any change starts the game's government reform cooldown (20 years), so check stellaris_get_civics first.",
+    {
+      add: z.array(z.string()).optional().describe("Civic keys to adopt, from stellaris_get_civics available_civics."),
+      remove: z.array(z.string()).optional().describe("Adopted civic keys to drop."),
+    },
+    async ({ add, remove }) => {
+      try {
+        const result = await client.request("change_civics", { add: add || [], remove: remove || [] });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: "text", text: `Error changing civics: ${err.message}` }] };
       }
     }
   );
@@ -1859,9 +2017,9 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 42: stellaris_get_sectors
   server.tool(
     "stellaris_get_sectors",
-    "Expands a specific sector or all sectors to inspect member colonies (Layer 2 Progressive Disclosure). Provide 'sector_id' (e.g. 0 for Core Sector, 1 for Frontier Sector, obtained from stellaris_get_outliner). If omitted, expands all sectors. Returns colony_id (the colony) and planet_id/id (use it for planet tools), name, system name, population, size, capital status, colonizing progress, current construction (building/district and progress), and the planet status alerts the game's outliner shows: crisis states (blockaded = under orbital bombardment, with the blockading empire and its bombardment stance; occupied) and notices (construction slot, capital upgrade, unemployment, excess civilians, overcrowding, low stability, clearable blocker).",
+    "Expands a specific sector or all sectors to inspect member colonies (Layer 2 Progressive Disclosure). Provide 'sector_id' (from stellaris_get_outliner; colonies in no sector are grouped with sector_id null). If omitted, expands all sectors. Returns colony_id (the colony) and planet_id/id (use it for planet tools), name, system name, population, size, capital status, colonizing progress, current construction (building/district and progress), and the planet status alerts the game's outliner shows: crisis states (blockaded = under orbital bombardment, with the blockading empire and its bombardment stance; occupied) and notices (construction slot, capital upgrade, unemployment, excess civilians, overcrowding, low stability, clearable blocker).",
     {
-      sector_id: z.number().int().optional().describe("Sector ID to expand (e.g. 0 for Core Sector, 1 for Frontier Sector). If omitted, expands all sectors."),
+      sector_id: z.number().int().optional().describe("Sector id to expand (from stellaris_get_outliner). If omitted, expands all sectors."),
     },
     async ({ sector_id }) => {
       try {
@@ -1981,7 +2139,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 46: stellaris_get_planet_details
   server.tool(
     "stellaris_get_planet_details",
-    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 5.9K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations, zone slots, unlock requirements, and buildings; 4) Monthly resource net production; 5) Active construction queue; 6) Planetary features (all natural deposits and blockers with clear time, clear costs, modifiers, swap unlock types, and queued clearance status); 7) Current population breakdown (species list with pop counts, display '5.9K', share %, net change, portrait); 8) Monthly population summary (net change, growth, migration, assembly, categories, demographic pie chart); 9) Colony ascension (tier 0-10, designation multiplier +25%/tier, can_ascend, status text); 10) Colony status alerts, identical to the outliner: blockaded (orbital bombardment; name carries the blockader, desc the bombardment stance), occupied, construction_available, upgrade_available, unemployment, excess_civilians, overcrowding, low_stability, blocker_available. Species ids are the full ids used by the species tools.",
+    "Retrieves comprehensive planetary details for a specific colony in Stellaris 4.5.0 Cygnus (Layer 3 Progressive Disclosure Entity Deep-Dive). Fully aligned with Stellaris 4.5.0 Districts & Zones mechanics: 1) Planet overview (planet type, habitability %, colony date, planet size); 2) Top KPI bar (stability %, pop groups scale e.g. 5.9K, pop capacity, crime %, housing, amenities, unemployed, pop growth); 3) 4 Primary Districts (City, Generator, Mining, Agriculture) with their respective Zone Specializations, zone slots, unlock requirements, and buildings; 4) Monthly resources from the colony's own economy tables: produced, upkeep and net per resource (non-zero only); 5) Active construction queue; 6) Planetary features (all natural deposits and blockers with clear time, clear costs, modifiers, swap unlock types, and queued clearance status); 7) Current population breakdown (species list with pop counts, display '5.9K', share %, net change, portrait); 8) Monthly population summary (net change, growth, migration, assembly, categories, demographic pie chart); 9) Colony ascension (tier 0-10, designation multiplier +25%/tier, can_ascend, status text); 10) Colony status alerts, identical to the outliner: blockaded (orbital bombardment; name carries the blockader, desc the bombardment stance), occupied, construction_available, upgrade_available, unemployment, excess_civilians, overcrowding, low_stability, blocker_available. Species ids are the full ids used by the species tools.",
     {
       planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
     },
@@ -2012,15 +2170,35 @@ export function registerTools(server: McpServer, client: PipeClient) {
 
   // Tool 47: stellaris_get_available_district_zones
   server.tool(
-    "stellaris_get_available_district_zones",
-    "Retrieves available district zone specializations for a planet in Stellaris 4.5.0 Cygnus with strict prerequisite evaluation (e.g. upgraded capital requirement for slot_city_02, technology requirements, deposit prerequisites). Returns available zone specializations per slot.",
+    "stellaris_set_district_zone",
+    "Queues a zone into a district's zone slot (native construction queue, CBuildableZone), replacing the zone there. Rejected with the game's reason when the zone is not allowed in that slot. Get district ids, slots and allowed zones from stellaris_get_available_district_zones.",
     {
-      planet_id: z.number().int().describe("Planet / Colony ID to inspect (obtainable from stellaris_get_sectors or stellaris_get_outliner)."),
-      district_type: z.string().optional().describe("Optional district type filter ('district_city', 'district_generator', 'district_mining', 'district_farming', or empty for all)."),
+      planet_id: z.number().int().describe("Planet id"),
+      district_id: z.number().int().describe("District id (from stellaris_get_available_district_zones)"),
+      slot: z.number().int().describe("Zone slot index of that district"),
+      zone_key: z.string().describe("Zone type key, e.g. zone_industrial"),
     },
-    async ({ planet_id, district_type }) => {
+    async ({ planet_id, district_id, slot, zone_key }) => {
       try {
-        const result = await client.request("get_available_district_zones", { planet_id, district_type: district_type || "" });
+        const result = await client.request("set_district_zone", { planet_id, district_id, slot, zone_key });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: "text", text: `Error: ${err.message}` }] };
+      }
+    }
+  );
+
+  server.tool(
+    "stellaris_get_available_district_zones",
+    "Zone slots of a colony's districts (Layer 2): per district (id, type) and slot, the zone currently there and every zone type the game would queue into that slot (the construction queue's own validation of a CBuildableZone), with cost and build days. include_blocked=true also lists the refused zone types with the game's reason. Build one with stellaris_set_district_zone.",
+    {
+      planet_id: z.number().int().describe("Planet id (from stellaris_get_sectors or stellaris_get_outliner)."),
+      district_type: z.string().optional().describe("Optional district type filter (e.g. 'district_city' or 'city'); empty for all."),
+      include_blocked: z.boolean().optional().default(false).describe("Also list zone types the game refuses, with the reason"),
+    },
+    async ({ planet_id, district_type, include_blocked }) => {
+      try {
+        const result = await client.request("get_available_district_zones", { planet_id, district_type: district_type || "", include_blocked: include_blocked ?? false });
         return {
           content: [
             {
@@ -2046,18 +2224,18 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 48: stellaris_get_buildable_buildings
   server.tool(
     "stellaris_get_buildable_buildings",
-    "Retrieves buildable buildings for a planet's district or zone slot under Stellaris 4.5.0 Cygnus rules. Strictly filters by zone specialization matching (building_sets), planetary uniqueness limits, slot saturation, and tech prerequisites.",
+    "Buildings the game accepts in each building zone of a planet now (Layer 2), each checked with the engine's own construction validation. Per zone: zone_id, zone key/name, district, buildings/max_buildings, and buildable[] with cost (after the empire's cost modifiers) and build_days. Pass building_key to check one building in every zone (can_build, or the game's reason), and zone_id to limit to one zone.",
     {
-      planet_id: z.number().int().describe("Planet / Colony ID to inspect."),
-      district_type: z.string().optional().describe("Optional district type filter ('district_city', 'district_generator', 'district_mining', 'district_farming')."),
-      slot_index: z.number().int().optional().describe("Optional slot index filter (0 for government, 1 for urban 1, 2 for urban 2, 63 for energy, 64 for minerals, 65 for food)."),
+      planet_id: z.number().int().describe("Planet ID (planet_id from the outliner or get_planet_details)."),
+      building_key: z.string().optional().describe("Optional building key to check, e.g. 'building_foundry_1'."),
+      zone_id: z.number().int().optional().describe("Optional zone id (districts[].zones[].slot_index in get_planet_details)."),
     },
-    async ({ planet_id, district_type, slot_index }) => {
+    async ({ planet_id, building_key, zone_id }) => {
       try {
         const result = await client.request("get_buildable_buildings", {
           planet_id,
-          district_type: district_type || "",
-          slot_index: slot_index !== undefined ? slot_index : -1,
+          building_key: building_key || "",
+          zone_id: zone_id !== undefined ? zone_id : -1,
         });
         return {
           content: [
@@ -2084,12 +2262,12 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 49: stellaris_build_building
   server.tool(
     "stellaris_build_building",
-    "Queues construction of a building on a planet in Stellaris 4.5.0 Cygnus via native CBuildableBuilding entity and CAddBuildableToQueueCommand (0x3DE2). Performs engine validation of zone matching, colony ownership, and prerequisite resources before queuing to the main thread.",
+    "Queues construction of a building (native CAddBuildableToQueueCommand with a CBuildableBuilding), validated by the engine; the game's reason is returned when refused. slot_index is the target zone id (see stellaris_get_buildable_buildings); without it the first zone that accepts the building is used.",
     {
-      planet_id: z.number().int().describe("Planet / Colony ID to construct the building on (e.g. 11 for Earth)."),
+      planet_id: z.number().int().describe("Planet ID to construct the building on."),
       building_key: z.string().describe("Building definition key (e.g. 'building_energy_grid', 'building_mineral_purification_plant', 'building_food_processing_facility', 'building_autochthon_monument', 'building_biolab_1', 'building_foundry_1')."),
       district_type: z.string().optional().describe("Optional district type ('district_generator', 'district_mining', 'district_farming', 'district_city')."),
-      slot_index: z.number().int().optional().describe("Optional target slot / zone index (e.g. 63 for energy, 64 for minerals, 65 for food, 0 for government, 1 for urban 1, 2 for urban 2)."),
+      slot_index: z.number().int().optional().describe("Optional target zone id (zone_id from stellaris_get_buildable_buildings / districts[].zones[].slot_index). Zone ids differ per planet."),
     },
     async ({ planet_id, building_key, district_type, slot_index }) => {
       try {

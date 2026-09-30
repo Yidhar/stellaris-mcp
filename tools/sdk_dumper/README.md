@@ -21,11 +21,13 @@ and the tokens are the same numbers on Linux and Windows.
 
 | Stage | Input | Output |
 |---|---|---|
-| `linux_index.py` | `source/stellaris_4.5_source.cpp` (symbolized Linux decompile) | class name → ordered `(token, kind, ref type)` |
-| `win_extract.py` | `stellaris.exe` | Windows function per class (token fingerprint, or vtable slot 20 for commands); field offsets from register data flow; `this` adjust from the ctor's vtable store; token names from `RegisterToken` |
+| `linux_index.py` | `source/stellaris_4.5_source.cpp` (symbolized Linux decompile) | class name → ordered `(token, kind, ref type)`; `out/linux_anchors.json`: the function that loads each `"common/<folder>"` database, and the order in which `CGameStateDatabase` constructs its `TPdxRefDatabase<X>` members |
+| `win_extract.py` | `stellaris.exe` | Windows function per class (token fingerprint, or vtable slot 20 for commands); field offsets from register data flow (a value passed straight to the writer, `lea/mov r8|r9,[this+d]; mov edx,TOKEN; call`, wins over loads after the call; a field Linux writes as the key of a pointed-to object takes the `[this+d]` load read after its token); `this` adjust from the ctor's vtable store; token names from `RegisterToken` |
 | `emit_sdk.py` | the above | commands (vtable = slot 10 `mov eax,TOKEN; ret`, factory, `kSize`), flattened entities, header |
-| `globals.py` | Linux method bodies ↔ Windows command vtable slots | `TPdxRef<T>::_pDatabase` and other named globals, by co-occurrence voting |
+| `globals.py` | Linux method bodies ↔ Windows command vtable slots | `TPdxRef<T>::_pDatabase` and other named globals, by co-occurrence voting; `TOKEN_BRANCH_HINTS` pins a database to the `ReadCommandMember` branch of its token when one command reads several |
 | `live_verify.py` | running game (ReadProcessMemory only) | picks between tied database candidates by object type, and checks `ref<T>` fields |
+| `functions.py` | `stellaris.exe` | engine functions the bridge calls (`sdk::fn`), each by one fingerprint: instruction pattern, referenced strings, a call next to an anchor instruction, a command vtable slot's call |
+| `anchors.py` | the above | data never touched by commands, followed from located code: buildable vtables and their virtual slot indices (`sdk::vt`), the building type / zone / strategic resource databases; script databases by the `common/<folder>` path their loader references (`TGameDatabase<CX>::_pInstance` stored by the inlined `CreateInstance`, or `CX::_pInstance` read first by `Init`); `TPdxRef<X>` databases by aligning Windows' inlined `CGameStateDatabase` constructor stores with the Linux order, anchored on known databases. Where an anchor and a `globals.py` vote put different names on one address, `emit_sdk.py` keeps the anchor |
 | `validate.py` | `out/win_layouts.json` | regression against layouts verified by hand |
 
 Linux offsets are only a reference. GCC and MSVC lay classes out differently (commands start
@@ -57,3 +59,9 @@ to dispatch commands when they differ.
   expanded yet.
 - Fields annotated `[check: ...]` were paired by position only. Verify them before relying on
   them.
+
+### Notes
+
+- Some command tokens have two vtables: the command and a prototype object whose slot 20 is `_purecall` and whose slot 12 clones from `this`. `win_extract.py` ignores a `_purecall` slot 20, and `emit_sdk.py` keeps the vtable with a real serializer, so `kFactoryRva` is the argument-less factory.
+- `live_verify.py` treats an empty database (the save has no objects of that type) as unverified, not failed.
+

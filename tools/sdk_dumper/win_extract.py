@@ -102,6 +102,21 @@ class Image:
         return self.img[rva:rva + n].split(b"\0")[0].decode("latin1")
 
 
+def purecall_rva(im):
+    """The CRT's _purecall: the pure-virtual filler of abstract vtables (>= 100 .rdata slots),
+    `sub rsp; call; test; je; call [handler]; call abort` (same fingerprint as functions.py)."""
+    counts = collections.Counter()
+    rd = im.img[im.rdata0:im.rdata1]
+    for off in range(0, len(rd) - 8, 8):
+        v = struct.unpack_from("<Q", rd, off)[0] - im.ib
+        if im.text0 <= v < im.text1:
+            counts[v] += 1
+    want = ["sub", "call", "test", "je", "call", "call"]
+    hits = [f for f, n in counts.items() if n >= 100 and f % 16 == 0 and
+            [i.mnemonic for i in im.disasm_fn(f, 0x40)[:len(want)]] == want]
+    return hits[0] if len(hits) == 1 else None
+
+
 def find_calls_to(im, target):
     """rva of every `call rel32` to target."""
     out = []
@@ -321,7 +336,7 @@ def extract_fields(im, fn, known_tokens, newline_fn):
 ARG_REGS = {"rdx", "r8", "r9"}
 
 
-def assign_offsets(events, refs, insns, kinds):
+def assign_offsets(events, refs, insns, kinds, indirect=None):
     """Pair each token event with the this-reference that carries its value.
 
     MSVC shapes seen in serializers:
@@ -340,6 +355,7 @@ def assign_offsets(events, refs, insns, kinds):
         prv = next((e for e in reversed(toks) if e["i"] < i), None)
         nl_between_prev = prv is not None and any(e["kind"] == "nl" and prv["i"] < e["i"] < i for e in events)
         belongs_next = False
+        as_arg = False
         if nxt is not None:
             if r["cmp"]:
                 belongs_next = True
@@ -354,6 +370,13 @@ def assign_offsets(events, refs, insns, kinds):
                         break
                 if not clobbered and R in ARG_REGS:
                     belongs_next = True
+                    # direct kv: `lea/mov r8|r9, [this+d]; mov edx, TOKEN; call` hands the value
+                    # straight to the writer, which beats any load that follows the call
+                    between = insns[i + 1:nxt["i"]]
+                    as_arg = (R in ("r8", "r9") and 1 <= len(between) <= 2
+                              and any(b.op_str == f"edx, {hex(nxt['token'])}" for b in between)
+                              and all(b.mnemonic == "mov" and b.op_str.startswith(("edx, ", "rcx, "))
+                                      for b in between))
                 elif not clobbered:
                     for ins in insns[nxt["i"] + 1:nxt["i"] + 8]:
                         rd, wr = regs_rw(ins)
@@ -368,20 +391,32 @@ def assign_offsets(events, refs, insns, kinds):
                         if ins.mnemonic == "mov" and ins.op_str.startswith("qword ptr [rsp") and ins.op_str.endswith(R):
                             belongs_next = True
                             break
-        if belongs_next:
+        if as_arg:
+            owner[i] = ("arg", nxt["i"])            # the writer's own argument register
+        elif belongs_next:
             owner[i] = ("pre", nxt["i"])            # proven by data flow / sentinel
         elif prv is not None and not nl_between_prev:
             owner[i] = ("post", prv["i"])
         elif nxt is not None:
             owner[i] = ("pre_default", nxt["i"])    # only positional evidence
     out = []
-    for ev, kind in zip(toks, kinds):
+    indirect = indirect or [False] * len(kinds)
+    for ev, kind, ind in zip(toks, kinds, indirect):
         mine = [r for r in refs if owner.get(r["i"], (None, None))[1] == ev["i"]]
         post = [r for r in mine if owner[r["i"]][0] == "post"]
+        arg = [r for r in mine if owner[r["i"]][0] == "arg"]
         pre = [r for r in mine if owner[r["i"]][0] == "pre"]
         pre_default = [r for r in mine if owner[r["i"]][0] == "pre_default"]
         pick = where = None
-        if kind == "string":
+        if kind == "string" and ind:
+            # Linux writes the key of an object the field points to: the Windows reference is a
+            # load through [this+d] (derived), not a lea of an embedded string
+            # (the key is read right after the token is written; derived refs before it are the
+            # previous field's tail, e.g. CDeposit writes type then swap_type the same way)
+            through = [r for r in post if r["ind"] is not None and not r["cmp"]]
+            if through:
+                pick, where = through[0], "load"
+        if kind == "string" and pick is None:
             leas = [r for r in mine if r["lea"] and r["ind"] is None]
             loads = [r for r in mine if not r["cmp"]]
             if leas:
@@ -392,7 +427,7 @@ def assign_offsets(events, refs, insns, kinds):
             post_ld = [r for r in post if not r["cmp"]]
             pre_ld = [r for r in pre if not r["cmp"]]
             sentinel = [r for r in pre if r["cmp"]]
-            for cand, w in ((post_ld, "post"), (pre_ld, "pre"), (sentinel, "sentinel"),
+            for cand, w in ((arg, "arg"), (post_ld, "post"), (pre_ld, "pre"), (sentinel, "sentinel"),
                             (pre_default, "positional"), (post, "post")):
                 if cand:
                     pick, where = (cand[0] if w == "post" else cand[-1]), w
@@ -471,6 +506,8 @@ def main():
             by_token[t].add(f)
     tok_freq = collections.Counter(t for toks in cands.values() for t in set(toks))
 
+    slot20_stub = purecall_rva(im)
+
     matched = {}
     for key, cls in linux.items():
         L = {f["token"] for f in cls["fields"]}
@@ -479,8 +516,11 @@ def main():
         name = cls["class"]
         if cls["method"] == "WriteCommandMembers" and name in cmd_vt:
             fn = im.q(cmd_vt[name] + 20 * 8) - im.ib
-            matched[key] = {"fn": fn, "how": "cmd-vtable", "score": 1.0}
-            continue
+            # a prototype object shares the token getter but its slot 20 is _purecall;
+            # then match the real serializer by its tokens below
+            if fn != slot20_stub:
+                matched[key] = {"fn": fn, "how": "cmd-vtable", "score": 1.0}
+                continue
         rare = min(L, key=lambda t: tok_freq.get(t, 1 << 30))
         scored = []
         for f in by_token.get(rare, ()):
@@ -509,9 +549,10 @@ def main():
         # kind per Windows token event, taken from the Linux field with the same token (in order)
         lk = collections.defaultdict(list)
         for lf in cls["fields"]:
-            lk[lf["token"]].append(lf["kind"])
-        kinds = [lk[e["token"]].pop(0) if lk.get(e["token"]) else None for e in events if e["kind"] == "tok"]
-        pairs = assign_offsets(events, refs, insns, kinds)
+            lk[lf["token"]].append((lf["kind"], lf.get("indirect", False)))
+        kinds_ind = [lk[e["token"]].pop(0) if lk.get(e["token"]) else (None, False)
+                     for e in events if e["kind"] == "tok"]
+        pairs = assign_offsets(events, refs, insns, [k for k, _ in kinds_ind], [i for _, i in kinds_ind])
         adj, vts = this_adjust(im, m["fn"])
         if cls["method"] == "WriteCommandMembers":
             adj = 0  # commands: WriteCommandMembers lives in the primary vtable at [obj+0]

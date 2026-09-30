@@ -46,11 +46,12 @@ struct ColonyCard {
 };
 
 struct SectorGroup {
+    bool unassigned{ false };  // colonies in no sector (sector_id null in JSON)
     int32_t sector_id{ 0 };
     std::string sector_name;
     uint32_t capital_planet_id{ 0 };
     std::string capital_planet_name;
-    std::string focus_type;
+    std::string focus_type;  // the sector type key (CSector::type)
     bool is_core{ false };
     uint32_t total_colonies{ 0 };
     uint32_t total_pops{ 0 };
@@ -86,6 +87,8 @@ struct ArmyCard {
 
 class OutlinerManager {
 public:
+    // The country's name as the game shows it (CCountry name).
+    std::string CountryDisplayName(uint32_t country_id);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
 
@@ -106,8 +109,14 @@ public:
     nlohmann::json GetPlanetDetailsJson(uint32_t planet_id);
 
     // District Zones & Building Construction
-    nlohmann::json GetAvailableDistrictZonesJson(uint32_t planet_id, const std::string& district_type);
-    nlohmann::json GetBuildableBuildingsJson(uint32_t planet_id, const std::string& district_type, int32_t slot_index = -1);
+    // The zone slots of the colony's districts and, per slot, every zone type the game would
+    // queue there (CBuildableZone through the construction queue's own validation).
+    nlohmann::json GetAvailableDistrictZonesJson(uint32_t planet_id, const std::string& district_type,
+                                                 bool include_blocked = false);
+    nlohmann::json SetDistrictZoneJson(uint32_t planet_id, uint32_t district_id, int32_t slot, const std::string& zone_key);
+    // Buildings the game accepts in each zone of the planet (or one zone), with cost and build
+    // time; with building_key, whether/where that building can be built and why not.
+    nlohmann::json GetBuildableBuildingsJson(uint32_t planet_id, const std::string& building_key, int32_t zone_id = -1);
     nlohmann::json BuildBuildingJson(uint32_t planet_id, const std::string& building_key, const std::string& district_type = "", int32_t slot_index = -1);
     nlohmann::json UpgradeBuildingJson(uint32_t planet_id, uint32_t building_id, const std::string& upgrade_to_key = "");
 
@@ -153,6 +162,19 @@ private:
 
     std::string LocalizeDecisionKey(const std::string& key);
     std::string LocalizePlanetClass(const std::string& class_key);
+    // engine-rendered names (CPersistentName) and the planet's system (coordinate origin)
+    std::string PlanetName(void* planet);
+    double ColonizationProgress(void* colony);  // 0..1 (CColony::CalcColonizationProgressPerc)
+    static nlohmann::json SectorIdJson(const SectorGroup& s);
+    struct DistrictSlots {
+        uint32_t id{ 0xFFFFFFFF };
+        std::string type_key;
+        std::vector<uint32_t> zone_ids;  // one per zone slot
+    };
+    std::vector<DistrictSlots> ColonyDistrictSlots(void* colony_obj);
+    void FillZoneBuildable(uint8_t (&obj)[0x20], void* zone_type, uint32_t colony_id, uint32_t district_id, int32_t slot);
+    uint32_t PlanetSystemId(void* planet);
+    std::string SystemName(uint32_t system_id);
 
     using FnEngineAlloc = void* (*)(size_t size);
     using FnPostCommand = void (*)(void* cmd, bool flag);
@@ -181,7 +203,16 @@ private:
     std::optional<ConstructionCard> ExtractColonyConstruction(void* colony_obj);
     // The colony alerts the game's outliner shows (status frames and crisis icons).
     std::vector<StatusAlertCard> ReadColonyStatus(void* colony_obj, void* planet_obj, uint32_t planet_id);
-    std::string CountryDisplayName(uint32_t country_id);
+    struct ZoneRef {
+        void* zone{ nullptr };
+        uint32_t id{ 0xFFFFFFFF };
+        std::string key, district_key;
+        uint32_t buildings{ 0 };
+        int max_buildings{ -1 };
+    };
+    std::vector<ZoneRef> ColonyZones(void* colony_obj);
+    void FillBuildable(uint8_t (&obj)[0x20], void* building_type, uint32_t colony_id, uint32_t zone_id);
+    nlohmann::json BuildableCostJson(uint8_t (&obj)[0x20]);
     // Armies stationed at a colony (its army list), read through bridge::armies.
     std::vector<armies::ArmyInfo> ReadColonyArmies(void* colony_obj);
     std::string SpeciesName(uint32_t species_id);

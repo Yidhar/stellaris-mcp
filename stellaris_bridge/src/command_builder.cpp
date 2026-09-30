@@ -385,6 +385,65 @@ bool CommandBuilder::CallGuarded(FnTextCall call, void* ctx) {
     return true;
 }
 
+static bool SafeReadPtr(const void* addr, void** out) {
+    __try {
+        *out = *(void* const*)addr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool CommandBuilder::RunConsoleCommand(const std::string& line, std::string* error) {
+    if (!base_ || !sdk_matches_) {
+        if (error) *error = "SDK does not match the running exe";
+        return false;
+    }
+    if (line.empty() || line.size() >= 4096) {
+        if (error) *error = "command line must be 1..4095 characters";
+        return false;
+    }
+    void* console = nullptr;
+    if (!SafeReadPtr((const void*)(base_ + sdk::glob::CConsole_pInstance), &console) || !console) {
+        if (error) *error = "CConsole::_pInstance is null (console not created yet)";
+        return false;
+    }
+
+    // Engine CString: 16-byte header (zero) + MSVC std::string. A long line lives in an engine
+    // heap block, like command string payloads; RunCommandNow only reads it.
+    RawCString cmd{};
+    if (line.size() <= 15) {
+        memcpy(cmd.str.buf, line.data(), line.size());
+        cmd.str.capacity = 15;
+    } else {
+        char* heap = (char*)EngineAlloc(line.size() + 1);
+        if (!heap) {
+            if (error) *error = "engine allocation for the command line failed";
+            return false;
+        }
+        memcpy(heap, line.data(), line.size());
+        heap[line.size()] = '\0';
+        cmd.str.heap_ptr = heap;
+        cmd.str.capacity = line.size();
+    }
+    cmd.str.size = line.size();
+
+    struct Ctx { uintptr_t fn; void* console; void* cmd; };
+    Ctx ctx{ base_ + sdk::fn::CConsole_RunCommandNow, console, &cmd };
+    const bool ok = CallTextGuarded([](void* c, void*) {
+        auto* p = (Ctx*)c;
+        ((void (*)(void*, const void*))p->fn)(p->console, p->cmd);
+    }, &ctx, nullptr);
+    if (cmd.str.capacity > 15) {
+        CallFreePdxString(base_ + kRvaFreePdxString, &cmd);
+    }
+    if (!ok) {
+        if (error) *error = "engine raised: " + LastExceptionText();
+        LOGF("[CMD_BUILDER] console command failed: %s", LastExceptionText().c_str());
+    }
+    return ok;
+}
+
 bool CommandBuilder::CallForText(FnTextCall call, void* ctx, std::string* text) {
     if (!base_ || !sdk_matches_) {
         return false;

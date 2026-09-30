@@ -8,6 +8,7 @@
 #include "alert_manager.hpp"
 #include "tech_manager.hpp"
 #include "situation_log_manager.hpp"
+#include "galaxy_manager.hpp"
 #include "government_manager.hpp"
 #include "society_manager.hpp"
 #include "leader_manager.hpp"
@@ -87,6 +88,16 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     if (method == "self_test_purecall_guard") {
         fut = TaskQueue::Get().Enqueue([]() {
             return CommandBuilder::Get().SelfTestPurecallGuard();
+        });
+    } else if (method == "run_console") {
+        // Debug/test helper: runs one line in the in-game console (e.g. "effect ...").
+        std::string line = params.value("command", std::string());
+        fut = TaskQueue::Get().Enqueue([line]() {
+            std::string error;
+            bool ok = CommandBuilder::Get().RunConsoleCommand(line, &error);
+            nlohmann::json r = {{"ok", ok}, {"command", line}};
+            if (!ok) r["error"] = error;
+            return r;
         });
     } else if (method == "get_status") {
         fut = TaskQueue::Get().Enqueue([]() {
@@ -170,6 +181,58 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([player_only]() {
             return SituationLogManager::Get().GetSituationLogJson(player_only);
         });
+    } else if (method == "get_galaxy_overview") {
+        fut = TaskQueue::Get().Enqueue([]() { return GalaxyManager::Get().GetOverviewJson(); });
+    } else if (method == "get_galaxy_map") {
+        uint32_t center = params.value("center_system_id", 0xFFFFFFFFu);
+        int jumps = params.value("jumps", 3);
+        fut = TaskQueue::Get().Enqueue([center, jumps]() { return GalaxyManager::Get().GetMapJson(center, jumps); });
+    } else if (method == "get_system") {
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([system_id]() { return GalaxyManager::Get().GetSystemJson(system_id); });
+    } else if (method == "move_fleet") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, system_id, queue]() {
+            return GalaxyManager::Get().MoveFleet(fleet_id, system_id, queue);
+        });
+    } else if (method == "build_outpost") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, system_id, queue]() {
+            return GalaxyManager::Get().BuildOutpost(fleet_id, system_id, queue);
+        });
+    } else if (method == "colonize") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, planet_id, queue]() {
+            return GalaxyManager::Get().Colonize(fleet_id, planet_id, queue);
+        });
+    } else if (method == "find_path") {
+        uint32_t from = params.value("from_system_id", 0xFFFFFFFFu);
+        uint32_t to = params.value("to_system_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([from, to]() { return GalaxyManager::Get().FindPath(from, to); });
+    } else if (method == "find_systems") {
+        std::string purpose = params.value("purpose", "");
+        uint32_t from = params.value("from_system_id", 0xFFFFFFFFu);
+        int limit = params.value("limit", 10);
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t species_id = params.value("species_id", 0xFFFFFFFFu);
+        std::string resource = params.value("resource", "");
+        fut = TaskQueue::Get().Enqueue([purpose, from, limit, fleet_id, resource, species_id]() {
+            return GalaxyManager::Get().FindSystems(purpose, from, limit, fleet_id, resource, species_id);
+        });
+    } else if (method == "survey") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, system_id, planet_id, queue]() {
+            return GalaxyManager::Get().Survey(fleet_id, system_id, planet_id, queue);
+        });
     } else if (method == "set_situation_approach") {
         uint32_t situation_id = params.value("situation_id", 0);
         std::string approach_key = params.value("approach_key", "");
@@ -184,6 +247,17 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         std::string agenda_key = params.value("agenda_key", "");
         fut = TaskQueue::Get().Enqueue([agenda_key]() {
             return GovernmentManager::Get().SetCouncilAgenda(agenda_key);
+        });
+    } else if (method == "get_civics") {
+        std::string civic_key = params.value("civic_key", "");
+        fut = TaskQueue::Get().Enqueue([civic_key]() {
+            return GovernmentManager::Get().GetCivicsJson(civic_key);
+        });
+    } else if (method == "change_civics") {
+        std::vector<std::string> add = params.value("add", std::vector<std::string>{});
+        std::vector<std::string> remove = params.value("remove", std::vector<std::string>{});
+        fut = TaskQueue::Get().Enqueue([add, remove]() {
+            return GovernmentManager::Get().ChangeCivics(add, remove);
         });
     } else if (method == "launch_council_agenda") {
         fut = TaskQueue::Get().Enqueue([]() {
@@ -406,15 +480,24 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     } else if (method == "get_available_district_zones") {
         uint32_t planet_id = params.value("planet_id", 0);
         std::string district_type = params.value("district_type", "");
-        fut = TaskQueue::Get().Enqueue([planet_id, district_type]() {
-            return OutlinerManager::Get().GetAvailableDistrictZonesJson(planet_id, district_type);
+        bool include_blocked = params.value("include_blocked", false);
+        fut = TaskQueue::Get().Enqueue([planet_id, district_type, include_blocked]() {
+            return OutlinerManager::Get().GetAvailableDistrictZonesJson(planet_id, district_type, include_blocked);
+        });
+    } else if (method == "set_district_zone") {
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        uint32_t district_id = params.value("district_id", 0xFFFFFFFFu);
+        int32_t slot = params.value("slot", -1);
+        std::string zone_key = params.value("zone_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, district_id, slot, zone_key]() {
+            return OutlinerManager::Get().SetDistrictZoneJson(planet_id, district_id, slot, zone_key);
         });
     } else if (method == "get_buildable_buildings") {
         uint32_t planet_id = params.value("planet_id", 0);
-        std::string district_type = params.value("district_type", "");
-        int32_t slot_index = params.value("slot_index", -1);
-        fut = TaskQueue::Get().Enqueue([planet_id, district_type, slot_index]() {
-            return OutlinerManager::Get().GetBuildableBuildingsJson(planet_id, district_type, slot_index);
+        std::string building_key = params.value("building_key", "");
+        int32_t zone_id = params.value("zone_id", params.value("slot_index", -1));
+        fut = TaskQueue::Get().Enqueue([planet_id, building_key, zone_id]() {
+            return OutlinerManager::Get().GetBuildableBuildingsJson(planet_id, building_key, zone_id);
         });
     } else if (method == "build_building") {
         uint32_t planet_id = params.value("planet_id", 0);

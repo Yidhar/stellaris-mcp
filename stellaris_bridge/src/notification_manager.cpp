@@ -1,4 +1,5 @@
 #include "notification_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 
 namespace bridge {
 
@@ -113,9 +114,9 @@ std::vector<NotificationItem> NotificationManager::GetNotifications() {
 
     if (!base_address_) return items;
 
-    // Global NotificationManager pointer at [base + 0x3113A08]
+    // Global NotificationManager pointer at [base + sdk::glob::g_CurrentGameState]
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &mgr) || !mgr) {
         return items;
     }
 
@@ -193,7 +194,7 @@ nlohmann::json NotificationManager::OpenNotification(uint32_t index) {
     }
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &mgr) || !mgr) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &mgr) || !mgr) {
         return {
             {"error", {
                 {"code", -32021},

@@ -132,6 +132,22 @@ def discover_commands(im, names, layouts, linux_cmd_classes):
             "vtable": vt, "factory": factory, "size": size, "serializer": s20,
             "fields": [f for f in (lay["fields"] if lay else []) if f["win_off"] is not None],
         })
+    # Some tokens have two vtables: the command and a prototype object whose slot 12 clones
+    # from `this` (not a factory) and whose slot 20 is _purecall. Keep the one with a real
+    # serializer (a WriteCommandMembers layout, or at least not _purecall).
+    stub = wx["purecall_rva"](im)
+    by_tok = collections.defaultdict(list)
+    for c in out:
+        by_tok[c["token"]].append(c)
+    kept = []
+    for t, group in by_tok.items():
+        if len(group) > 1:
+            real = [c for c in group if c["serializer"] in by_serializer] or \
+                   [c for c in group if c["serializer"] != stub]
+            if len(real) == 1:
+                group = real
+        kept.extend(group)
+    out = sorted(kept, key=lambda c: c["vtable"])
     return out, alloc_fn
 
 
@@ -211,6 +227,17 @@ def main():
     w("")
     gpath = OUT / "globals_verified.json" if (OUT / "globals_verified.json").exists() else OUT / "globals.json"
     globs = json.loads(gpath.read_text(encoding="utf-8")) if gpath.exists() else {}
+    apath = OUT / "anchors.json"
+    anchors = json.loads(apath.read_text(encoding="utf-8")) if apath.exists() else {}
+    claimed = {a: sym for sym, a in anchors.get("globals", {}).items()}
+    for sym in [s for s, g in globs.items() if claimed.get(g["rva"], s) != s]:
+        # anchors.py follows the code that creates the object; a command vote that put another
+        # name on the same address is the weaker evidence
+        print(f"glob 0x{globs[sym]['rva']:X}: {claimed[globs[sym]['rva']]} (anchor) replaces {sym} (vote)")
+        del globs[sym]
+    for sym, a in anchors.get("globals", {}).items():
+        # derived from located code (anchors.py), not voted from commands
+        globs.setdefault(sym, {"rva": a, "score": "anchor", "live": "anchor"})
     if globs:
         w("// ============================== globals ===============================")
         w("// RVAs of pointer-sized engine globals, resolved by name from the Linux build.")
@@ -227,6 +254,24 @@ def main():
             if m and not str(g.get("live", "")).startswith("failed"):
                 w(f"    inline constexpr uintptr_t {m.group(1)} = 0x{g['rva']:X};")
         w("}  // namespace db")
+        w("")
+    if anchors.get("fields"):
+        w("// ============================ runtime fields ============================")
+        w("// Offsets of runtime (not serialized) members, read from located engine code by anchors.py.")
+        w("namespace rt {")
+        for name, off in sorted(anchors["fields"].items()):
+            w(f"    inline constexpr std::ptrdiff_t {ident(name)} = 0x{off:X};")
+        w("}  // namespace rt")
+        w("")
+    if anchors.get("vtables") or anchors.get("slots"):
+        w("// ============================== vtables ===============================")
+        w("// Engine class vtables and virtual slot indices derived by tools/sdk_dumper/anchors.py.")
+        w("namespace vt {")
+        for cls, a in sorted(anchors.get("vtables", {}).items()):
+            w(f"    inline constexpr uintptr_t {ident(cls)} = 0x{a:X};")
+        for name, k in sorted(anchors.get("slots", {}).items()):
+            w(f"    inline constexpr int {ident(name)} = {k};")
+        w("}  // namespace vt")
         w("")
     fpath = OUT / "functions.json"
     funcs = json.loads(fpath.read_text(encoding="utf-8")) if fpath.exists() else {}
@@ -261,7 +306,7 @@ def main():
             used[base] += 1
             nm = base if used[base] == 1 else f"{base}_{used[base]}"
             via = f" via {'/'.join(f['via'])}" if f["via"] else ""
-            flag = "" if f.get("evidence") in ("post", "pre", "lea", "load") else f"  [check: {f.get('evidence')}]"
+            flag = "" if f.get("evidence") in ("arg", "post", "pre", "lea", "load") else f"  [check: {f.get('evidence')}]"
             w(f"    inline constexpr std::ptrdiff_t {nm} = 0x{f['abs']:X};  // tok 0x{f['token']:x} {type_comment(f)}{via}{flag}")
         w("}")
     w("}  // namespace ent")

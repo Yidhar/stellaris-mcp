@@ -87,6 +87,14 @@ public:
     // Starts a new council agenda (CSetCouncilAgendaCommand); see available_agendas.
     nlohmann::json SetCouncilAgenda(const std::string& agenda_key);
 
+    // Layer 2: civics -- current civics, civic points, and the civics the game would accept
+    // added now (each checked with CChangeGovernmentCommand::IsValid). With `civic_key`, only
+    // that civic, with the game's reason when it cannot be taken.
+    nlohmann::json GetCivicsJson(const std::string& civic_key);
+    // Reforms the government's civics (CChangeGovernmentCommand): adds `add`, removes `remove`,
+    // keeping the authority. Checked against civic points and the game's own validation.
+    nlohmann::json ChangeCivics(const std::vector<std::string>& add, const std::vector<std::string>& remove);
+
 private:
     GovernmentManager() = default;
 
@@ -103,6 +111,14 @@ private:
     void* FindLeaderPtr(uint32_t leader_id);
     LeaderDetail ReadLeader(uint32_t leader_id);
     nlohmann::json AvailableAgendasJson();
+    std::vector<void*> CurrentCivics(void* country);
+    void* FindCivicType(const std::string& key);
+    // Validates (and optionally posts) a CChangeGovernmentCommand with these civics.
+    bool CheckCivics(void* country, const std::vector<void*>& civics, bool post, std::string* why);
+    // Reform cooldown/unity check, the unity cost of a reform and the unity stockpile.
+    nlohmann::json ReformStatusJson(void* country);
+    // The civic's requirements as the game lists them for this empire (flags: can add).
+    std::string CivicRequirementsText(void* country, void* civic, bool* possible);
     std::string AgendaName(const std::string& key);
 };
 

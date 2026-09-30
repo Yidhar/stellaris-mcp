@@ -8,6 +8,17 @@ namespace bridge {
 // engine's CPersistentName::BuildString.
 std::string PersistentNameText(const void* persistent_name);
 
+// TPdxNullObject-style references: whether the pointee is a real object (its vtable slot 1).
+bool IsRealObject(void* obj);
+
+// NHabitability::CalcHabitability(species, planet's colony carrier, country): 0..1, with the
+// country's modifiers (what the expansion planner shows). -1 when the call fails.
+double Habitability(uintptr_t base, const void* species, const void* planet, const void* country);
+
+// PdxLocalize with one named parameter ("$NAME$" / "$NAME|fmt$" in the text); falls back to the
+// plain localized key.
+std::string LocalizeWithParam(uintptr_t base, const std::string& key, const char* param, const std::string& value);
+
 }  // namespace bridge
 
 namespace bridge::fleets {

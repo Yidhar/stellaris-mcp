@@ -1,4 +1,5 @@
 #include "ship_designer.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "fleet_access.hpp"
 #include "common.hpp"
 #include "command_builder.hpp"
@@ -233,7 +234,7 @@ bool ShipDesigner::CanCountryUseComponent(void* p_tmpl, void* p_country) {
 void* ShipDesigner::GetPlayerCountry() {
     if (!base_address_) return nullptr;
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     void* countries_arr = nullptr;
@@ -246,7 +247,7 @@ void* ShipDesigner::GetPlayerCountry() {
 void* ShipDesigner::FindShipDesign(uint32_t design_id) {
     if (!base_address_) return nullptr;
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113980), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CShipDesign), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     void* arr = nullptr;
@@ -276,7 +277,7 @@ void ShipDesigner::BuildComponentIndexIfNeeded() {
     if (!base_address_) return;
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) return;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) return;
 
     void* arr = nullptr;
     uint32_t cnt = 0;
@@ -524,7 +525,7 @@ nlohmann::json ShipDesigner::GetShipDesignCatalogJson(const nlohmann::json& para
     }
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
@@ -623,7 +624,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
     void* country = GetPlayerCountry();
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3157138), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
@@ -1019,7 +1020,7 @@ bool ShipDesigner::CreateShipDesign(const std::string& ship_size, std::string& n
     }
 
     void* manager_ctx = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &manager_ctx) || !manager_ctx || (uintptr_t)manager_ctx < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &manager_ctx) || !manager_ctx || (uintptr_t)manager_ctx < 0x10000) {
         out_message = "CShipDesignManager context not found";
         return false;
     }

@@ -85,6 +85,8 @@ MCP client → tools.ts (zod schema, client.request(method, params))
 - `sdk::db::<T>`: `TPdxRef<T>::_pDatabase` RVAs. The system database's type is `CGalacticObject`, not `CSolarSystem`.
 
 - `sdk::fn::<name>`: engine functions the bridge calls, such as computed values and trigger checks. Each is located by a fingerprint in `tools/sdk_dumper/functions.py` (instruction pattern, mnemonics or referenced strings).
+- `sdk::rt::<Class>_<field>`: offsets of runtime (not serialized) members, read out of located engine code by `anchors.py` (for example the system's cached owner).
+- `sdk::vt::<Class>` / `sdk::vt::<Class>_<Method>`: engine vtables and virtual slot indices (for example the buildables `build_building` constructs, and their `CalcCost` / `CalcProgressionTimeNeeded` slots), plus globals no command touches, derived in `tools/sdk_dumper/anchors.py` from code that is already located (script databases such as `sdk::glob::TGameDatabase_CTraditionTypeDatabase_pInstance` by their `common/<folder>` path, and ref databases such as `sdk::db::CDeposit` / `CPopJob` / `CSituation` by `CGameStateDatabase` construction order). The bridge has no hard-coded `.data` addresses; add a rule there instead of writing one.
 
 Dispatch commands through `CommandBuilder` (`command_builder.hpp`):
 - `Create(sdk::cmd::X::kSpec)`, then `Set`/`SetString`/`SetBytes`, then `IsValid(&why)` (which returns the engine's own reason), then `Post(...)`.

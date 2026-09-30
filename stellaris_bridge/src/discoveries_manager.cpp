@@ -1,4 +1,5 @@
 #include "discoveries_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "command_builder.hpp"
 #include "game_state.hpp"
 #include <windows.h>
@@ -128,7 +129,7 @@ void* DiscoveriesManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -166,7 +167,7 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
     // 1. Relics
     if (q_tab == "all" || q_tab == "relics") {
         void* r_db = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x31119D8), &r_db);
+        SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CRelicsDatabase_pInstance), &r_db);
 
         uint32_t total_relics_cnt = 0;
         void* r_arr = nullptr;
@@ -227,7 +228,7 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
     // 2. Astral Actions
     if (q_tab == "all" || q_tab == "astral_actions") {
         void* a_db = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x31118F0), &a_db);
+        SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CAstralActionsDatabase_pInstance), &a_db);
 
         uint32_t a_cnt = 0;
         void* a_arr = nullptr;
@@ -261,7 +262,7 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
     // 3. Artifact Actions (Minor Relics)
     if (q_tab == "all" || q_tab == "artifact_actions") {
         void* art_db = nullptr;
-        SafeReadPtr((const void*)(base_address_ + 0x3111A48), &art_db);
+        SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CArtifactActionsDatabase_pInstance), &art_db);
 
         uint32_t art_cnt = 0;
         void* art_arr = nullptr;

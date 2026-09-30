@@ -153,7 +153,7 @@ void* LeaderManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -218,7 +218,7 @@ void* LeaderManager::FindLeaderPtr(uint32_t leader_id) {
     if (!base_address_ || leader_id == 0 || leader_id == 0xFFFFFFFF) return nullptr;
 
     void* leader_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114120), &leader_mgr) || !leader_mgr || (uintptr_t)leader_mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CLeader), &leader_mgr) || !leader_mgr || (uintptr_t)leader_mgr < 0x10000) {
         return nullptr;
     }
 
@@ -598,7 +598,7 @@ nlohmann::json LeaderManager::HireLeader(uint32_t candidate_id) {
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
@@ -650,7 +650,7 @@ nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
@@ -688,7 +688,7 @@ nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, uint8_t assignmen
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 

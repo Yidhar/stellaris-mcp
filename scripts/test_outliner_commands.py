@@ -117,13 +117,14 @@ def main():
             q = p.raw("get_planet_details", {"planet_id": planet})[0].get("construction_queue", [])
             return [json.dumps(item, ensure_ascii=False) for item in q]
         before = queue_keys()
-        bb = p.raw("get_buildable_buildings", {"planet_id": planet})[0].get("buildable_buildings", [])
-        if bb:
-            b0 = bb[0]
-            act(p, f"build_building ({b0['key']})", "build_building",
-                {"planet_id": planet, "building_key": b0["key"], "district_type": b0["district_type"],
-                 "slot_index": b0["slot_index"]},
-                lambda: len(queue_keys()) > len(before) and any(b0["key"] in k for k in queue_keys()), expect_reject=True)
+        zones = p.raw("get_buildable_buildings", {"planet_id": planet})[0].get("zones", [])
+        pick = next(((z, z["buildable"][0]) for z in zones if z.get("buildable")), None)
+        if pick:
+            z, b0 = pick
+            # the listed buildings are the ones the engine accepts, so this must queue
+            act(p, f"build_building ({b0['key']} in zone {z['zone_id']})", "build_building",
+                {"planet_id": planet, "building_key": b0["key"], "slot_index": z["zone_id"]},
+                lambda: len(queue_keys()) > len(before) and any(b0["key"] in k for k in queue_keys()))
         else:
             record("build_building", "SKIP", "nothing buildable")
 

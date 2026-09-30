@@ -1,4 +1,5 @@
 #include "contacts_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include <windows.h>
 #include <cstring>
 #include <algorithm>
@@ -121,7 +122,7 @@ void* ContactsManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -149,7 +150,7 @@ nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
     if (!country) return { {"error", "Player country not found"} };
 
     void* cmgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
         return { {"error", "Country manager not found"} };
     }
 
@@ -263,7 +264,7 @@ nlohmann::json ContactsManager::GetSummaryJson() {
     if (!country) return { {"known_empires_count", 0}, {"pending_first_contacts_count", 0} };
 
     void* cmgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &cmgr) || !cmgr || (uintptr_t)cmgr < 0x10000) {
         return { {"known_empires_count", 0}, {"pending_first_contacts_count", 0} };
     }
     uint32_t c_cap = 0;

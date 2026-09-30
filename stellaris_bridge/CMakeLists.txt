@@ -13,6 +13,7 @@ add_library(stellaris_bridge SHARED
     src/alert_manager.cpp
     src/tech_manager.cpp
     src/situation_log_manager.cpp
+    src/galaxy_manager.cpp
     src/government_manager.cpp
     src/society_manager.cpp
     src/leader_manager.cpp

@@ -1,4 +1,5 @@
 #include "fleet_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "fleet_access.hpp"
 #include "task_queue.hpp"
 #include "command_builder.hpp"
@@ -120,7 +121,7 @@ void* FleetManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -141,7 +142,7 @@ void* FleetManager::FindFleetTemplate(uint32_t template_id) {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114038), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CFleetTemplate), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (!mgr || (uintptr_t)mgr < 0x10000) {

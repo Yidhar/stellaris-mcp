@@ -1,4 +1,5 @@
 #include "society_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "alert_manager.hpp"
 #include "command_builder.hpp"
 #include <cstring>
@@ -136,7 +137,7 @@ void* SocietyManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -170,9 +171,9 @@ std::string SocietyManager::LocalizeKey(const std::string& key) {
 void SocietyManager::RefreshTraditionCache() {
     if (!base_address_) return;
 
-    // First principles: read native global CTraditionDatabase directly at base + 0x3111908
+    // First principles: read native global CTraditionDatabase directly at base + sdk::glob::TGameDatabase_CTraditionTypeDatabase_pInstance
     void* tr_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3111908), &tr_db) || !tr_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CTraditionTypeDatabase_pInstance), &tr_db) || !tr_db) {
         return;
     }
 
@@ -538,7 +539,7 @@ nlohmann::json SocietyManager::AdoptTradition(const std::string& tradition_key) 
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 
@@ -592,7 +593,7 @@ nlohmann::json SocietyManager::ToggleEdict(const std::string& edict_key, bool en
 
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 

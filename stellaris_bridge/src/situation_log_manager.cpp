@@ -1,5 +1,8 @@
 #include "situation_log_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "command_builder.hpp"
+#include "fleet_access.hpp"
+#include "species_manager.hpp"
 #include <cstring>
 
 namespace bridge {
@@ -112,6 +115,163 @@ static void SafeFreePdxStr(SituationLogManager::FnFreePdxStr fn_free_pdx, RawPdx
     }
 }
 
+static bool SafeReadI64(const void* addr, int64_t* out) {
+    __try {
+        *out = *(const int64_t*)addr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+namespace {
+
+// CPdxArray layouts in CCountryEventManager (serializer 0x802E10): special_project is read as
+// {data, ..., size at +0xC}; anomalies (ref_array<TPdxRef<CPlanet>>) is an array object
+// {vtable, data at +8, size at +0x14}.
+constexpr std::ptrdiff_t kProjectsSize = 0xC;
+constexpr std::ptrdiff_t kRefArrayData = 0x8;
+constexpr std::ptrdiff_t kRefArraySize = 0x14;
+// The special project type's key (the CSpecialProjectInstance serializer writes [type] + 0x18) and
+// the anomaly category's key (the CPlanet serializer writes [anomaly] + 0x20).
+constexpr std::ptrdiff_t kProjectTypeKey = 0x18;
+constexpr std::ptrdiff_t kAnomalyKey = 0x20;
+// CDebris compares its own id at +0x20 in TPdxRef lookups (CSpecialProjectInstance::ShouldAbort).
+constexpr std::ptrdiff_t kDebrisId = 0x20;
+constexpr uint32_t kInvalidId = 0xFFFFFFFF;
+
+// TPdxRefDatabase<T>: arr at +0x18 (16-byte slots, object at +8), capacity at +0x20.
+void* RefLookup(uintptr_t base, uintptr_t db_rva, uint32_t id, std::ptrdiff_t id_off = -1) {
+    if (id == kInvalidId) return nullptr;
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t cap = 0;
+    if (!SafeReadPtr((const void*)(base + db_rva), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x18), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x20), &cap)) {
+        return nullptr;
+    }
+    uint32_t idx = id & 0xFFFFFF;
+    void* obj = nullptr;
+    if (idx >= cap || !SafeReadPtr((const void*)((uintptr_t)arr + idx * 16 + 8), &obj) || !obj) return nullptr;
+    uint32_t own = 0;
+    if (id_off >= 0 && (!SafeReadU32((const void*)((uintptr_t)obj + id_off), &own) || own != id)) return nullptr;
+    return obj;
+}
+
+struct PredicateCtx {
+    uintptr_t fn;
+    const void* obj;
+    bool result;
+};
+
+void CallPredicate0(void* c, void*) {
+    auto* x = (PredicateCtx*)c;
+    x->result = ((bool (*)(const void*))x->fn)(x->obj);
+}
+
+bool EnginePredicate(uintptr_t fn, const void* obj) {
+    PredicateCtx ctx{ fn, obj, false };
+    return CommandBuilder::Get().CallGuarded(&CallPredicate0, &ctx) && ctx.result;
+}
+
+void* EventManager(void* country) {
+    return country ? (void*)((uintptr_t)country + sdk::ent::CCountry::events) : nullptr;
+}
+
+}  // namespace
+
+std::vector<SpecialProjectItem> SituationLogManager::ReadSpecialProjects(void* country) {
+    std::vector<SpecialProjectItem> out;
+    void* em = EventManager(country);
+    void* data = nullptr;
+    uint32_t count = 0;
+    const uintptr_t list = (uintptr_t)em + sdk::ent::CCountryEventManager::special_project;
+    if (!em || !SafeReadPtr((const void*)list, &data) || !data ||
+        !SafeReadU32((const void*)(list + kProjectsSize), &count) || count > 1000) {
+        return out;
+    }
+    namespace sp = sdk::ent::CSpecialProjectInstance;
+    for (uint32_t i = 0; i < count; ++i) {
+        void* p = nullptr;
+        if (!SafeReadPtr((const void*)((uintptr_t)data + i * 8), &p) || !p) continue;
+        SpecialProjectItem item{};
+        SafeReadU32((const void*)((uintptr_t)p + sp::id), &item.id);
+        SafeReadI32((const void*)((uintptr_t)p + sp::days_left), &item.days_left);
+        void* type = nullptr;
+        // species modification projects hold the null type, whose key is empty
+        if (SafeReadPtr((const void*)((uintptr_t)p + sp::special_project), &type) && type) {
+            SafeReadPdxString((const void*)((uintptr_t)type + kProjectTypeKey), item.key);
+        }
+        // CSpecialProjectInstance::GetName: species modification and uplift projects are named
+        // after the species, debris projects after the system of the debris, the rest by type.
+        uint32_t convert_to = kInvalidId;
+        SafeReadU32((const void*)((uintptr_t)p + sp::convert_to), &convert_to);
+        uint32_t debris_id = kInvalidId;
+        SafeReadU32((const void*)((uintptr_t)p + sp::debris), &debris_id);
+        const bool species_mod = EnginePredicate(base_address_ + sdk::fn::CSpecialProjectInstance_IsSpeciesModification, p);
+        const bool uplift = !species_mod && EnginePredicate(base_address_ + sdk::fn::CSpecialProjectInstance_IsUplift, p);
+        if (species_mod || uplift) {
+            item.kind = species_mod ? "species_modification" : "uplift";
+            item.species_id = convert_to;
+            std::string species;
+            if (void* sp_obj = SpeciesManager::Get().FindSpeciesPtr(convert_to)) {
+                species = PersistentNameText((const void*)((uintptr_t)sp_obj + sdk::ent::CSpecies::name));
+            }
+            item.key = species_mod ? "MOD_TRAIT_PROJECT" : "UPLIFT_PROJECT";
+            item.name = LocalizeWithParam(base_address_, item.key, species_mod ? "TEMPLATE" : "SPECIES", species);
+        } else if (void* debris = RefLookup(base_address_, sdk::db::CDebris, debris_id, kDebrisId)) {
+            item.kind = "debris";
+            uint32_t system_id = kInvalidId;
+            SafeReadU32((const void*)((uintptr_t)debris + sdk::ent::CDebris::coordinate +
+                                      sdk::ent::CCelestialCoordinate::origin), &system_id);
+            std::string system;
+            if (void* sys = RefLookup(base_address_, sdk::db::CGalacticObject, system_id)) {
+                system = PersistentNameText((const void*)((uintptr_t)sys + sdk::ent::CGalacticObject::name));
+            }
+            item.key = "SPECIAL_PROJECT_DEBRIS";
+            item.name = LocalizeWithParam(base_address_, item.key, "SYSTEM", system);
+        } else {
+            item.kind = "project";
+            item.name = item.key.empty() ? "" : LocalizeKey(item.key);
+        }
+        out.push_back(item);
+    }
+    return out;
+}
+
+std::vector<AnomalyItem> SituationLogManager::ReadAnomalies(void* country) {
+    std::vector<AnomalyItem> out;
+    void* em = EventManager(country);
+    if (!em) return out;
+    const uintptr_t arr = (uintptr_t)em + sdk::ent::CCountryEventManager::anomalies;
+    void* data = nullptr;
+    uint32_t count = 0;
+    if (!SafeReadPtr((const void*)(arr + kRefArrayData), &data) || !data ||
+        !SafeReadU32((const void*)(arr + kRefArraySize), &count) || count > 4096) {
+        return out;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t planet_id = kInvalidId;
+        if (!SafeReadU32((const void*)((uintptr_t)data + i * 4), &planet_id)) continue;
+        void* planet = RefLookup(base_address_, sdk::db::CPlanet, planet_id);
+        void* anomaly = nullptr;
+        // the planet keeps its anomaly (category) until it is researched, then holds a null object
+        if (!planet || !SafeReadPtr((const void*)((uintptr_t)planet + sdk::ent::CPlanet::anomaly), &anomaly) ||
+            !IsRealObject(anomaly)) {
+            continue;
+        }
+        AnomalyItem item{};
+        item.planet_id = planet_id;
+        SafeReadPdxString((const void*)((uintptr_t)anomaly + kAnomalyKey), item.key);
+        if (item.key.empty()) continue;
+        item.name = LocalizeKey(item.key);
+        item.planet_name = PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name));
+        out.push_back(item);
+    }
+    return out;
+}
+
 SituationLogManager& SituationLogManager::Get() {
     static SituationLogManager instance;
     return instance;
@@ -133,7 +293,7 @@ void* SituationLogManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -172,7 +332,7 @@ SituationLogSummary SituationLogManager::GetSummary() {
 
     // 1. Situations count for player empire from global entity manager
     void* sit_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::db::CSituation), &sit_mgr) && sit_mgr) {
         void* arr = nullptr;
         uint32_t cap = 0;
         if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -191,18 +351,10 @@ SituationLogSummary SituationLogManager::GetSummary() {
         }
     }
 
-    // 2. Special projects and anomalies count from player CSituationLog
-    void* sit_log = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x31140A0), &sit_log) && sit_log) {
-        uint32_t sp_cnt = 0;
-        SafeReadU32((const void*)((uintptr_t)sit_log + 0x3C), &sp_cnt);
-        summary.special_projects_count = sp_cnt;
-
-        uint32_t anom_cnt = 0;
-        SafeReadU32((const void*)((uintptr_t)sit_log + 0xFC), &anom_cnt);
-        summary.anomalies_count = anom_cnt;
-    }
-
+    // special projects and anomalies of the player (CCountry::events, CCountryEventManager)
+    void* country = GetPlayerCountry();
+    summary.special_projects_count = (uint32_t)ReadSpecialProjects(country).size();
+    summary.anomalies_count = (uint32_t)ReadAnomalies(country).size();
     return summary;
 }
 
@@ -215,7 +367,7 @@ FullSituationLogState SituationLogManager::GetSituationLogState(bool player_only
 
     // 1. Extract Situations from Global Situation EntityManager
     void* sit_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::db::CSituation), &sit_mgr) && sit_mgr) {
         void* arr = nullptr;
         uint32_t cap = 0;
         if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -256,39 +408,23 @@ FullSituationLogState SituationLogManager::GetSituationLogState(bool player_only
                     item.current_approach_name = LocalizeKey(item.current_approach);
                 }
 
-                int32_t raw_prog = 0;
-                SafeReadI32((const void*)((uintptr_t)sit + 0x218), &raw_prog);
-                item.progress = (double)raw_prog / 50000.0;
+                // CFixedPoint (x100000): a stage with `end = 1920` is cached as 192000000
+                int64_t raw_prog = 0;
+                SafeReadI64((const void*)((uintptr_t)sit + sdk::ent::CSituation::progress), &raw_prog);
+                item.progress = (double)raw_prog / 100000.0;
 
-                int32_t raw_rate = 0;
-                SafeReadI32((const void*)((uintptr_t)sit + 0x220), &raw_rate);
-                item.monthly_change = (double)raw_rate / 50000.0;
+                int64_t raw_rate = 0;
+                SafeReadI64((const void*)((uintptr_t)sit + sdk::ent::CSituation::last_month_progress), &raw_rate);
+                item.monthly_change = (double)raw_rate / 100000.0;
 
                 state.situations.push_back(item);
             }
         }
     }
 
-    // 2. Extract Special Projects from player CSituationLog if any exist
-    void* sit_log = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x31140A0), &sit_log) && sit_log) {
-        void* sp_arr = nullptr;
-        uint32_t sp_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)sit_log + 0x30), &sp_arr) && sp_arr &&
-            SafeReadU32((const void*)((uintptr_t)sit_log + 0x3C), &sp_cnt) && sp_cnt > 0 && sp_cnt < 100) {
-            for (uint32_t i = 0; i < sp_cnt; ++i) {
-                void* sp_entry = nullptr;
-                if (SafeReadPtr((const void*)((uintptr_t)sp_arr + i * 8), &sp_entry) && sp_entry) {
-                    SpecialProjectItem sp_item{};
-                    sp_item.id = i;
-                    SafeReadPdxString((const void*)((uintptr_t)sp_entry + 0x20), sp_item.key);
-                    sp_item.name = LocalizeKey(sp_item.key);
-                    state.special_projects.push_back(sp_item);
-                }
-            }
-        }
-    }
-
+    void* country = GetPlayerCountry();
+    state.special_projects = ReadSpecialProjects(country);
+    state.anomalies = ReadAnomalies(country);
     return state;
 }
 
@@ -312,17 +448,22 @@ nlohmann::json SituationLogManager::GetSituationLogJson(bool player_only) {
 
     nlohmann::json sp_arr = nlohmann::json::array();
     for (const auto& item : state.special_projects) {
-        sp_arr.push_back({
+        nlohmann::json j = {
             {"id", item.id},
             {"key", item.key},
-            {"name", item.name}
-        });
+            {"name", item.name},
+            {"kind", item.kind}
+        };
+        if (item.days_left >= 0) j["days_left"] = item.days_left;  // -1: no deadline
+        if (item.species_id != 0xFFFFFFFF) j["species_id"] = item.species_id;
+        sp_arr.push_back(j);
     }
 
     nlohmann::json anom_arr = nlohmann::json::array();
     for (const auto& item : state.anomalies) {
         anom_arr.push_back({
-            {"id", item.id},
+            {"planet_id", item.planet_id},
+            {"planet_name", item.planet_name},
             {"key", item.key},
             {"name", item.name}
         });
@@ -331,8 +472,8 @@ nlohmann::json SituationLogManager::GetSituationLogJson(bool player_only) {
     return {
         {"summary", {
             {"situations_count", state.summary.situations_count},
-            {"special_projects_count", state.summary.special_projects_count},
-            {"anomalies_count", state.summary.anomalies_count}
+            {"special_projects_count", state.special_projects.size()},
+            {"anomalies_count", state.anomalies.size()}
         }},
         {"situations", sit_arr},
         {"special_projects", sp_arr},
@@ -356,7 +497,7 @@ nlohmann::json SituationLogManager::SetSituationApproach(uint32_t situation_id, 
     // If situation_id is specified, find it to verify ownership
     if (situation_id != 0) {
         void* sit_mgr = nullptr;
-        if (SafeReadPtr((const void*)(base_address_ + 0x3114060), &sit_mgr) && sit_mgr) {
+        if (SafeReadPtr((const void*)(base_address_ + sdk::db::CSituation), &sit_mgr) && sit_mgr) {
             void* arr = nullptr;
             uint32_t cap = 0;
             if (SafeReadPtr((const void*)((uintptr_t)sit_mgr + 0x18), &arr) && arr &&
@@ -386,7 +527,7 @@ nlohmann::json SituationLogManager::SetSituationApproach(uint32_t situation_id, 
     // Retrieve tick timestamp from date manager (+0xC0)
     uint32_t tick_timestamp = 0;
     void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
         SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
     }
 

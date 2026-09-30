@@ -8,6 +8,7 @@
 #include "alert_manager.hpp"
 #include "tech_manager.hpp"
 #include "situation_log_manager.hpp"
+#include "galaxy_manager.hpp"
 #include "government_manager.hpp"
 #include "society_manager.hpp"
 #include "leader_manager.hpp"
@@ -48,6 +49,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
     AlertManager::Get().Init(base_address);
     TechManager::Get().Init(base_address);
     SituationLogManager::Get().Init(base_address);
+    GalaxyManager::Get().Init(base_address);
     GovernmentManager::Get().Init(base_address);
     SocietyManager::Get().Init(base_address);
     LeaderManager::Get().Init(base_address);

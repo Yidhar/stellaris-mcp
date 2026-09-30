@@ -115,10 +115,12 @@ def main():
             continue
         adj, vts = type_vt[T]
         best = None
+        pick_empty = False
         for cand in g.get("candidates", [g["rva"]]):
             db = p.q(B + cand)
             objs = db_objects(p, db)[:256] if db else []
             if not objs:
+                pick_empty = pick_empty or cand == g["rva"]
                 continue
             hits = sum(1 for _, o in objs if p.q(o + adj) in vts)
             rate = hits / len(objs)
@@ -129,7 +131,8 @@ def main():
             dbs[T] = p.q(B + best[1])
         else:
             # no live objects (main menu / empty database) is "unverified", not a failure
-            verified[sym] = {**g, "live": "unverified" if best is None else f"failed ({best[0]:.2f})"}
+            # the voted pick being empty (this save has none of T) says nothing against it either
+            verified[sym] = {**g, "live": "unverified" if best is None or pick_empty else f"failed ({best[0]:.2f})"}
     (OUT / "globals_verified.json").write_text(json.dumps(verified, indent=1), encoding="utf-8")
     ok = [s for s, v in verified.items() if v.get("live") == "ok"]
     moved = [s for s in ok if verified[s]["rva"] != globs[s]["rva"]]

@@ -94,14 +94,33 @@ def parse_body(body):
 
 
 EXECUTE_COMMENT = re.compile(r"^/\* ([\w:<>, ]+?)::Execute\(\) \*/")
+# any function header, for the anchors below
+ANY_FUNC = re.compile(r"^/\* ([\w:<>, ~]+?::~?\w+)\(.*\) \*/")
+DB_PATH = re.compile(r'"(common/[\w/]+)"')
+REF_DB_CTOR = re.compile(r"TPdxRefDatabase<(\w+), ?8u>::TPdxRefDatabase\b")
+GAME_STATE_DB_CTOR = "CGameStateDatabase::CGameStateDatabase"
 
 
 def main():
     classes = {}
     command_classes = set()
     cur, body = None, []
+    # for anchors.py: which function loads each "common/<folder>" database, and the order in
+    # which CGameStateDatabase constructs its TPdxRefDatabase<X> members (Windows inlines those
+    # constructors, so the order of the _pDatabase stores is all that is left to name them)
+    fn_name, db_paths, ref_order = None, {}, []
     with open(SRC, encoding="utf-8", errors="ignore") as f:
         for line in f:
+            if line.startswith("/* "):
+                m = ANY_FUNC.match(line)
+                if m:
+                    fn_name = m.group(1)
+            elif fn_name:
+                if '"common/' in line:
+                    for p in DB_PATH.findall(line):
+                        db_paths.setdefault(p, set()).add(fn_name)
+                if fn_name == GAME_STATE_DB_CTOR and "TPdxRefDatabase<" in line:
+                    ref_order += REF_DB_CTOR.findall(line)
             if cur is None:
                 m = FUNC_COMMENT.match(line)
                 if m:
@@ -125,6 +144,9 @@ def main():
     OUT.write_text(json.dumps(classes, indent=1), encoding="utf-8")
     (OUT.parent / "linux_classes.json").write_text(
         json.dumps({"execute_classes": sorted(command_classes)}, indent=1), encoding="utf-8")
+    (OUT.parent / "linux_anchors.json").write_text(json.dumps({
+        "db_paths": {p: sorted(fns) for p, fns in sorted(db_paths.items())},
+        "game_state_ref_order": ref_order}, indent=1), encoding="utf-8")
     n_f = sum(len(c["fields"]) for c in classes.values())
     print(f"indexed {len(classes)} serializer functions, {n_f} fields -> {OUT}")
 

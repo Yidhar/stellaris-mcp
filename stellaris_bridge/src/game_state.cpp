@@ -1,4 +1,6 @@
 #include "game_state.hpp"
+#include "command_builder.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "situation_log_manager.hpp"
 #include "government_manager.hpp"
 #include "society_manager.hpp"
@@ -175,9 +177,9 @@ void* GameState::GetInGameIdler() {
 void* GameState::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
-    // Global CCountryManager at base + 0x3113F50 (4.5.1 Cygnus)
+    // Global CCountryManager at base + sdk::db::CCountry (4.5.1 Cygnus)
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -211,7 +213,7 @@ GameDate GameState::ReadDate() {
     if (!base_address_) return date;
 
     void* global_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113A08), &global_mgr) || !global_mgr || (uintptr_t)global_mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &global_mgr) || !global_mgr || (uintptr_t)global_mgr < 0x10000) {
         return date;
     }
 
@@ -236,7 +238,7 @@ void GameState::EnsureResourceNamesLoaded() {
     if (!cached_resource_names_.empty() || !base_address_) return;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return;
     }
 
@@ -250,6 +252,7 @@ void GameState::EnsureResourceNamesLoaded() {
     }
 
     std::vector<std::string> names;
+    std::vector<void*> ptrs;
     names.reserve(count);
 
     char name_buf[128];
@@ -257,8 +260,10 @@ void GameState::EnsureResourceNamesLoaded() {
         void* res_ptr = nullptr;
         if (!SafeReadPtr((const void*)((uintptr_t)res_arr + i * 8), &res_ptr) || !res_ptr) {
             names.push_back("");
+            ptrs.push_back(nullptr);
             continue;
         }
+        ptrs.push_back(res_ptr);
         if (SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x30), name_buf, sizeof(name_buf))) {
             names.push_back(name_buf);
         } else {
@@ -268,9 +273,49 @@ void GameState::EnsureResourceNamesLoaded() {
 
     if (names.size() == count) {
         cached_resource_names_ = std::move(names);
+        cached_resource_ptrs_ = std::move(ptrs);
         LOGF("[GAME_STATE] Loaded %u global resource names.", (unsigned int)cached_resource_names_.size());
     }
 }
+
+const std::vector<std::string>& GameState::ResourceNames() {
+    EnsureResourceNamesLoaded();
+    return cached_resource_names_;
+}
+
+nlohmann::json GameState::ResourceTableJson(const void* table_ptr_field) {
+    nlohmann::json out = nlohmann::json::object();
+    const auto& names = ResourceNames();
+    void* table = nullptr;
+    void* data = nullptr;
+    uint32_t size = 0;
+    if (!table_ptr_field || !SafeReadPtr(table_ptr_field, &table) || !table ||
+        !SafeReadPtr(table, &data) || !data ||
+        !SafeReadU32((const void*)((uintptr_t)table + 0xC), &size)) {
+        return out;
+    }
+    for (uint32_t i = 0; i < size && i < names.size(); ++i) {
+        int64_t raw = 0;
+        if (!names[i].empty() && SafeReadI64((const void*)((uintptr_t)data + i * 8), &raw) && raw != 0) {
+            out[names[i]] = std::round(raw / 1000.0) / 100.0;
+        }
+    }
+    return out;
+}
+
+namespace {
+struct ResourceMaxCtx {
+    uintptr_t fn;
+    void* resource;
+    void* country;
+    int64_t result;
+};
+
+void CallResourceMax(void* c, void*) {
+    auto* x = (ResourceMaxCtx*)c;
+    ((int64_t* (*)(const void*, int64_t*, const void*))x->fn)(x->resource, &x->result, x->country);
+}
+}  // namespace
 
 std::unordered_map<std::string, ResourceDetail> GameState::ReadResources(void* country) {
     std::unordered_map<std::string, ResourceDetail> result;
@@ -337,6 +382,17 @@ std::unordered_map<std::string, ResourceDetail> GameState::ReadResources(void* c
             int64_t raw_val = 0;
             if (SafeReadI64((const void*)((uintptr_t)net_arr + i * 8), &raw_val)) {
                 det.net = round2(raw_val / 100000.0);
+            }
+        }
+
+        // Storage cap: CStrategicResource +0x110 is the base maximum (< 0: uncapped); the
+        // country's cap comes from CStrategicResource::GetMaximumForCountry, as the top bar shows.
+        void* res_ptr = i < cached_resource_ptrs_.size() ? cached_resource_ptrs_[i] : nullptr;
+        int64_t base_max = -1;
+        if (res_ptr && SafeReadI64((const void*)((uintptr_t)res_ptr + 0x110), &base_max) && base_max >= 0) {
+            ResourceMaxCtx ctx{ base_address_ + sdk::fn::CStrategicResource_GetMaximumForCountry, res_ptr, country, 0 };
+            if (CommandBuilder::Get().CallGuarded(&CallResourceMax, &ctx)) {
+                det.max = round2(ctx.result / 100000.0);
             }
         }
 
@@ -511,6 +567,10 @@ nlohmann::json GameState::GetStatusJson() {
             {"expense", detail.expense},
             {"net", detail.net}
         };
+        if (detail.max >= 0) {
+            res_json[key]["max"] = detail.max;
+            res_json[key]["capped"] = detail.stockpile >= detail.max;
+        }
     }
 
     nlohmann::json root = {

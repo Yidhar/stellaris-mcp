@@ -1,0 +1,697 @@
+"""Stage 2d: addresses derived from already-located code rather than from commands.
+
+Some engine data is never touched by a command method, so globals.py cannot vote on it. Each
+entry here starts from something already found (a buildable's token getter, a function from
+functions.json, a database from globals.json) and follows the code from there:
+
+  * buildable vtables: the class whose token getter (`mov eax, <token>; ret`) sits in the
+    GetToken slot; the slot index is the one where every buildable vtable starts with a
+    scalar deleting destructor.
+  * buildable vtable slots: CalcProgressionTimeNeeded is the slot calling CBuildingType::
+    CalcBuildTime (base build time +0x54, build speed modifier 0x9D); by declaration order
+    CalcProgressionSpeed and CalcCost are the two slots before it.
+  * TGameDatabase<CBuildingTypeDatabase>: the first database load in CBuildingType::CalcBuildSpeed
+    (the CalcProgressionSpeed slot's callee).
+  * TPdxRef<CZone>: in CBuildableBuilding's zone-aware slots, the ref database loaded right after
+    the colony database.
+  * CStrategicResourceDatabase: in CCountry::CanChangeGovernment, the global whose +0x70 (unity)
+    is read.
+  * script databases by folder: each database's loader references its "common/<folder>" path
+    (out/linux_anchors.json names the Linux function). A constructor `CX::CX` is inlined into
+    TGameDatabase<CX>::CreateInstance on Windows, which stores the fresh allocation into
+    `_pInstance` right away; an `Init`/`InitInstance` loader reads its own `CX::_pInstance` first.
+  * runtime fields: CGalacticObject's cached owner is the TPdxRef<CCountry> that
+    CCountry::HasAutoSurveyedSystem compares with the country (`mov r8d, [system + X]` after it
+    loads the country database).
+  * TPdxRef<X> databases no command touches: CGameStateDatabase constructs its ref databases in
+    the same order on both platforms and Windows inlines each constructor down to its
+    `_pDatabase` store. Known databases anchor the two sequences; a gap between two anchors is
+    named only when both sides have the same length.
+
+Every lookup in REQUIRED must produce exactly one answer or the stage fails.
+
+Usage: python tools/sdk_dumper/anchors.py   -> out/anchors.json
+"""
+import json
+import re
+import runpy
+import struct
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+OUT = HERE / "out"
+
+wx = runpy.run_path(str(HERE / "win_extract.py"), run_name="sdk_anchors")
+Image, EXE, token_names = wx["Image"], wx["EXE"], wx["token_names"]
+
+BUILDABLES = {
+    "CBuildableBuilding": "buildable_planet_building",
+    "CBuildableUpgradeBuilding": "buildable_planet_upgrade_building",
+    "CBuildableClearDepositBlocker": "buildable_clear_deposit_blocker",
+    "CBuildableArmy": "buildable_army",
+    "CBuildableZone": "buildable_zone",
+}
+
+
+# symbols the bridge uses; the folder / ref-order rules name many more, best effort
+REQUIRED = [
+    "TGameDatabase<CTraditionTypeDatabase>::_pInstance",
+    "TGameDatabase<CDecisionsDatabase>::_pInstance",
+    "TGameDatabase<CAstralActionsDatabase>::_pInstance",
+    "TGameDatabase<CArtifactActionsDatabase>::_pInstance",
+    "TGameDatabase<CSubSpeciesIntegrationTypeDatabase>::_pInstance",
+    "TGameDatabase<CSlaveryTypeDatabase>::_pInstance",
+    "TGameDatabase<CPurgeTypeDatabase>::_pInstance",
+    "TGameDatabase<CPopulationControlDatabase>::_pInstance",
+    "TGameDatabase<CMilitaryServiceTypeDatabase>::_pInstance",
+    "TGameDatabase<CMigrationControlDatabase>::_pInstance",
+    "TGameDatabase<CLivingStandardDatabase>::_pInstance",
+    "TGameDatabase<CColonizationControlDatabase>::_pInstance",
+    "TGameDatabase<CCitizenshipTypeDatabase>::_pInstance",
+    "TGameDatabase<CArmyTypeDatabase>::_pInstance",
+    "TGameDatabase<CBuildingTypeDatabase>::_pInstance",
+    "CTerraformDatabase::_pInstance",
+    "CTraitDatabase::_pInstance",
+    "CShipDesignTemplatesDatabase::_pInstance",
+    "TPdxRef<CDeposit>::_pDatabase",
+    "TPdxRef<CPopJob>::_pDatabase",
+    "TPdxRef<CShipDesign>::_pDatabase",
+    "TPdxRef<CDistrict>::_pDatabase",
+    "TPdxRef<CSituation>::_pDatabase",
+    "CConsole::_pInstance",
+    "g_bFrameSmoothing",
+]
+
+
+class Fail(Exception):
+    pass
+
+
+def rva(im, i):
+    return i.address - im.ib if i.address > im.ib else i.address
+
+
+def rip_target(im, i):
+    m = re.search(r"rip \+ (0x[0-9a-f]+)\]", i.op_str)
+    return rva(im, i) + i.size + int(m.group(1), 16) if m else None
+
+
+def data_range(im):
+    s = next(s for s in im.pe.sections if s.Name.startswith(b".data"))
+    return s.VirtualAddress, s.VirtualAddress + s.Misc_VirtualSize
+
+
+def is_deleting_dtor(im, fn):
+    ins = im.disasm_fn(fn, 0x40)[:8]
+    return any(i.mnemonic == "test" and i.op_str.endswith("dl, 1") for i in ins)
+
+
+def buildable_vtables(im, tokens):
+    text = im.img[im.text0:im.text1]
+    refs = {}
+    for cls, tok_name in BUILDABLES.items():
+        tok = tokens.get(tok_name)
+        if tok is None:
+            raise Fail(f"token {tok_name} not registered")
+        getters = [im.text0 + m.start() for m in re.finditer(re.escape(b"\xB8" + struct.pack("<I", tok) + b"\xC3"), text)]
+        ptrs = set()
+        for g in getters:
+            ptrs |= {m.start() for m in re.finditer(re.escape(struct.pack("<Q", im.ib + g)), im.img)
+                     if im.rdata0 <= m.start() < im.rdata1}
+        refs[cls] = ptrs
+    # the GetToken slot: the index at which every buildable's vtable begins with a deleting dtor
+    for slot in range(4, 40):
+        vts = {}
+        for cls, ptrs in refs.items():
+            cands = [p - slot * 8 for p in ptrs if is_deleting_dtor(im, im.q(p - slot * 8) - im.ib)]
+            if len(cands) != 1:
+                break
+            vts[cls] = cands[0]
+        else:
+            return slot, vts
+    raise Fail("no GetToken slot index fits every buildable vtable")
+
+
+def slot_fn(im, vt, k):
+    return im.q(vt + k * 8) - im.ib
+
+
+def calls_of(im, fn, n=200):
+    return [int(i.op_str, 16) - im.ib for i in im.disasm_fn(fn, 0x800)[:n] if i.mnemonic == "call" and i.op_str.startswith("0x")]
+
+
+def is_calc_build_time(im, fn):
+    j = " | ".join(f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(fn, 0x300)[:60])
+    return "+ 0x54]" in j and "0x9d" in j
+
+
+def db_loads(im, fn, n=400):
+    """(global, shape) for each .data global loaded into a register: 'ref' for a TPdxRefDatabase
+    (capacity at +0x20 compared), 'game' for a TGameDatabase (+0x50 items / +0x5c count)."""
+    d0, d1 = data_range(im)
+    ins = im.disasm_fn(fn, 0x1000)[:n]
+    out = []
+    for k, i in enumerate(ins):
+        if i.mnemonic != "mov" or "rip + " not in i.op_str:
+            continue
+        t = rip_target(im, i)
+        if not (d0 <= t < d1):
+            continue
+        reg = i.op_str.split(",")[0].strip()
+        win = " | ".join(f"{x.mnemonic} {x.op_str}" for x in ins[k + 1:k + 30])
+        shape = ("ref" if f"[{reg} + 0x20]" in win else
+                 "game" if f"[{reg} + 0x50]" in win or f"[{reg} + 0x5c]" in win else "")
+        out.append((t, shape))
+    return out
+
+
+def used_as_game_db(im, g, limit=400):
+    """Whether some rip-relative load of global g is followed by a TGameDatabase access."""
+    text = im.img[im.text0:im.text1]
+    hits = 0
+    for m in re.finditer(rb"\x48\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]|\x4C\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+        p = im.text0 + m.start()
+        if p + 7 + struct.unpack_from("<i", im.img, p + 3)[0] != g:
+            continue
+        hits += 1
+        if hits > limit:
+            break
+        ins = list(im.md.disasm(im.img[p:p + 80], im.ib + p))
+        if not ins:
+            continue
+        reg = ins[0].op_str.split(",")[0].strip()
+        win = " | ".join(i.op_str for i in ins[1:12])
+        if f"[{reg} + 0x5c]" in win or f"[{reg} + 0x50]" in win:
+            return True
+    return False
+
+
+def string_xrefs(im, strings):
+    """{string: {function start}} for rip-relative references (lea / mov / movups) to each C string."""
+    import numpy as np
+    t = np.frombuffer(im.img[im.text0:im.text1], dtype=np.uint8)
+    n = len(t) - 4
+    disp = (t[:n].astype(np.int64) | (t[1:n + 1].astype(np.int64) << 8) |
+            (t[2:n + 2].astype(np.int64) << 16) | (t[3:n + 3].astype(np.int64) << 24))
+    disp = np.where(disp >= 2 ** 31, disp - 2 ** 32, disp)
+    target = np.arange(n, dtype=np.int64) + im.text0 + 4 + disp
+    at = {}
+    for s in strings:
+        for m in re.finditer(re.escape(s.encode() + b"\x00"), im.img[im.rdata0:im.rdata1]):
+            if im.img[im.rdata0 + m.start() - 1] == 0:  # whole string, not a suffix of a longer one
+                at[im.rdata0 + m.start()] = s
+    out = {s: set() for s in strings}
+    for h in np.nonzero(np.isin(target, list(at)))[0]:
+        f = im.fn_of(im.text0 + int(h))
+        if f is not None:
+            out[at[int(target[h])]].add(f)
+    return out
+
+
+def alloc_store(im, fn, n=16):
+    """CreateInstance shape: the first .data store in fn is `mov [rip+G], rax|rbx` of the result
+    of a call before it (the allocation). A singleton's creator may construct it at length
+    first; pass a larger n for those."""
+    d0, d1 = data_range(im)
+    called = False
+    for i in im.disasm_fn(fn, 0x1000)[:n]:
+        if i.mnemonic == "call":
+            called = True
+        if i.mnemonic == "mov" and i.op_str.startswith("qword ptr [rip + "):
+            g = rip_target(im, i)
+            if d0 <= g < d1:
+                return g if called and i.op_str.endswith(("rax", "rbx")) else None
+    return None
+
+
+def stores_to(im, g):
+    text = im.img[im.text0:im.text1]
+    for m in re.finditer(rb"[\x48\x4C]\x89[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+        p = im.text0 + m.start()
+        if p + 7 + struct.unpack_from("<i", im.img, p + 3)[0] == g:
+            yield p
+
+
+def first_data_load(im, fn):
+    d0, d1 = data_range(im)
+    for i in im.disasm_fn(fn, 0x3000)[:400]:
+        if i.mnemonic == "mov" and ", qword ptr [rip + " in i.op_str:
+            g = rip_target(im, i)
+            if d0 <= g < d1:
+                return g
+    return None
+
+
+def databases_by_folder(im, linux):
+    """{symbol: global} for every "common/<folder>" whose Linux loader is unique."""
+    paths = {p: fns[0] for p, fns in linux.get("db_paths", {}).items() if len(fns) == 1}
+    xrefs = string_xrefs(im, paths)
+    # a registry function that names every folder is not a loader
+    per_fn = {}
+    for fns in xrefs.values():
+        for f in fns:
+            per_fn[f] = per_fn.get(f, 0) + 1
+    xrefs = {p: {f for f in fns if per_fn[f] <= 3} for p, fns in xrefs.items()}
+    out = {}
+    for p, lfn in paths.items():
+        cls, meth = lfn.rsplit("::", 1)
+        if not re.fullmatch(r"C\w+", cls):
+            continue
+        if meth == cls:
+            sym = f"TGameDatabase<{cls}>::_pInstance"
+            hits = {alloc_store(im, f) for f in xrefs[p]} - {None}
+        elif meth in ("Init", "InitInstance"):
+            # the loader reads its own instance first; a singleton is allocated and stored somewhere
+            sym = f"{cls}::_pInstance"
+            hits = {g for g in (first_data_load(im, f) for f in xrefs[p])
+                    if g and any(alloc_store(im, im.fn_of(q), 200) == g for q in stores_to(im, g))}
+        else:
+            continue
+        if len(hits) == 1:
+            out[sym] = hits.pop()
+    return out
+
+
+def game_state_refs(im, linux, known):
+    """TPdxRef<X>::_pDatabase by aligning Windows' inlined CGameStateDatabase constructor stores
+    with the Linux constructor order. known: {symbol: rva} already located."""
+    order = linux.get("game_state_ref_order", [])
+    by_rva = {v: k for k, v in known.items()}
+    colony = known.get("TPdxRef<CColony>::_pDatabase")
+    if not order or colony is None:
+        raise Fail("no Linux CGameStateDatabase order or no TPdxRef<CColony>")
+    d0, d1 = data_range(im)
+    best = []
+    for p in stores_to(im, colony):
+        seq = []
+        for i in im.disasm_fn(im.fn_of(p), 0x8000):
+            if i.mnemonic == "mov" and i.op_str.startswith("qword ptr [rip + "):
+                g = rip_target(im, i)
+                if d0 <= g < d1 and g not in seq:
+                    seq.append(g)
+        if len(seq) > len(best):
+            best = seq
+    lin = [f"TPdxRef<{x}>::_pDatabase" for x in order]
+    # MSVC emits the members in a rotated order: start the Linux list at the first Windows anchor
+    first = next((by_rva[g] for g in best if by_rva.get(g) in lin), None)
+    if first is None:
+        raise Fail("no known database among the CGameStateDatabase stores")
+    k0 = lin.index(first)
+    lin = lin[k0:] + lin[:k0]
+    pairs = [(lin.index(by_rva[g]), j) for j, g in enumerate(best) if by_rva.get(g) in lin]
+    if len(pairs) < 10 or any(b[0] <= a[0] or b[1] <= a[1] for a, b in zip(pairs, pairs[1:])):
+        raise Fail(f"CGameStateDatabase store order does not follow Linux ({len(pairs)} anchors)")
+    out = {}
+    for (i0, j0), (i1, j1) in zip(pairs, pairs[1:]):
+        if i1 - i0 == j1 - j0:
+            for k in range(1, i1 - i0):
+                out[lin[i0 + k]] = best[j0 + k]
+    return out
+
+
+def main():
+    im = Image(EXE)
+    r = token_names(im, set())
+    names = next(x for x in r if isinstance(x, dict))
+    tokens = {v: k for k, v in names.items()}
+    globs = json.loads(((OUT / "globals_verified.json") if (OUT / "globals_verified.json").exists()
+                        else (OUT / "globals.json")).read_text(encoding="utf-8"))
+    funcs = json.loads((OUT / "functions.json").read_text(encoding="utf-8"))
+    result = {"vtables": {}, "slots": {}, "globals": {}, "fields": {}}
+    failures = []
+
+    try:
+        token_slot, vts = buildable_vtables(im, tokens)
+        result["slots"]["CBuildableBase_GetToken"] = token_slot
+        for cls, vt in vts.items():
+            result["vtables"][cls] = vt
+            print(f"vtable {cls}: 0x{vt:X}")
+    except Fail as e:
+        failures.append(str(e))
+        vts = {}
+
+    bvt = vts.get("CBuildableBuilding")
+    if bvt:
+        time_slots = [k for k in range(token_slot) if any(is_calc_build_time(im, c) for c in calls_of(im, slot_fn(im, bvt, k), 40))]
+        if len(time_slots) != 1:
+            failures.append(f"CalcProgressionTimeNeeded slot: {time_slots}")
+        else:
+            t = time_slots[0]
+            result["slots"].update({"CBuildableBase_CalcProgressionTimeNeeded": t,
+                                    "CBuildableBase_CalcProgressionSpeed": t - 1,
+                                    "CBuildableBase_CalcCost": t - 2})
+            print(f"slots: CalcCost {t - 2}, CalcProgressionSpeed {t - 1}, CalcProgressionTimeNeeded {t}")
+            # CBuildingType::CalcBuildSpeed (the speed slot's callee) loads the database first
+            # (it reads a per-type table at +0x90); confirm the global is used as a
+            # TGameDatabase (+0x50 items / +0x5c count) somewhere in the image.
+            speed_calls = calls_of(im, slot_fn(im, bvt, t - 1), 40)
+            first = [loads[0][0] for loads in (db_loads(im, c, 20) for c in speed_calls) if loads]
+            bdb = [g for g in dict.fromkeys(first) if used_as_game_db(im, g)]
+            if len(set(bdb)) != 1:
+                failures.append(f"TGameDatabase<CBuildingTypeDatabase>: {[hex(x) for x in bdb]}")
+            else:
+                result["globals"]["TGameDatabase<CBuildingTypeDatabase>::_pInstance"] = bdb[0]
+                print(f"TGameDatabase<CBuildingTypeDatabase>: 0x{bdb[0]:X}")
+
+        # TPdxRef<CZone>: the ref database loaded after the colony database in zone-aware slots
+        colony_db = globs.get("TPdxRef<CColony>::_pDatabase", {}).get("rva")
+        zone = set()
+        for k in range(token_slot):
+            loads = [g for g, shape in db_loads(im, slot_fn(im, bvt, k)) if shape == "ref"]
+            if colony_db in loads:
+                after = [g for g in loads[loads.index(colony_db) + 1:] if g != colony_db and g not in
+                         {v["rva"] for v in globs.values()}]
+                if after:
+                    zone.add(after[0])
+        if len(zone) != 1:
+            failures.append(f"TPdxRef<CZone>: {[hex(x) for x in zone]}")
+        else:
+            z = zone.pop()
+            result["globals"]["TPdxRef<CZone>::_pDatabase"] = z
+            print(f"TPdxRef<CZone>: 0x{z:X}")
+
+    # g_bFrameSmoothing: the `smooth` console command's handler toggles it with `sete byte [rip+X]`.
+    # Console commands are {name, ..., help, handler} records; the handler pointer follows the
+    # pointer to the command's help text.
+    help_rva = im.img.find(b"Toggle framesmoothing\x00")
+    handler = None
+    if im.rdata0 <= help_rva < im.rdata1:
+        p = im.img.find(struct.pack("<Q", im.ib + help_rva))
+        if p != -1:
+            handler = struct.unpack_from("<Q", im.img, p + 8)[0] - im.ib
+    toggles = [rip_target(im, i) for i in (im.disasm_fn(handler, 0x400) if handler else [])
+               if i.mnemonic == "sete" and "rip + " in i.op_str]
+    if len(set(toggles)) != 1:
+        failures.append(f"g_bFrameSmoothing: {[hex(x) for x in toggles if x]}")
+    else:
+        result["globals"]["g_bFrameSmoothing"] = toggles[0]
+        print(f"g_bFrameSmoothing: 0x{toggles[0]:X}")
+
+    # CConsole::_pInstance: callers do `mov rcx, [rip+X]` right before `call RunCommandNow`
+    run_cmd = funcs.get("CConsole_RunCommandNow", {}).get("rva")
+    if run_cmd:
+        text = im.img[im.text0:im.text1]
+        seen = {}
+        for m in re.finditer(rb"\xe8", text):
+            i = m.start()
+            if im.text0 + i + 5 + struct.unpack_from("<i", text, i + 1)[0] != run_cmd:
+                continue
+            c = im.text0 + i
+            pre = list(im.md.disasm(im.img[c - 0x20:c + 5], im.ib + c - 0x20))
+            loads = [rip_target(im, x) for x in pre if x.mnemonic == "mov" and x.op_str.startswith("rcx, qword ptr [rip")]
+            if loads:
+                seen[loads[-1]] = seen.get(loads[-1], 0) + 1
+        best = sorted(seen.items(), key=lambda kv: -kv[1])
+        if not best or best[0][1] < 2 or (len(best) > 1 and best[1][1] == best[0][1]):
+            failures.append(f"CConsole::_pInstance: {[(hex(k), v) for k, v in best]}")
+        else:
+            result["globals"]["CConsole::_pInstance"] = best[0][0]
+            print(f"CConsole::_pInstance: 0x{best[0][0]:X} ({best[0][1]} call sites)")
+    else:
+        failures.append("CConsole_RunCommandNow not in functions.json")
+
+    # CStrategicResourceDatabase: `mov rax, [rip+X]` then `mov r8, [rax + 0x70]` (unity)
+    ccg = funcs.get("CCountry_CanChangeGovernment", {}).get("rva")
+    if ccg:
+        ins = im.disasm_fn(ccg, 0x800)
+        res = [rip_target(im, a) for a, b in zip(ins, ins[1:])
+               if a.mnemonic == "mov" and "rip + " in a.op_str and b.op_str.endswith("[rax + 0x70]")]
+        if len(res) != 1:
+            failures.append(f"CStrategicResourceDatabase: {[hex(x) for x in res if x]}")
+        else:
+            result["globals"]["CStrategicResourceDatabase::_pInstance"] = res[0]
+            print(f"CStrategicResourceDatabase: 0x{res[0]:X}")
+    else:
+        failures.append("CCountry_CanChangeGovernment not in functions.json")
+
+    # CGalacticObject owner: the id HasAutoSurveyedSystem looks up in TPdxRef<CCountry>
+    has_auto = funcs.get("CCountry_HasAutoSurveyedSystem", {}).get("rva")
+    country_db = globs.get("TPdxRef<CCountry>::_pDatabase", {}).get("rva")
+    if has_auto and country_db:
+        ins = im.disasm_fn(has_auto, 0x200)
+        k = next((n for n, i in enumerate(ins) if i.mnemonic == "mov" and rip_target(im, i) == country_db), None)
+        owner = [re.search(r"\[(?:rdi|rdx|rsi|rbx) \+ (0x[0-9a-f]+)\]", i.op_str)
+                 for i in (ins[k + 1:k + 5] if k is not None else []) if i.mnemonic == "mov"]
+        owner = [int(m.group(1), 16) for m in owner if m]
+        if len(owner) != 1:
+            failures.append(f"CGalacticObject owner field: {owner}")
+        else:
+            result["fields"]["CGalacticObject_owner"] = owner[0]
+            print(f"CGalacticObject owner field: 0x{owner[0]:X}")
+    else:
+        failures.append("CGalacticObject owner field: HasAutoSurveyedSystem or TPdxRef<CCountry> missing")
+
+    # CFleetManagerView reinforce flag: Update stores NGuiUtil::ShouldUpdateExpensiveThisFrame(8)
+    # (inlined: `(int)(clock * 100) % 8 == 0`, i.e. `and eax, 0x80000007` ... `sete al`) in a bool
+    # member and runs CalcAllShipsToReinforce only when it is set
+    fm_update = funcs.get("CFleetManagerView_Update", {}).get("rva")
+    if fm_update:
+        ins = im.disasm_fn(fm_update, 0x800)
+        k = next((n for n, i in enumerate(ins) if i.mnemonic == "and" and i.op_str.endswith(", 0x80000007")), None)
+        due = [re.search(r"^byte ptr \[r\w+ \+ (0x[0-9a-f]+)\], al$", i.op_str)
+               for i in (ins[k + 1:k + 10] if k is not None else []) if i.mnemonic == "mov"]
+        due = [int(m.group(1), 16) for m in due if m]
+        if len(due) != 1:
+            failures.append(f"CFleetManagerView reinforce flag: {due}")
+        else:
+            result["fields"]["CFleetManagerView_reinforce_due"] = due[0]
+            print(f"CFleetManagerView reinforce flag: 0x{due[0]:X}")
+    else:
+        failures.append("CFleetManagerView reinforce flag: CFleetManagerView_Update missing")
+
+    # CInGameIdler paused flag / speed: SetGameSpeed opens with `cmp byte ptr [rcx + P], 0` (only a
+    # running game restarts its timer) and `mov edx, dword ptr [rcx + S]` (the old speed)
+    set_speed = funcs.get("CInGameIdler_SetGameSpeed", {}).get("rva")
+    if set_speed:
+        ins = im.disasm_fn(set_speed, 0x80)[:8]
+        paused = [int(m.group(1), 16) for i in ins
+                  for m in [re.search(r"^byte ptr \[rcx \+ (0x[0-9a-f]+)\], 0$", i.op_str)] if i.mnemonic == "cmp" and m]
+        speed = [int(m.group(1), 16) for i in ins
+                 for m in [re.search(r"^edx, dword ptr \[rcx \+ (0x[0-9a-f]+)\]$", i.op_str)] if i.mnemonic == "mov" and m]
+        if len(paused) != 1 or len(speed) != 1:
+            failures.append(f"CInGameIdler paused/speed: {paused} {speed}")
+        else:
+            result["fields"]["CInGameIdler_paused"] = paused[0]
+            result["fields"]["CInGameIdler_speed"] = speed[0]
+            print(f"CInGameIdler paused 0x{paused[0]:X}, speed 0x{speed[0]:X}")
+    else:
+        failures.append("CInGameIdler paused/speed: CInGameIdler_SetGameSpeed missing")
+
+    # CGameState date in hours: HandleTurnTick advances it with `add dword ptr [reg], 0x18` after
+    # `lea reg, [state + X]`
+    turn_tick = funcs.get("CGameState_HandleTurnTick", {}).get("rva")
+    if turn_tick:
+        ins = im.disasm_fn(turn_tick, 0x3000)
+        date = set()
+        for k, i in enumerate(ins):
+            m = re.search(r"^dword ptr \[(r\w+)\], 0x18$", i.op_str)
+            if i.mnemonic == "add" and m:
+                for j in range(k - 1, max(k - 300, 0), -1):
+                    lm = re.search(r"^" + m.group(1) + r", \[r\w+ \+ (0x[0-9a-f]+)\]$", ins[j].op_str)
+                    if ins[j].mnemonic == "lea" and lm:
+                        date.add(int(lm.group(1), 16))
+                        break
+        if len(date) != 1:
+            failures.append(f"CGameState date: {sorted(date)}")
+        else:
+            result["fields"]["CGameState_date_hours"] = date.pop()
+            print(f"CGameState date (hours): 0x{result['fields']['CGameState_date_hours']:X}")
+    else:
+        failures.append("CGameState date: CGameState_HandleTurnTick missing")
+
+    # has_*_flag: CHasFlagTrigger::ActualEvaluate reads the dynamic base-name size (`cmp qword ptr
+    # [rcx + D], 0`), the static id (`movzx ebx, word ptr [rcx + F]`), calls GetFlags through the
+    # vtable (`call qword ptr [rax + V]`), then scans the container: count (`movsxd rcx, dword ptr
+    # [rax + C]`) and ids (`mov rax, qword ptr [rax + I]`). UpdateFlags reads days (`mov rcx,
+    # qword ptr [rbx + Y]`) with the same count
+    has_flag = funcs.get("CHasFlagTrigger_ActualEvaluate", {}).get("rva")
+    upd_flags = funcs.get("CPdxIntegerFlags_UpdateFlags", {}).get("rva")
+    if has_flag and upd_flags:
+        ops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(has_flag, 0x100)[:40]]
+
+        def first(rx):
+            return next((int(m.group(1), 16) for o in ops for m in [re.search(rx, o)] if m), None)
+
+        vals = {
+            "CHasFlagTrigger_dynamic_size": first(r"^cmp qword ptr \[rcx \+ (0x[0-9a-f]+)\], 0$"),
+            "CHasFlagTrigger_flag": first(r"^movzx ebx, word ptr \[rcx \+ (0x[0-9a-f]+)\]$"),
+            "CHasFlagTrigger_vt_GetFlags": first(r"^call qword ptr \[rax \+ (0x[0-9a-f]+)\]$"),
+            "CPdxIntegerFlags_count": first(r"^movsxd rcx, dword ptr \[rax \+ (0x[0-9a-f]+)\]$"),
+            "CPdxIntegerFlags_ids": first(r"^mov rax, qword ptr \[rax \+ (0x[0-9a-f]+)\]$"),
+        }
+        uops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(upd_flags, 0x80)[:20]]
+        vals["CPdxIntegerFlags_days"] = next((int(m.group(1), 16) for o in uops
+                                             for m in [re.search(r"^mov rcx, qword ptr \[rbx \+ (0x[0-9a-f]+)\]$", o)] if m), None)
+        ucount = next((int(m.group(1), 16) for o in uops
+                       for m in [re.search(r"^mov esi, dword ptr \[rcx \+ (0x[0-9a-f]+)\]$", o)] if m), None)
+        if None in vals.values() or ucount != vals["CPdxIntegerFlags_count"]:
+            failures.append(f"flag container fields: {vals} (UpdateFlags count {ucount})")
+        else:
+            result["fields"].update(vals)
+            print("flag fields: " + ", ".join(f"{k}=0x{v:X}" for k, v in vals.items()))
+    else:
+        failures.append("flag container fields: CHasFlagTrigger_ActualEvaluate / CPdxIntegerFlags_UpdateFlags missing")
+
+    # Modifier graph flush (CModifierNodeManager::Update): batch byte (`cmp byte ptr [rcx + B], 0`),
+    # busy and has-invalid bytes (the two `xchg byte ptr [rcx + X], al`), masked-invalidate byte
+    # (`lea r14, [rcx + M]`), the RNG-forbidden global (`movzx eax, byte ptr [rip + F]` then
+    # `mov byte ptr [rip + F], 1`) and the random-log config field (`mov ebx, dword ptr [rax + L]`
+    # after the first call, then `or ebx, 2`)
+    mupd = funcs.get("CModifierNodeManager_Update", {}).get("rva")
+    nupd = funcs.get("CModifierNodeBase_Update", {}).get("rva")
+    addmod = funcs.get("CPdxModifier_AddModifierInternal", {}).get("rva")
+    if mupd and nupd and addmod:
+        ins = im.disasm_fn(mupd, 0x200)[:40]
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        vals, glob = {}, None
+
+        def disp(rx, lst=ops):
+            return [int(m.group(1), 16) for o in lst for m in [re.search(rx, o)] if m]
+
+        vals["CModifierNodeManager_batch"] = (disp(r"^cmp byte ptr \[rcx \+ (0x[0-9a-f]+)\], 0$") or [None])[0]
+        xchg = disp(r"^xchg byte ptr \[rcx \+ (0x[0-9a-f]+)\], al$")
+        vals["CModifierNodeManager_busy"], vals["CModifierNodeManager_has_invalid"] = (xchg + [None, None])[:2]
+        vals["CModifierNodeManager_masked"] = (disp(r"^lea r14, \[rcx \+ (0x[0-9a-f]+)\]$") or [None])[0]
+        vals["CRandomLog_config"] = (disp(r"^mov ebx, dword ptr \[rax \+ (0x[0-9a-f]+)\]$") or [None])[0]
+        for k, a in enumerate(ins):
+            if a.mnemonic == "movzx" and "rip + " in a.op_str:
+                for b in ins[k + 1:k + 4]:  # the saved value is spilled to the stack in between
+                    if b.mnemonic == "mov" and b.op_str.endswith("], 1") and "rip + " in b.op_str \
+                            and rip_target(im, a) == rip_target(im, b):
+                        glob = rip_target(im, a)
+        # node fields (CModifierNodeBase::Update): dirty byte, embedded CModifier (`lea rcx, [rbx + X]`
+        # right before the vcall +0x80 Clear)
+        nops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(nupd, 0x100)[:30]]
+        vals["CModifierNode_dirty"] = (disp(r"^movzx eax, byte ptr \[rcx \+ (0x[0-9a-f]+)\]$", nops) or [None])[0]
+        k = next((n for n, o in enumerate(nops) if o == "call qword ptr [rax + 0x80]"), None)
+        mod = [int(m.group(1), 16) for o in (nops[max(k - 4, 0):k] if k else [])
+               for m in [re.search(r"^lea rcx, \[rbx \+ (0x[0-9a-f]+)\]$", o)] if m]
+        vals["CModifierNode_modifier"] = mod[0] if len(mod) == 1 else None
+        # CModifier: entries data/count (`mov R, qword ptr [S + D]` then `movsxd R2, dword ptr [S + C]`,
+        # the source's entries) and parents (`mov edx, dword ptr [rsi + P]` then `lea rcx, [rsi + A]`,
+        # a CPdxArray: data at A + 8, count at A + 0x14 == P)
+        aops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(addmod, 0x400)[:120]]
+        for a, b in zip(aops, aops[1:]):
+            m1 = re.search(r"^mov \w+, qword ptr \[(\w+) \+ (0x[0-9a-f]+)\]$", a)
+            m2 = re.search(r"^movsxd \w+, dword ptr \[(\w+) \+ (0x[0-9a-f]+)\]$", b)
+            if m1 and m2 and m1.group(1) == m2.group(1) and "CModifier_entries" not in vals:
+                vals["CModifier_entries"], vals["CModifier_entry_count"] = int(m1.group(2), 16), int(m2.group(2), 16)
+            m3 = re.search(r"^mov edx, dword ptr \[rsi \+ (0x[0-9a-f]+)\]$", a)
+            m4 = re.search(r"^lea rcx, \[rsi \+ (0x[0-9a-f]+)\]$", b)
+            if m3 and m4 and "CModifier_parents" not in vals:
+                if int(m4.group(1), 16) + 0x14 == int(m3.group(1), 16):
+                    vals["CModifier_parents"], vals["CModifier_parent_count"] = int(m4.group(1), 16) + 8, int(m3.group(1), 16)
+        # node slot table: `and eax, 0xfffff; mov rcx, [rip+mgr]; cmp eax, [rcx + COUNT]; jae;
+        # lea rdx, [rax + rax*2]; mov rcx, [rcx + SLOTS]; cmp dword ptr [rcx + rdx*8], id; jne;
+        # mov rcx, [rcx + rdx*8 + NODE]` (every match in the exe must agree)
+        text = im.img[im.text0:im.text1]
+        slots = set()
+        for m in re.finditer(rb"\x25\xFF\xFF\x0F\x00\x48\x8B\x0D....\x3B\x41(.)\x73.\x48\x8D\x14\x40\x48\x8B\x49(.)",
+                             text, re.S):
+            tail = text[m.end():m.end() + 16]
+            n = re.search(rb"\x48\x8B\x4C\xD1(.)", tail, re.S)
+            if n:
+                slots.add((m.group(1)[0], m.group(2)[0], n.group(1)[0]))
+        if len(slots) == 1:
+            c, sl, nd = slots.pop()
+            vals.update({"CModifierNodeManager_slot_count": c, "CModifierNodeManager_slots": sl,
+                         "CModifierNodeManager_slot_node": nd})
+        if None in vals.values() or glob is None or len(vals) != 14:
+            failures.append(f"modifier flush fields: {vals} forbidden={glob} slots={slots}")
+        else:
+            result["fields"].update(vals)
+            result["globals"]["CRandom_Forbidden"] = glob
+            print("modifier flush fields: " + ", ".join(f"{k}=0x{v:X}" for k, v in vals.items()) + f", CRandom_Forbidden=0x{glob:X}")
+    else:
+        failures.append("modifier flush fields: CModifierNodeManager_Update / CModifierNodeBase_Update / AddModifierInternal missing")
+
+    # Fleet parallel-for chunk size (inlined CPdxParallelForDescriptor, partition mode 1):
+    # tasks = threads + 1; chunk = max(1, count / tasks / 3):
+    #   idiv ecx; mov ecx, eax; mov eax, 0x55555556; imul ecx; ... mov eax, 1; cmp edx, eax; cmovg eax, edx
+    # The 5-byte `cmp edx, eax; cmovg eax, edx` (3B D0 0F 4F C2) is the clamp stellaris_perf.dll can
+    # turn into NOPs to make every chunk one fleet.
+    usp = funcs.get("CGameState_UpdateShipParallel", {}).get("rva")
+    if usp:
+        ins = im.disasm_fn(usp, 0x800)
+        site = None
+        for k, i in enumerate(ins):
+            if i.mnemonic == "mov" and i.op_str == "eax, 0x55555556" and k + 8 < len(ins) \
+                    and any(x.mnemonic == "idiv" for x in ins[max(k - 4, 0):k]):
+                for j in range(k + 1, k + 9):
+                    if ins[j].mnemonic == "cmp" and ins[j].op_str == "edx, eax" and ins[j + 1].mnemonic == "cmovg" \
+                            and ins[j + 1].op_str == "eax, edx":
+                        a = ins[j].address - im.ib if ins[j].address > im.ib else ins[j].address
+                        if im.img[a:a + 5] == b"\x3B\xD0\x0F\x4F\xC2":
+                            site = a
+                        break
+                break
+        if site is None:
+            failures.append("UpdateShipParallel grain clamp not found")
+        else:
+            result["globals"]["UpdateShipParallel_GrainClamp"] = site
+            print(f"UpdateShipParallel grain clamp: 0x{site:X}")
+    else:
+        failures.append("UpdateShipParallel grain clamp: CGameState_UpdateShipParallel missing")
+
+    # Event targets. CEventTarget: the "is event_target" and "? optional" bytes are the two adjacent
+    # `cmp byte ptr [r13 + X], 0` flags in GetScope. CEventScope (CEventScope::Copy): root/from/prev
+    # are the three `mov rax, [rdx + N]; mov [rcx + N], rax` pairs at the entry (from = the middle one),
+    # the event target container is `mov rbx, [r15 + C]` right before `mov ecx, 0x58` (its allocation)
+    gs_fn = funcs.get("CEventTarget_GetScope", {}).get("rva")
+    copy_fn = funcs.get("CEventScope_Copy", {}).get("rva")
+    if gs_fn and copy_fn:
+        flags = sorted({int(m.group(1), 16) for i in im.disasm_fn(gs_fn, 0x6000)
+                        for m in [re.search(r"^byte ptr \[r13 \+ (0x[0-9a-f]+)\], 0$", i.op_str)] if i.mnemonic == "cmp" and m})
+        pair = [x for x in flags if x + 1 in flags]
+        cins = im.disasm_fn(copy_fn, 0x200)[:60]
+        links = [int(m.group(1), 16) for a, b in zip(cins, cins[1:])
+                 for m in [re.search(r"^rax, qword ptr \[rdx \+ (0x[0-9a-f]+)\]$", a.op_str)]
+                 if m and a.mnemonic == "mov" and b.mnemonic == "mov" and b.op_str == f"qword ptr [rcx + {m.group(1)}], rax"]
+        cont = None
+        for k, i in enumerate(cins):
+            m = re.search(r"^rbx, qword ptr \[r15 \+ (0x[0-9a-f]+)\]$", i.op_str)
+            if i.mnemonic == "mov" and m and any(x.mnemonic == "mov" and x.op_str == "ecx, 0x58" for x in cins[k + 1:k + 5]):
+                cont = int(m.group(1), 16)
+                break
+        if len(pair) != 1 or len(links) < 3 or cont is None:
+            failures.append(f"event target fields: flags={flags} links={links} container={cont}")
+        else:
+            result["fields"].update({"CEventTarget_is_event_target": pair[0], "CEventTarget_optional": pair[0] + 1,
+                                     "CEventScope_from": links[1], "CEventScope_event_targets": cont})
+            print(f"event target fields: is_event_target=0x{pair[0]:X} from=0x{links[1]:X} container=0x{cont:X}")
+    else:
+        failures.append("event target fields: CEventTarget_GetScope / CEventScope_Copy missing")
+
+    linux = json.loads((OUT / "linux_anchors.json").read_text(encoding="utf-8"))
+    found = databases_by_folder(im, linux)
+    bdb = result["globals"].get("TGameDatabase<CBuildingTypeDatabase>::_pInstance")
+    if bdb is not None and found.get("TGameDatabase<CBuildingTypeDatabase>::_pInstance") not in (None, bdb):
+        failures.append("TGameDatabase<CBuildingTypeDatabase>: folder rule disagrees with CalcBuildSpeed")
+    for sym, g in found.items():
+        result["globals"].setdefault(sym, g)
+    print(f"script databases by folder: {len(found)}")
+    try:
+        known = {k: v["rva"] for k, v in globs.items()}
+        known.update(result["globals"])
+        refs = game_state_refs(im, linux, known)
+        for sym, g in refs.items():
+            if sym not in known:
+                result["globals"][sym] = g
+        print(f"CGameStateDatabase ref databases: {len(refs)}")
+    except Fail as e:
+        failures.append(str(e))
+    have = set(result["globals"]) | set(globs)
+    failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]
+    for sym in REQUIRED:
+        if sym in result["globals"]:
+            print(f"  {sym}: 0x{result['globals'][sym]:X}")
+
+    (OUT / "anchors.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+    if failures:
+        print("FAILED:", *failures, sep="\n  ")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

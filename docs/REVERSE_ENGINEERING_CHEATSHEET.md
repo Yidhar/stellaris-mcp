@@ -108,3 +108,36 @@ flowchart TD
 4. **定点数归一化**：
    - 引擎内部时间与进度采用 `1/100000` 定点数存储（例如 360 天为 `36000000`）。
    - 暴露给 MCP 或外部 API 时必须做 `/ 100000` 换算。
+
+## 5. 局势日志：局势 / 特殊项目 / 异常点 (Situation Log, verified 4.5.1)
+
+- 局势库是 `sdk::db::CSituation`（`CGameStateDatabase` 构造顺序对齐得出）。旧地址 `+0x3114060` 是 `TPdxRef<CDeadCountry>`，`+0x31140A0` 是 `TPdxRef<CDeadWar>`，都不是局势数据。
+- `CSituation::progress` / `last_month_progress` 为 int64 定点数，**缩放 100000**：`end = 1920` 的阶段在 `+0x588` 缓存为 `{0, 192000000}`。
+- 特殊项目与异常点在国家的 `CCountry::events`（`CCountryEventManager`）里：
+  - `special_project`：`{data, ..., size @ +0xC}`，元素是 `CSpecialProjectInstance*`；类型指针 `special_project`(+0x28) 的 key 在类型 `+0x18`。物种修饰/提升项目持有空类型，名字按 `CSpecialProjectInstance::GetName` 用 `MOD_TRAIT_PROJECT`(TEMPLATE) / `UPLIFT_PROJECT`(SPECIES) 拼，判定调用 `sdk::fn::CSpecialProjectInstance_IsSpeciesModification` / `IsUplift`；残骸项目用 `SPECIAL_PROJECT_DEBRIS`(SYSTEM)。
+  - `anomalies`：`ref_array<TPdxRef<CPlanet>>` 对象 `{vtable, data @ +8, size @ +0x14}`；星球的 `CPlanet::anomaly`(+0x4B0) 在研究前指向异常类别（key 在 `+0x20`），研究后是空对象。
+
+## 6. 星系地图 (Galaxy Map, verified 4.5.1)
+
+- 星系库 `sdk::db::CGalacticObject`：id 在 `+8`；`coordinate`(CCelestialCoordinate) 的 `x`/`y` 为定点数 ×100000（本存档范围约 ±300）；`origin` 为 `0xFFFFFFFF`（星系本身）。
+- `hyperlane`(+0x590) 是**无 vtable** 的 `{data, size @ +8}` 数组，元素 `CHyperlane` 0x20 字节：`to` +8、`length` +0x10（×100000）。
+- 其他 ref_array（`starbases`、`fleet_presence`）是 `{vtable, data @ +8, cap @ +0x10, size @ +0x14}`。
+- 星系所有者是运行时缓存 `sdk::rt::CGalacticObject_owner`（+0x1370），由 anchors.py 从 `HasAutoSurveyedSystem` 读出。
+- 行星归属星系：`CPlanet::coordinate.origin`；行星的 `CDepositHolder` 基址在 `planet + 0x20`（id 在 `+0x18`，holder 类型 `+0xB4` = 0）。
+- 情报等级调用 `sdk::fn::CCountry_GetIntelLevel(country, system)`（0..4）；普通游戏里 `discovery` 列表不参与判断，所有星系与航道都可见。
+- 调查：`CCountry_HasAutoSurveyedSystem || CCountry_HasSurveyedDepositHolder(planet + 0x20)`；他国境内的行星需要通行权才能调查（命令会给出原因）。
+- `CColony::carrier` 值为 `{planet id, 类型 0}`；`CCountry::capital` 是首都**殖民地** id。
+- 移动：`fleet_send_to_location` 的 `coordinate` 填 `origin = 星系`、`x = y = 0`（`CMoveToSystemPointFleetOrder` 飞到星系中心）。调查：`survey_planet_order` 的 `deposit_holder` 是 `CMetaRef {vtable, type @ +8, id @ +0xC}`（行星 type 0，无 3）；`galactic_object = -1` 调查单颗行星，否则调查整个星系。
+
+## 7. 殖民地、星域与区划特化 (verified 4.5.1)
+
+- 殖民中：`CColony::colonizing_species` 指向真实物种即 `CColony::IsUnderColonization`；进度调用 `sdk::fn::CColony_CalcColonizationProgressPerc(colony, &out)`，`out` 为 0..1 定点数（×100000，界面 ×100 显示）。
+- 星域：名称 `CSector::name`（CPersistentName），类型 `CSector::type`（key +0x20，`core_sector` 即核心星域），首府 `CSector::local_capital`（殖民地 id）。不属于任何星域的殖民地，游戏用 `NO_SECTOR`（「无星域」）。
+- 区划：`CDistrict {id +8, CColony* +0x18, CDistrictType* +0x20, zones: CPdxArray<CZone id> data +0x30, size +0x3C}`；每个元素是一个特化槽（空槽为 0xFFFFFFFF）。`CBuildableZone {vtable sdk::vt::CBuildableZone, CZoneType* +8, colony +0x10, district +0x14, slot +0x18}`，走建造队列（和建筑相同），`CanBuild` 要求 `slot < size`——不存在"未解锁的第二槽"。
+- 前哨：`build_orbital_station_order` 填 `galactic_object = 星系`、`class_ = 10`（Starbase），deposit holder 保持工厂默认（类型 3）。系统必须先被完全调查。
+
+## 8. 宜居度、恒星基地等级 (verified 4.5.1)
+
+- 宜居度：`sdk::fn::NHabitability_CalcHabitability(out, species, carrier = planet + 0x20, country, planet_class = CPlanet::planet_class, pop_group = null, modifier = null)`，`out` 为 0..1 定点数（×100000）。扩张规划器（`ValidatePlanetFilters`）按这个值、玩家的修正、情报等级 > 1、已调查、无主来筛选。
+- 恒星基地等级是脚本数据（没有序列化字段）：`CStarbaseLevelType` 的 `ship_size` 在 Windows 为 `+0xF8`（`next_level` +0x100，`previous_level` +0x108）。桥接在运行时取"每个等级都指向舰船尺寸库条目的那个字段"，显示名 = 舰船尺寸 key 的本地化（`starbase_outpost` → 「哨站」）。
+- 路径与 ETA：引擎的 `CFleetPath(from, to, fleet)` + `CFleetPath::CalcEstimatedDays(fleet)` 是规划航线与天数的正确入口（`CFleetPath {vtable, CPdxArray<SNode> +8 (data +0x10, size +0x1C), CGameDate +0x20}`），Windows 地址尚未定位。

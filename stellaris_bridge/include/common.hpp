@@ -146,6 +146,19 @@ inline std::string RenderPdxMarkup(const char* p, size_t n) {
                 continue;
             }
         }
+        if (c == '[' && i + 1 < n && p[i + 1] == '\'') {
+            // concept link "['civic:civic_technocracy', 技术治国]" -> its display text
+            // ("['concept_housing']" without one -> the concept key)
+            size_t close = i + 2;
+            while (close < n && p[close] != ']') ++close;
+            if (close < n) {
+                std::string inner(p + i + 2, close - i - 2);
+                size_t sep = inner.find("', ");
+                out += sep != std::string::npos ? inner.substr(sep + 3) : inner.substr(0, inner.find('\''));
+                i = close;
+                continue;
+            }
+        }
         if (c == 0x13) {
             in_icon = true;
             icon_frame = false;

@@ -1,4 +1,5 @@
 #include "market_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "command_builder.hpp"
 #include "game_state.hpp"
 #include <windows.h>
@@ -123,7 +124,7 @@ void* MarketManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -148,7 +149,7 @@ void* MarketManager::FindStrategicResource(const std::string& resource_key) {
     if (!base_address_) return nullptr;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return nullptr;
     }
     if (!res_db || (uintptr_t)res_db < 0x10000) {
@@ -227,7 +228,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
 
     // Check idler for CMarketView if present
     void* idler = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3114180), &idler);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentInGameIdler), &idler);
     if (idler) {
         void* mview = nullptr;
         SafeReadPtr((const void*)((uintptr_t)idler + 0xDC0), &mview);
@@ -240,7 +241,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
     }
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3151E78), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return { {"error", "Resource database not found"} };
     }
 
@@ -396,7 +397,7 @@ nlohmann::json MarketManager::GetSummaryJson() {
     double market_fee = 0.30;
     bool is_galactic_market = false;
     void* idler = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3114180), &idler) && idler) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentInGameIdler), &idler) && idler) {
         void* mview = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)idler + 0xDC0), &mview) && mview) {
             uint8_t gm_flag = 0;

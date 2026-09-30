@@ -1,4 +1,5 @@
 #include "species_manager.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include "command_builder.hpp"
 #include "common.hpp"
 #include <cstring>
@@ -241,7 +242,7 @@ void* SpeciesManager::GetPlayerCountry() {
     if (!base_address_) return nullptr;
 
     void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F50), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
         return nullptr;
     }
     if (mgr && (uintptr_t)mgr >= 0x10000) {
@@ -262,7 +263,7 @@ uint32_t SpeciesManager::GetCurrentGameHours() {
     if (!base_address_) return 0;
 
     void* global_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + 0x3113A08), &global_mgr) && global_mgr && (uintptr_t)global_mgr >= 0x10000) {
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &global_mgr) && global_mgr && (uintptr_t)global_mgr >= 0x10000) {
         uint32_t raw_hours = 0;
         if (SafeReadU32((const void*)((uintptr_t)global_mgr + 0xC0), &raw_hours)) {
             return raw_hours;
@@ -307,15 +308,15 @@ void SpeciesManager::LoadRightDatabase(const std::string& category, uintptr_t db
 void SpeciesManager::EnsureDatabasesLoaded() {
     if (!rights_cache_.empty()) return;
 
-    LoadRightDatabase("citizenship", 0x3111B90);
-    LoadRightDatabase("living_standards", 0x3111B80);
-    LoadRightDatabase("military_service", 0x3111B70);
-    LoadRightDatabase("slavery_type", 0x3111B58);
-    LoadRightDatabase("purge_type", 0x3111B60);
-    LoadRightDatabase("population_controls", 0x3111B68);
-    LoadRightDatabase("colonization_controls", 0x3111B88);
-    LoadRightDatabase("migration_controls", 0x3111B78);
-    LoadRightDatabase("subspecies_integration", 0x3111B50);
+    LoadRightDatabase("citizenship", sdk::glob::TGameDatabase_CCitizenshipTypeDatabase_pInstance);
+    LoadRightDatabase("living_standards", sdk::glob::TGameDatabase_CLivingStandardDatabase_pInstance);
+    LoadRightDatabase("military_service", sdk::glob::TGameDatabase_CMilitaryServiceTypeDatabase_pInstance);
+    LoadRightDatabase("slavery_type", sdk::glob::TGameDatabase_CSlaveryTypeDatabase_pInstance);
+    LoadRightDatabase("purge_type", sdk::glob::TGameDatabase_CPurgeTypeDatabase_pInstance);
+    LoadRightDatabase("population_controls", sdk::glob::TGameDatabase_CPopulationControlDatabase_pInstance);
+    LoadRightDatabase("colonization_controls", sdk::glob::TGameDatabase_CColonizationControlDatabase_pInstance);
+    LoadRightDatabase("migration_controls", sdk::glob::TGameDatabase_CMigrationControlDatabase_pInstance);
+    LoadRightDatabase("subspecies_integration", sdk::glob::TGameDatabase_CSubSpeciesIntegrationTypeDatabase_pInstance);
 
     LOGF("[SPECIES_MGR] Loaded %zu rights categories into catalog.", rights_cache_.size());
 }
@@ -324,7 +325,7 @@ void SpeciesManager::EnsureTraitsLoaded() {
     if (!traits_catalog_.empty() || !base_address_) return;
 
     void* db_ptr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3153658), &db_ptr) || !db_ptr) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CTraitDatabase_pInstance), &db_ptr) || !db_ptr) {
         return;
     }
 
@@ -372,7 +373,7 @@ void* SpeciesManager::FindSpeciesPtr(uint32_t species_id) {
     if (!base_address_ || species_id == 0xFFFFFFFF) return nullptr;
 
     void* smgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr) || !smgr || (uintptr_t)smgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CSpecies), &smgr) || !smgr || (uintptr_t)smgr < 0x10000) {
         return nullptr;
     }
 
@@ -451,7 +452,7 @@ uint32_t SpeciesManager::CalculateEmpirePops(uint32_t* out_colony_count) {
     if (!colony_vec || colony_cnt == 0 || colony_cnt > 1000) return 0;
 
     void* colony_mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + 0x3114140), &colony_mgr) || !colony_mgr || (uintptr_t)colony_mgr < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CColony), &colony_mgr) || !colony_mgr || (uintptr_t)colony_mgr < 0x10000) {
         return 0;
     }
 
@@ -567,7 +568,7 @@ SpeciesSummary SpeciesManager::ReadSummary() {
     }
 
     void* smgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CSpecies), &smgr);
     if (smgr && (uintptr_t)smgr >= 0x10000) {
         uint32_t total = 0;
         if (SafeReadU32((const void*)((uintptr_t)smgr + 0x24), &total)) {
@@ -621,7 +622,7 @@ nlohmann::json SpeciesManager::GetSpeciesJson(const nlohmann::json& req) {
     std::vector<void*> species_to_process;
 
     void* smgr = nullptr;
-    SafeReadPtr((const void*)(base_address_ + 0x3113F58), &smgr);
+    SafeReadPtr((const void*)(base_address_ + sdk::db::CSpecies), &smgr);
     void* arr = nullptr;
     uint32_t cap = 0;
     if (smgr) {
