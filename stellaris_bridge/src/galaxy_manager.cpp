@@ -43,6 +43,16 @@ constexpr std::ptrdiff_t kPlanetClassKey = 0x28;
 constexpr std::ptrdiff_t kTypeKey = 0x20;
 // CBypass::type -> CBypassType, key ("gateway", "wormhole", "relay_bypass", ...) at +0x28
 constexpr std::ptrdiff_t kBypassTypeKey = 0x28;
+// ESpatialObjectType (CSpatialObjectRefCaster::PointerFromTypeAndID): the kinds a spatial
+// reference {vtable, type +8, id +0xC} (CArchaeologicalSite::location) points at
+constexpr uint32_t kSpatialPlanet = 2;
+constexpr uint32_t kSpatialSystem = 4;
+constexpr uint32_t kSpatialMegastructure = 6;
+// CRefObjectOrbitableRef<CFleetOrbitableEnumType> (fleet_orbit_planet::orbitable): id +0, kind
+// byte +4 (1 = planet, as CFleetOrbitPlanetCommand(fleet, TPdxRef<CPlanet>, ...) builds it)
+constexpr std::ptrdiff_t kOrbitableId = 0x0;
+constexpr std::ptrdiff_t kOrbitableKind = 0x4;
+constexpr uint8_t kOrbitablePlanet = 1;
 // CColony::carrier {planet id, carrier type (0 = planet)}
 constexpr std::ptrdiff_t kCarrierId = 0x0;
 
@@ -733,6 +743,128 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
         fleet_arr.push_back(fj);
     }
 
+    // other objects in the system: megastructures, bypasses (gateways, wormholes, relays, L-gates),
+    // astral rifts and debris from intel >= 2 or in our own systems; archaeological sites when
+    // the site lists the player in visible_to
+    bool see_objects = intel >= 2 || owner == s.player_id;
+    namespace go = sdk::ent::CGalacticObject;
+    nlohmann::json megas = nlohmann::json::array();
+    nlohmann::json bypasses = nlohmann::json::array();
+    nlohmann::json rifts = nlohmann::json::array();
+    nlohmann::json debris = nlohmann::json::array();
+    if (see_objects) {
+        namespace ms = sdk::ent::CMegaStructure;
+        for (uint32_t id : RefArray((uintptr_t)sys.obj + go::megastructures)) {
+            void* m = RefLookup(base_address_, sdk::db::CMegaStructure, id);
+            if (!m) continue;
+            std::string type = KeyOf((uintptr_t)m + ms::type, kTypeKey);
+            nlohmann::json mj = { {"id", id}, {"type", type}, {"type_name", type.empty() ? "" : SafeLocalize(base_address_, type)} };
+            std::string mname = PersistentNameText((const void*)((uintptr_t)m + ms::name));
+            if (!mname.empty()) mj["name"] = mname;  // relays and gates carry no name of their own
+            uint32_t mown = ReadOr<uint32_t>((uintptr_t)m + ms::owner, kInvalidId);
+            if (mown != kInvalidId) mj["owner_id"] = mown;
+            uint32_t mplanet = ReadOr<uint32_t>((uintptr_t)m + ms::planet, kInvalidId);
+            if (mplanet != kInvalidId) mj["planet_id"] = mplanet;
+            if (ReadOr<uint8_t>((uintptr_t)m + ms::is_dismantling, 0)) mj["dismantling"] = true;
+            megas.push_back(mj);
+        }
+
+        // where each bypass is: every system's bypass list
+        std::unordered_map<uint32_t, uint32_t> bypass_system;
+        for (const auto& other : s.systems) {
+            for (uint32_t b : RefArray((uintptr_t)other.obj + go::bypasses)) bypass_system[b] = other.id;
+        }
+        namespace bp = sdk::ent::CBypass;
+        for (uint32_t id : RefArray((uintptr_t)sys.obj + go::bypasses)) {
+            void* b = RefLookup(base_address_, sdk::db::CBypass, id);
+            if (!b) continue;
+            std::string type = KeyOf((uintptr_t)b + bp::type, kBypassTypeKey);
+            std::string type_name = type.empty() ? "" : SafeLocalize(base_address_, type);
+            // the systems it leads to: its linked bypass plus its active network connections
+            std::vector<uint32_t> to;
+            auto add_to = [&](uint32_t other_bypass) {
+                auto it2 = bypass_system.find(other_bypass);
+                if (it2 != bypass_system.end() && it2->second != system_id &&
+                    std::find(to.begin(), to.end(), it2->second) == to.end()) {
+                    to.push_back(it2->second);
+                }
+            };
+            add_to(ReadOr<uint32_t>((uintptr_t)b + bp::linked_to, kInvalidId));
+            for (uint32_t c : RefArray((uintptr_t)b + bp::active_connections)) add_to(c);
+            nlohmann::json leads = nlohmann::json::array();
+            for (size_t i = 0; i < to.size() && i < 12; ++i) {
+                auto ti = s.index.find(to[i]);
+                leads.push_back({ {"id", to[i]}, {"name", ti != s.index.end() ? SystemName(to[i], s.systems[ti->second].obj) : ""} });
+            }
+            nlohmann::json bj = { {"id", id}, {"type", type}, {"active", ReadOr<uint8_t>((uintptr_t)b + bp::active, 0) != 0},
+                                  {"leads_to", leads} };
+            if (!type_name.empty() && type_name != type) bj["type_name"] = type_name;
+            if (to.size() > 12) bj["leads_to_total"] = to.size();
+            uint32_t lock = ReadOr<uint32_t>((uintptr_t)b + bp::lock_country, kInvalidId);
+            if (lock != kInvalidId) bj["locked_by"] = lock;
+            bypasses.push_back(bj);
+        }
+
+        namespace ar = sdk::ent::CAstralRift;
+        for (uint32_t id : RefArray((uintptr_t)sys.obj + go::astral_rifts)) {
+            void* r = RefLookup(base_address_, sdk::db::CAstralRift, id);
+            if (!r) continue;
+            std::string type = KeyOf((uintptr_t)r + ar::type, kTypeKey);
+            nlohmann::json rj = { {"id", id}, {"type", type}, {"type_name", type.empty() ? "" : SafeLocalize(base_address_, type)},
+                                  {"name", PersistentNameText((const void*)((uintptr_t)r + ar::name))},
+                                  {"clues", ReadOr<int32_t>((uintptr_t)r + ar::clues, 0)},
+                                  {"difficulty", ReadOr<int32_t>((uintptr_t)r + ar::difficulty, 0)} };
+            uint32_t ex = ReadOr<uint32_t>((uintptr_t)r + ar::explorer_fleet, kInvalidId);
+            if (ex != kInvalidId) rj["explorer_fleet_id"] = ex;
+            auto explorable = RefArray((uintptr_t)r + ar::explorable_by);
+            rj["explorable_by_player"] = std::find(explorable.begin(), explorable.end(), s.player_id) != explorable.end();
+            rifts.push_back(rj);
+        }
+
+        namespace db_ = sdk::ent::CDebris;
+        ForEachRef(base_address_, sdk::db::CDebris, [&](uint32_t, void* d) {
+            if (ReadOr<uint32_t>((uintptr_t)d + db_::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId) != system_id) return;
+            if (ReadOr<uint8_t>((uintptr_t)d + db_::killed, 0)) return;
+            nlohmann::json dj = nlohmann::json::object();
+            uint32_t from = ReadOr<uint32_t>((uintptr_t)d + db_::from_country, kInvalidId);
+            if (from != kInvalidId) dj["from_country_id"] = from;
+            uint32_t cty = ReadOr<uint32_t>((uintptr_t)d + db_::country, kInvalidId);
+            if (cty != kInvalidId) dj["country_id"] = cty;
+            debris.push_back(dj);
+        });
+    }
+
+    nlohmann::json sites = nlohmann::json::array();
+    namespace as = sdk::ent::CArchaeologicalSite;
+    ForEachRef(base_address_, sdk::db::CArchaeologicalSite, [&](uint32_t, void* a) {
+        uintptr_t loc = (uintptr_t)a + as::location;
+        uint32_t ltype = ReadOr<uint32_t>(loc + kMetaRefType, kInvalidId), lid = ReadOr<uint32_t>(loc + kMetaRefId, kInvalidId);
+        uint32_t at = kInvalidId;
+        if (ltype == kSpatialSystem) {
+            at = lid;
+        } else if (ltype == kSpatialPlanet) {
+            void* p = RefLookup(base_address_, sdk::db::CPlanet, lid);
+            if (p) at = ReadOr<uint32_t>((uintptr_t)p + sdk::ent::CPlanet::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
+        } else if (ltype == kSpatialMegastructure) {
+            void* m = RefLookup(base_address_, sdk::db::CMegaStructure, lid);
+            if (m) at = ReadOr<uint32_t>((uintptr_t)m + sdk::ent::CMegaStructure::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
+        }
+        if (at != system_id) return;
+        auto visible = RefArray((uintptr_t)a + as::visible_to);
+        if (std::find(visible.begin(), visible.end(), s.player_id) == visible.end()) return;
+        std::string type = KeyOf((uintptr_t)a + as::type, kTypeKey);
+        nlohmann::json sj = { {"id", ReadOr<uint32_t>((uintptr_t)a + sdk::rt::CArchaeologicalSite_id, kInvalidId)}, {"type", type},
+                              {"type_name", type.empty() ? "" : SafeLocalize(base_address_, type)},
+                              {"chapter", ReadOr<int32_t>((uintptr_t)a + as::index, 0)},
+                              {"clues", ReadOr<int32_t>((uintptr_t)a + as::clues, 0)},
+                              {"difficulty", ReadOr<int32_t>((uintptr_t)a + as::difficulty, 0)},
+                              {"locked", ReadOr<uint8_t>((uintptr_t)a + as::locked, 0) != 0} };
+        if (ltype == kSpatialPlanet) sj["planet_id"] = lid;
+        uint32_t ex = ReadOr<uint32_t>((uintptr_t)a + as::excavator_fleet, kInvalidId);
+        if (ex != kInvalidId) sj["excavator_fleet_id"] = ex;
+        sites.push_back(sj);
+    });
+
     nlohmann::json out = {
         {"id", system_id},
         {"name", SystemName(system_id, sys.obj)},
@@ -749,6 +881,11 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
         {"fleets", fleet_arr},
         {"player_claims", ClaimsBy(base_address_, sys.obj, s.player)}
     };
+    if (!megas.empty()) out["megastructures"] = megas;
+    if (!bypasses.empty()) out["bypasses"] = bypasses;
+    if (!rifts.empty()) out["astral_rifts"] = rifts;
+    if (!debris.empty()) out["debris"] = debris;
+    if (!sites.empty()) out["archaeological_sites"] = sites;
     if (hidden) out["unknown_planets"] = hidden;  // present but not known to the player
     return out;
 }
@@ -1047,6 +1184,119 @@ nlohmann::json GalaxyManager::ClaimSystem(uint32_t system_id, bool remove, int c
     return { {"success", true}, {"system_id", system_id}, {"system", SystemName(system_id, sys)},
              {"action", remove ? "remove" : "add"}, {"count", count}, {"player_claims_before", before},
              {"message", "Claim order posted; read player_claims from get_system on a later call"} };
+}
+
+nlohmann::json GalaxyManager::OrbitPlanet(uint32_t fleet_id, uint32_t planet_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* planet = RefLookup(base_address_, sdk::db::CPlanet, planet_id);
+    if (!planet) return { {"success", false}, {"error", "Unknown planet id: " + std::to_string(planet_id)} };
+    namespace ob = sdk::cmd::fleet_orbit_planet;
+    auto cmd = CommandBuilder::Get().Create(ob::kSpec);
+    cmd.Set<uint32_t>(ob::fleet, fleet_id)
+        .Set<uint32_t>(ob::orbitable + kOrbitableId, planet_id)
+        .Set<uint8_t>(ob::orbitable + kOrbitableKind, kOrbitablePlanet)
+        .Set<uint8_t>(ob::queue, queue ? 1 : 0)
+        .Set<uint8_t>(ob::queue_to_front, 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The fleet cannot move (a station or immobile)" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"planet_id", planet_id},
+             {"planet", PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name))}, {"queued", queue},
+             {"message", "Orbit order posted"} };
+}
+
+nlohmann::json GalaxyManager::ResearchAnomalies(uint32_t fleet_id, uint32_t system_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    if (!s.index.count(system_id)) return { {"success", false}, {"error", "Unknown system id: " + std::to_string(system_id)} };
+    // CFleetResearchAnomaliesCommand: a science ship researches the system's discovered anomalies
+    namespace ra = sdk::cmd::research_anomalies;
+    auto cmd = CommandBuilder::Get().Create(ra::kSpec);
+    cmd.Set<uint32_t>(ra::fleet, fleet_id).Set<uint32_t>(ra::system, system_id).Set<uint8_t>(ra::queue, queue ? 1 : 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the anomaly research" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"system_id", system_id},
+             {"system", SystemName(system_id, s.systems[s.index[system_id]].obj)}, {"queued", queue},
+             {"message", "Anomaly research order posted"} };
+}
+
+nlohmann::json GalaxyManager::ExcavateSite(uint32_t fleet_id, uint32_t site_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    if (!RefLookup(base_address_, sdk::db::CArchaeologicalSite, site_id)) {
+        return { {"success", false}, {"error", "Unknown archaeological site id: " + std::to_string(site_id)} };
+    }
+    // CExcavateArchaeologicalSiteFleetOrderCommand: a science ship with a scientist digs the site
+    namespace ex = sdk::cmd::excavate_archaeological_site_fleet_order_command;
+    auto cmd = CommandBuilder::Get().Create(ex::kSpec);
+    cmd.Set<uint32_t>(ex::fleet, fleet_id).Set<uint32_t>(ex::archaeological_site, site_id).Set<uint8_t>(ex::queue, queue ? 1 : 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        // CArchaeologicalSite::IsPotentialExcavator: chapters left and the site type's potential
+        // trigger for this fleet; neither gives a reason text
+        return { {"success", false}, {"error", why.empty() ? "The game refused the excavation: the site has no chapters left, "
+                                                             "or its potential trigger rejects this fleet" : why} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"site_id", site_id}, {"queued", queue},
+             {"message", "Excavation order posted"} };
+}
+
+nlohmann::json GalaxyManager::UseBypass(uint32_t fleet_id, uint32_t bypass_id, uint32_t to_system, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* b = RefLookup(base_address_, sdk::db::CBypass, bypass_id);
+    if (!b) return { {"success", false}, {"error", "Unknown bypass id: " + std::to_string(bypass_id)} };
+    // the destination is the bypass in to_system that this one connects to (its linked bypass or
+    // one of its active network connections)
+    namespace bp = sdk::ent::CBypass;
+    uint32_t dest = kInvalidId;
+    auto it = s.index.find(to_system);
+    if (it == s.index.end()) return { {"success", false}, {"error", "Unknown system id: " + std::to_string(to_system)} };
+    auto there = RefArray((uintptr_t)s.systems[it->second].obj + sdk::ent::CGalacticObject::bypasses);
+    std::vector<uint32_t> links = RefArray((uintptr_t)b + bp::active_connections);
+    links.push_back(ReadOr<uint32_t>((uintptr_t)b + bp::linked_to, kInvalidId));
+    for (uint32_t l : links) {
+        if (l != kInvalidId && std::find(there.begin(), there.end(), l) != there.end()) {
+            dest = l;
+            break;
+        }
+    }
+    if (dest == kInvalidId) {
+        return { {"success", false}, {"error", "This bypass does not lead to that system (see leads_to in stellaris_get_system)"} };
+    }
+    namespace ub = sdk::cmd::use_bypass_command;
+    auto cmd = CommandBuilder::Get().Create(ub::kSpec);
+    cmd.Set<uint32_t>(ub::fleet, fleet_id).Set<uint32_t>(ub::bypass, bypass_id).Set<uint32_t>(ub::destination, dest)
+        .Set<uint8_t>(ub::queue, queue ? 1 : 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the jump" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"bypass_id", bypass_id}, {"destination_bypass_id", dest},
+             {"to_system_id", to_system}, {"to_system", SystemName(to_system, s.systems[it->second].obj)}, {"queued", queue},
+             {"message", "Bypass jump order posted (the fleet flies to the bypass first)"} };
+}
+
+nlohmann::json GalaxyManager::ExploreBypass(uint32_t fleet_id, uint32_t bypass_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    if (!RefLookup(base_address_, sdk::db::CBypass, bypass_id)) return { {"success", false}, {"error", "Unknown bypass id: " + std::to_string(bypass_id)} };
+    // CExploreBypassCommand: a science ship explores an unexplored wormhole / gateway
+    namespace eb = sdk::cmd::explore_bypass_command;
+    auto cmd = CommandBuilder::Get().Create(eb::kSpec);
+    cmd.Set<uint32_t>(eb::fleet, fleet_id).Set<uint32_t>(eb::bypass, bypass_id).Set<uint8_t>(eb::queue, queue ? 1 : 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the exploration" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"bypass_id", bypass_id}, {"queued", queue},
+             {"message", "Bypass exploration order posted"} };
 }
 
 bool GalaxyManager::OutpostCommand(uint32_t fleet_id, uint32_t system_id, bool queue, bool post, std::string* why) {

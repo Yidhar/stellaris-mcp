@@ -224,11 +224,13 @@ namespace glob {
     inline constexpr uintptr_t TPdxRef_CAmbientObject_pDatabase = 0x3114008;  // TPdxRef<CAmbientObject>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3113E90;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=ok
     inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3113F60;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CAstralRift_pDatabase = 0x3113FC0;  // TPdxRef<CAstralRift>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CBuilding_pDatabase = 0x3113FF8;  // TPdxRef<CBuilding>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CBypass_pDatabase = 0x3113FB8;  // TPdxRef<CBypass>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CColony_pDatabase = 0x3114140;  // TPdxRef<CColony>::_pDatabase  score=0.833 live=ok
     inline constexpr uintptr_t TPdxRef_CConstructionQueue_pDatabase = 0x3113EB8;  // TPdxRef<CConstructionQueue>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CConstructionQueueItem_pDatabase = 0x3113EA8;  // TPdxRef<CConstructionQueueItem>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CCosmicStorm_pDatabase = 0x3114108;  // TPdxRef<CCosmicStorm>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CCosmicStormInfluenceField_pDatabase = 0x3113E98;  // TPdxRef<CCosmicStormInfluenceField>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CCouncilPosition_pDatabase = 0x3113EC0;  // TPdxRef<CCouncilPosition>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CCountry_pDatabase = 0x3113F50;  // TPdxRef<CCountry>::_pDatabase  score=0.663 live=ok
@@ -240,6 +242,7 @@ namespace glob {
     inline constexpr uintptr_t TPdxRef_CEspionageOperation_pDatabase = 0x3113E80;  // TPdxRef<CEspionageOperation>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CExhibit_pDatabase = 0x3113FE8;  // TPdxRef<CExhibit>::_pDatabase  score=1.0 live=unverified
     inline constexpr uintptr_t TPdxRef_CFederation_pDatabase = 0x3113F88;  // TPdxRef<CFederation>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CFirstContact_pDatabase = 0x3113E88;  // TPdxRef<CFirstContact>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CFleet_pDatabase = 0x3111CF8;  // TPdxRef<CFleet>::_pDatabase  score=0.831 live=ok
     inline constexpr uintptr_t TPdxRef_CFleetTemplate_pDatabase = 0x3114038;  // TPdxRef<CFleetTemplate>::_pDatabase  score=0.889 live=ok
     inline constexpr uintptr_t TPdxRef_CGalacticObject_pDatabase = 0x3114148;  // TPdxRef<CGalacticObject>::_pDatabase  score=0.462 live=ok
@@ -285,11 +288,13 @@ namespace db {
     inline constexpr uintptr_t CAmbientObject = 0x3114008;
     inline constexpr uintptr_t CArchaeologicalSite = 0x3113E90;
     inline constexpr uintptr_t CArmy = 0x3113F60;
+    inline constexpr uintptr_t CAstralRift = 0x3113FC0;
     inline constexpr uintptr_t CBuilding = 0x3113FF8;
     inline constexpr uintptr_t CBypass = 0x3113FB8;
     inline constexpr uintptr_t CColony = 0x3114140;
     inline constexpr uintptr_t CConstructionQueue = 0x3113EB8;
     inline constexpr uintptr_t CConstructionQueueItem = 0x3113EA8;
+    inline constexpr uintptr_t CCosmicStorm = 0x3114108;
     inline constexpr uintptr_t CCosmicStormInfluenceField = 0x3113E98;
     inline constexpr uintptr_t CCouncilPosition = 0x3113EC0;
     inline constexpr uintptr_t CCountry = 0x3113F50;
@@ -301,6 +306,7 @@ namespace db {
     inline constexpr uintptr_t CEspionageOperation = 0x3113E80;
     inline constexpr uintptr_t CExhibit = 0x3113FE8;
     inline constexpr uintptr_t CFederation = 0x3113F88;
+    inline constexpr uintptr_t CFirstContact = 0x3113E88;
     inline constexpr uintptr_t CFleet = 0x3111CF8;
     inline constexpr uintptr_t CFleetTemplate = 0x3114038;
     inline constexpr uintptr_t CGalacticObject = 0x3114148;
@@ -337,17 +343,35 @@ namespace db {
 // ============================ runtime fields ============================
 // Offsets of runtime (not serialized) members, read from located engine code by anchors.py.
 namespace rt {
+    inline constexpr std::ptrdiff_t CArchaeologicalSite_id = 0x8;
+    inline constexpr std::ptrdiff_t CArmy_id = 0x10;
+    inline constexpr std::ptrdiff_t CAstralRift_id = 0x8;
+    inline constexpr std::ptrdiff_t CBuilding_id = 0x8;
+    inline constexpr std::ptrdiff_t CColony_id = 0x10;
+    inline constexpr std::ptrdiff_t CConstructionQueueItem_id = 0x8;
+    inline constexpr std::ptrdiff_t CConstructionQueue_id = 0x8;
+    inline constexpr std::ptrdiff_t CCosmicStorm_id = 0x20;
+    inline constexpr std::ptrdiff_t CCouncilPosition_id = 0x8;
+    inline constexpr std::ptrdiff_t CCountryFocusCard_id = 0x10;
+    inline constexpr std::ptrdiff_t CCountry_id = 0x20;
+    inline constexpr std::ptrdiff_t CEspionageOperation_id = 0x8;
     inline constexpr std::ptrdiff_t CEventScope_event_targets = 0x48;
     inline constexpr std::ptrdiff_t CEventScope_from = 0x38;
     inline constexpr std::ptrdiff_t CEventTarget_is_event_target = 0x198;
     inline constexpr std::ptrdiff_t CEventTarget_optional = 0x199;
+    inline constexpr std::ptrdiff_t CExhibit_id = 0x10;
+    inline constexpr std::ptrdiff_t CFederation_id = 0x8;
+    inline constexpr std::ptrdiff_t CFirstContact_id = 0x8;
     inline constexpr std::ptrdiff_t CFleetManagerView_reinforce_due = 0x32B8;
     inline constexpr std::ptrdiff_t CFleetPath_node_bypass = 0x2C;
     inline constexpr std::ptrdiff_t CFleetPath_node_count = 0x1C;
     inline constexpr std::ptrdiff_t CFleetPath_node_jump_method = 0x28;
     inline constexpr std::ptrdiff_t CFleetPath_node_size = 0x30;
     inline constexpr std::ptrdiff_t CFleetPath_nodes = 0x10;
+    inline constexpr std::ptrdiff_t CFleetTemplate_id = 0x8;
     inline constexpr std::ptrdiff_t CFleet_coordinate_base = 0x38;
+    inline constexpr std::ptrdiff_t CFleet_id = 0x30;
+    inline constexpr std::ptrdiff_t CGalacticObject_id = 0x8;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
     inline constexpr std::ptrdiff_t CGameState_date_hours = 0xC0;
     inline constexpr std::ptrdiff_t CGoMIACommand_mia_type = 0x38;
@@ -356,6 +380,9 @@ namespace rt {
     inline constexpr std::ptrdiff_t CHasFlagTrigger_vt_GetFlags = 0xF0;
     inline constexpr std::ptrdiff_t CInGameIdler_paused = 0x594;
     inline constexpr std::ptrdiff_t CInGameIdler_speed = 0x590;
+    inline constexpr std::ptrdiff_t CLeader_id = 0x20;
+    inline constexpr std::ptrdiff_t CMegaStructure_id = 0x8;
+    inline constexpr std::ptrdiff_t CMission_id = 0x8;
     inline constexpr std::ptrdiff_t CModifierNodeManager_batch = 0x989;
     inline constexpr std::ptrdiff_t CModifierNodeManager_busy = 0x940;
     inline constexpr std::ptrdiff_t CModifierNodeManager_has_invalid = 0x941;
@@ -369,10 +396,26 @@ namespace rt {
     inline constexpr std::ptrdiff_t CModifier_entry_count = 0x44;
     inline constexpr std::ptrdiff_t CModifier_parent_count = 0x9C;
     inline constexpr std::ptrdiff_t CModifier_parents = 0x90;
+    inline constexpr std::ptrdiff_t CPatronRelation_id = 0x10;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_count = 0x1C;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_days = 0x40;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_ids = 0x10;
+    inline constexpr std::ptrdiff_t CPlanet_id = 0x18;
+    inline constexpr std::ptrdiff_t CPopFaction_id = 0x8;
+    inline constexpr std::ptrdiff_t CPopGroup_id = 0x10;
+    inline constexpr std::ptrdiff_t CPopJob_id = 0x10;
     inline constexpr std::ptrdiff_t CRandomLog_config = 0x38;
+    inline constexpr std::ptrdiff_t CResolution_id = 0x8;
+    inline constexpr std::ptrdiff_t CSector_id = 0x8;
+    inline constexpr std::ptrdiff_t CShipDesign_id = 0x10;
+    inline constexpr std::ptrdiff_t CShip_id = 0x18;
+    inline constexpr std::ptrdiff_t CSituation_id = 0x8;
+    inline constexpr std::ptrdiff_t CSpecies_id = 0x10;
+    inline constexpr std::ptrdiff_t CSpyNetwork_id = 0x8;
+    inline constexpr std::ptrdiff_t CStarbase_id = 0x8;
+    inline constexpr std::ptrdiff_t CVivariumCritter_id = 0x10;
+    inline constexpr std::ptrdiff_t CWar_id = 0x20;
+    inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
 }  // namespace rt
 
 // ============================== vtables ===============================

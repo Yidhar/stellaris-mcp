@@ -831,6 +831,57 @@ def main():
         print(f"CGameStateDatabase ref databases: {len(refs)}")
     except Fail as e:
         failures.append(str(e))
+
+    # TPdxRef<X> databases and X's id offset from command ref fields: a command's IsValid resolves
+    # its `ref<CX>` field with `mov rA, [rip + G]; ... mov rV, dword ptr [this' + field]; ...
+    # cmp eax, [rA + 0x20]` (the slot count) and then `cmp dword ptr [obj + ID], rV` (the object's
+    # own id). Every command naming CX must agree; G must be CX's known database or unnamed.
+    known = {k: v["rva"] for k, v in globs.items()}
+    known.update(result["globals"])
+    taken = set(known.values())
+    votes, id_votes = {}, {}
+    for c in sdk_cmds:
+        refs_f = {f["win_off"]: f["ref"] for f in c["fields"] if f["kind"] == "ref" and f.get("ref") and f["win_off"] is not None}
+        if not refs_f:
+            continue
+        ins = im.disasm_fn(slot_fn(im, c["vtable"], 8), 0x800)[:300]
+        for k, i in enumerate(ins):
+            m = re.search(r"^(r\w+), qword ptr \[rip \+ 0x[0-9a-f]+\]$", i.op_str)
+            if i.mnemonic != "mov" or not m:
+                continue
+            ra, g = m.group(1), rip_target(im, i)
+            field = reg = None
+            for j in ins[k + 1:k + 6]:
+                mf = re.search(r"^(\w+), dword ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", j.op_str)
+                if j.mnemonic == "mov" and mf and int(mf.group(2), 16) in refs_f:
+                    field, reg = int(mf.group(2), 16), mf.group(1)
+                    break
+            if field is None or not any(j.mnemonic == "cmp" and j.op_str == f"eax, dword ptr [{ra} + 0x20]"
+                                        for j in ins[k + 1:k + 10]):
+                continue
+            t = refs_f[field]
+            sym = f"TPdxRef<{t}>::_pDatabase"
+            if sym in known and known[sym] != g:
+                continue  # some other database load; not this field's lookup
+            if sym not in known:
+                votes.setdefault(t, set()).add(g)
+            for j in ins[k + 1:k + 16]:
+                mi = re.search(r"^dword ptr \[r\w+ \+ (0x[0-9a-f]+|\d+)\], " + reg + "$", j.op_str)
+                if j.mnemonic == "cmp" and mi:
+                    id_votes.setdefault(t, set()).add(int(mi.group(1), 0))
+                    break
+    added = 0
+    for t, gs in sorted(votes.items()):
+        sym = f"TPdxRef<{t}>::_pDatabase"
+        if len(gs) == 1 and next(iter(gs)) not in taken:
+            result["globals"][sym] = next(iter(gs))
+            taken.add(next(iter(gs)))
+            added += 1
+    print(f"ref databases from command IsValid: {added} ({', '.join(sorted(t for t, g in votes.items() if len(g) == 1))})")
+    ids = {t: next(iter(o)) for t, o in id_votes.items() if len(o) == 1}
+    for t, off in ids.items():
+        result["fields"][f"{t}_id"] = off
+    print("object id offsets: " + ", ".join(f"{t}=0x{o:X}" for t, o in sorted(ids.items())))
     have = set(result["globals"]) | set(globs)
     failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]
     for sym in REQUIRED:

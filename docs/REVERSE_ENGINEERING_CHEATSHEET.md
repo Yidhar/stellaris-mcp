@@ -161,3 +161,11 @@ flowchart TD
 - MIA `mia_command`：`fleets` @ +0x20，`EMiaType` @ `sdk::rt::CGoMIACommand_mia_type`（+0x38；`IsValid` 首句 `cmp [rcx+0x38], 9`，9 = 无）；0 = `mia_emergency_ftl`，1 = `mia_return_home`。
 - 宣称：`add_system_claim_command {country, system, claims, date = 今日（g_CurrentGameState + rt::CGameState_date_hours）}`，`IsValid` = `CGalacticObject::IsClaimableBy` + 影响力费用，带原因；`remove_system_claim_command {country, system, claims}`（≤ 已有宣称，与所有者交战时不可）。已有宣称数用 `sdk::fn::CGalacticObject_GetClaimsBy(system, CClaim* out, country)`，`out + CClaim::claims`（星系上的数组在 +0x558/+0x564，元素 0x18；SDK 里同偏移的 `star_class` 是误标）。
 
+## 11. 星系内对象与指令 (verified 4.5.1)
+
+- 空间对象引用 `{vtable, type +8, id +0xC}`（如 `CArchaeologicalSite::location`），`ESpatialObjectType`：0 舰船、1 环境物体、2 行星、3 舰队、4 星系、5 残骸、6 巨构、7 天然虫洞、8 轨道线、9 星界裂隙（`CSpatialObjectRefCaster::PointerFromTypeAndID`）。
+- 星系上的列表：`CGalacticObject::megastructures` / `bypasses` / `astral_rifts`（ref_array）；捷径去向 = `CBypass::linked_to` + `active_connections`（捷径 id → 所在星系由各星系的 `bypasses` 反查）。捷径类型 key 在 `CBypass::type + 0x28`（`relay_bypass`、`gateway`、`wormhole`、`lgate`）。
+- 考古遗址只在 `visible_to` 含玩家时显示；可发掘 = `CArchaeologicalSite::IsPotentialExcavator`（章节未完 + 类型的 potential 触发器，无原因文本）。
+- 对象 id 偏移随类不同（`CPlanet` +0x18、`CFleet` +0x30、`CCountry` +0x20、`CDebris` +0x20 …），由 anchors.py 从指令 `IsValid` 的引用解析读出为 `sdk::rt::<Class>_id`；`TPdxRef<CAstralRift>` / `CCosmicStorm` / `CFirstContact` 数据库也由同一规则定位。
+- 环绕：`fleet_orbit_planet::orbitable`（+0x28）是 `CRefObjectOrbitableRef {id +0, kind byte +4（1 = 行星）}`，queue +0x40。研究异常点 `research_anomalies {fleet, system, queue}`；发掘 `{fleet, archaeological_site, queue}`；使用捷径 `use_bypass_command {fleet, bypass, destination（目标星系里的那座捷径）, queue}`；探索捷径 `explore_bypass_command {fleet, bypass, queue}`。
+

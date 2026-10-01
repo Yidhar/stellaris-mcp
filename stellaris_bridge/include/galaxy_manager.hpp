@@ -45,6 +45,14 @@ public:
     // add (count claims, default 1) or remove (count, default all) the player's claims on a system
     nlohmann::json ClaimSystem(uint32_t system_id, bool remove, int count);
 
+    // in-system orders
+    nlohmann::json OrbitPlanet(uint32_t fleet_id, uint32_t planet_id, bool queue);
+    nlohmann::json ResearchAnomalies(uint32_t fleet_id, uint32_t system_id, bool queue);
+    nlohmann::json ExcavateSite(uint32_t fleet_id, uint32_t site_id, bool queue);
+    // jump through a bypass (gateway / wormhole / relay / L-gate) to to_system (one of its leads_to)
+    nlohmann::json UseBypass(uint32_t fleet_id, uint32_t bypass_id, uint32_t to_system, bool queue);
+    nlohmann::json ExploreBypass(uint32_t fleet_id, uint32_t bypass_id, bool queue);
+
     // the route the game plans for this fleet from where it is (CFleetPath::Create: closed
     // borders, gateways, wormholes and FTL as the fleet may use them) with its
     // CalcEstimatedDays travel time, the ETA the fleet gets when ordered there

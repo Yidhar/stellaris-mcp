@@ -237,6 +237,22 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([system_id, remove, count]() {
             return GalaxyManager::Get().ClaimSystem(system_id, remove, count);
         });
+    } else if (method == "orbit_planet" || method == "research_anomalies" || method == "excavate_site" ||
+               method == "use_bypass" || method == "explore_bypass") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t target = params.value(method == "orbit_planet" ? "planet_id" : method == "research_anomalies" ? "system_id"
+                                       : method == "excavate_site" ? "site_id" : "bypass_id", 0xFFFFFFFFu);
+        uint32_t to_system = params.value("to_system_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        std::string m = method;
+        fut = TaskQueue::Get().Enqueue([m, fleet_id, target, to_system, queue]() {
+            auto& g = GalaxyManager::Get();
+            if (m == "orbit_planet") return g.OrbitPlanet(fleet_id, target, queue);
+            if (m == "research_anomalies") return g.ResearchAnomalies(fleet_id, target, queue);
+            if (m == "excavate_site") return g.ExcavateSite(fleet_id, target, queue);
+            if (m == "use_bypass") return g.UseBypass(fleet_id, target, to_system, queue);
+            return g.ExploreBypass(fleet_id, target, queue);
+        });
     } else if (method == "find_path") {
         uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
         uint32_t to = params.value("to_system_id", 0xFFFFFFFFu);

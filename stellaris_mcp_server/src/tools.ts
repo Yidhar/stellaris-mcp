@@ -422,7 +422,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
 
   server.tool(
     "stellaris_get_system",
-    "One star system (Layer 2) as the player knows it: position, intel level, owner, whether it is fully surveyed, hyperlanes (neighbor id, name, length), the starbase (level) when the owner is known, planets (class, size, owner, colony, surveyed; deposits only on surveyed planets; an unresearched anomaly if the player has discovered one) when intel is medium or better or the planets are surveyed, and fleets (own fleets always, other fleets only with high intel). unknown_planets counts planets the player cannot see yet.",
+    "One star system (Layer 2) as the player knows it: position, intel level, owner, whether it is fully surveyed, hyperlanes (neighbor id, name, length), the starbase (level) when the owner is known, planets (class, size, owner, colony, surveyed; deposits only on surveyed planets; an unresearched anomaly if the player has discovered one) when intel is medium or better or the planets are surveyed, and fleets (own fleets always with their stance, other fleets only with high intel). With medium intel or in own space also: megastructures (type, owner), bypasses (relay / gateway / wormhole / L-gate with the systems they lead to), astral rifts and debris; archaeological sites the player can see (type, chapter, clues, difficulty). player_claims is the player's claims on the system. unknown_planets counts planets the player cannot see yet.",
     {
       system_id: z.number().int().describe("System id (from stellaris_get_galaxy_map)"),
     },
@@ -492,6 +492,63 @@ export function registerTools(server: McpServer, client: PipeClient) {
     },
     async ({ system_id, remove, count }) =>
       galaxyCall("claim_system", { system_id, remove: remove ?? false, ...(count !== undefined ? { count } : {}) })
+  );
+
+  server.tool(
+    "stellaris_orbit_planet",
+    "Orders a player fleet to fly to a planet and orbit it (native CFleetOrbitPlanetCommand).",
+    {
+      fleet_id: z.number().int().describe("The player's fleet id"),
+      planet_id: z.number().int().describe("Planet to orbit (ids from stellaris_get_system)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, planet_id, queue }) => galaxyCall("orbit_planet", { fleet_id, planet_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_research_anomalies",
+    "Orders a player science ship to research the discovered anomalies in a system (native CFleetResearchAnomaliesCommand). Refused with the game's reason, e.g. when the system has no anomaly to research. Anomalies show on planets in stellaris_get_system and as flag A on the map.",
+    {
+      fleet_id: z.number().int().describe("The science ship's fleet id"),
+      system_id: z.number().int().describe("System with the anomaly"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, system_id, queue }) => galaxyCall("research_anomalies", { fleet_id, system_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_excavate_site",
+    "Orders a player science ship to excavate an archaeological site (native CExcavateArchaeologicalSiteFleetOrderCommand). Sites the player can see are listed in stellaris_get_system (archaeological_sites). The game refuses when the site has no chapters left or its own conditions reject the fleet.",
+    {
+      fleet_id: z.number().int().describe("The science ship's fleet id"),
+      site_id: z.number().int().describe("Archaeological site id"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, site_id, queue }) => galaxyCall("excavate_site", { fleet_id, site_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_use_bypass",
+    "Orders a player fleet to jump through a bypass (hyper relay, gateway, wormhole, L-gate; native CUseBypassCommand) to one of the systems it leads to. The fleet first flies to the bypass. Bypasses and their leads_to systems are listed in stellaris_get_system; stellaris_find_path already routes through bypasses the fleet may use.",
+    {
+      fleet_id: z.number().int().describe("The player's fleet id"),
+      bypass_id: z.number().int().describe("Bypass id (from stellaris_get_system bypasses)"),
+      to_system_id: z.number().int().describe("Destination system (one of the bypass's leads_to)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, bypass_id, to_system_id, queue }) =>
+      galaxyCall("use_bypass", { fleet_id, bypass_id, to_system_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_explore_bypass",
+    "Orders a player science ship to explore a bypass such as a natural wormhole or an unexplored gateway (native CExploreBypassCommand), which reveals where it leads.",
+    {
+      fleet_id: z.number().int().describe("The science ship's fleet id"),
+      bypass_id: z.number().int().describe("Bypass id (from stellaris_get_system bypasses)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, bypass_id, queue }) => galaxyCall("explore_bypass", { fleet_id, bypass_id, queue: queue ?? false })
   );
 
   server.tool(

@@ -159,6 +159,37 @@ def main():
         r = p.call("fleet_mia", {"fleet_ids": [constructors[0]], "type": "nowhere"})
         record("fleet_mia rejects an unknown type", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
 
+    # in-system orders
+    sci = [f["fleet_id"] for f in civ.get("science_ships", [])]
+    if sci:
+        here = p.call("find_path", {"fleet_id": sci[0], "to_system_id": capital}).get("from_system_id")
+        pl = p.call("get_system", {"system_id": here}).get("planets", [])
+        if pl:
+            r = p.call("orbit_planet", {"fleet_id": sci[0], "planet_id": pl[0]["id"]})
+            record("orbit_planet posts for a science ship", "PASS" if r.get("success") else "FAIL", r.get("error", ""))
+            p.call("cancel_fleet_orders", {"fleet_ids": [sci[0]]})
+        r = p.call("orbit_planet", {"fleet_id": sci[0], "planet_id": 99999999})
+        record("orbit_planet refuses an unknown planet", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+        r = p.call("excavate_site", {"fleet_id": sci[0], "site_id": 99999999})
+        record("excavate_site refuses an unknown site", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+        relay = next((b for b in sysj.get("bypasses", []) if b.get("leads_to")), None)
+        if relay:
+            leads = {x["id"] for x in relay["leads_to"]}
+            far = next(i for i in [x["id"] for x in rows] + [capital] if i not in leads)
+            r = p.call("use_bypass", {"fleet_id": sci[0], "bypass_id": relay["id"], "to_system_id": far})
+            record("use_bypass refuses a system the bypass does not lead to",
+                   "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+
+    # map flags M / G agree with the system detail's megastructures / bypasses
+    mg = [r for r in p.call("get_galaxy_map", {"jumps": 4}).get("rows", []) if "M" in r[7] or "G" in r[7]][:5]
+    ok = True
+    for r in mg:
+        sj = p.call("get_system", {"system_id": r[0]})
+        ok = ok and (("M" in r[7]) == bool(sj.get("megastructures"))) and (("G" in r[7]) == bool(sj.get("bypasses")))
+        ok = ok and all(b.get("type") and isinstance(b.get("leads_to"), list) for b in sj.get("bypasses", []))
+    record("map M/G flags match get_system megastructures/bypasses", "PASS" if ok else ("SKIP" if not mg else "FAIL"),
+           f"{len(mg)} systems")
+
     # system detail: player claims and own fleets' stance
     ok = isinstance(sysj.get("player_claims"), int) and \
         all(f.get("stance") in ("passive", "aggressive", "evasive") for f in sysj.get("fleets", [])
