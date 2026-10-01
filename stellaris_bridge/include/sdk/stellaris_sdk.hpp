@@ -371,10 +371,14 @@ namespace rt {
     inline constexpr std::ptrdiff_t CDistrict_id = 0x8;
     inline constexpr std::ptrdiff_t CEspionageAsset_id = 0x8;
     inline constexpr std::ptrdiff_t CEspionageOperation_id = 0x8;
+    inline constexpr std::ptrdiff_t CEventOption_name = 0x4F0;
     inline constexpr std::ptrdiff_t CEventScope_event_targets = 0x48;
     inline constexpr std::ptrdiff_t CEventScope_from = 0x38;
     inline constexpr std::ptrdiff_t CEventTarget_is_event_target = 0x198;
     inline constexpr std::ptrdiff_t CEventTarget_optional = 0x199;
+    inline constexpr std::ptrdiff_t CEventWindow_option_flag = 0xA18;
+    inline constexpr std::ptrdiff_t CEventWindow_scope = 0xB8;
+    inline constexpr std::ptrdiff_t CEvent_options = 0x5E0;
     inline constexpr std::ptrdiff_t CExhibit_id = 0x10;
     inline constexpr std::ptrdiff_t CFederation_id = 0x8;
     inline constexpr std::ptrdiff_t CFirstContact_id = 0x8;
@@ -540,14 +544,28 @@ namespace fn {
     inline constexpr uintptr_t CCountry_HasSurveyedDepositHolder = 0x71C090;
     // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
     inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1D06DA0;
+    // CEventOption::FindMatchingPotentialExclusiveOptionIndex(CEventScope const&, bool, CPdxArray<...> const&)  --  int (*)(const void* scope, bool flag, const void* options)
+    inline constexpr uintptr_t CEventOption_FindMatchingPotentialExclusiveOptionIndex = 0xA244C0;
     // CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)  --  void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)
     inline constexpr uintptr_t CEventOption_GetDescForOptionAtIndex = 0xA22E00;
+    // CEventOption::GetName(CEventScope const&) const  --  void* (*)(const void* option_name, void* out_cstring, const void* scope)
+    inline constexpr uintptr_t CEventOption_GetName = 0x7B6950;
+    // CEventOption::IsAllowedSkipPotential(CEventScope const&) const  --  bool (*)(const void* option, const void* scope)
+    inline constexpr uintptr_t CEventOption_IsAllowedSkipPotential = 0xA241F0;
+    // CEventOption::IsPotentialIgnoreExclusive(CEventScope const&, bool, bool) const  --  bool (*)(const void* option, const void* scope, bool flag, bool b)
+    inline constexpr uintptr_t CEventOption_IsPotentialIgnoreExclusive = 0xA23C70;
     // CEventScope::Copy(CEventScope const&)  --  void (*)(void* dst, const void* src)
     inline constexpr uintptr_t CEventScope_Copy = 0x393EE0;
     // CEventTarget::GetScope(CEventScope const&, char const*) const  --  void* (*)(const void* target, void* out_scope, const void* in_scope, const char* location)
     inline constexpr uintptr_t CEventTarget_GetScope = 0x352950;
+    // CEventWindow::Setup()::$_4 (creates one option button)  --  void (*)(void* callback, int index, const void* option)
+    inline constexpr uintptr_t CEventWindow_AddOptionButton = 0x1079A40;
+    // (inlined into CEventWindow::Setup) the options shown: the matching exclusive one, else every potential one  --  void (*)(const void* scope, bool flag, const void* options, void* callback)
+    inline constexpr uintptr_t CEventWindow_ForEachShownOption = 0x107D040;
     // CEventWindow::PostEventOptionSelection(int)  --  void (*)(void* event_window, int option_index)
     inline constexpr uintptr_t CEventWindow_PostEventOptionSelection = 0x107BA70;
+    // CEventWindow::Setup()  --  void (*)(void* window)
+    inline constexpr uintptr_t CEventWindow_Setup = 0x1078C60;
     // CEvent::GetTitle(CEventScope const&) const  --  void* (*)(void* event, void* out_cstring, void* scope)
     inline constexpr uintptr_t CEvent_GetTitle = 0x8E61F0;
     // CFleetManagerTemplateGridController::Update(CPdxArray<TPdxRef<CFleetTemplate>> const&, CContainerWindow*, CStandardGridBox*)  --  int (*)(void* controller, const void* templates, void* window, void* grid)

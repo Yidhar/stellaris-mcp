@@ -1106,6 +1106,46 @@ def main():
     for t, off in ids.items():
         result["fields"][f"{t}_id"] = off
     print("object id offsets: " + ", ".join(f"{t}=0x{o:X}" for t, o in sorted(ids.items())))
+    # Event options, from CEventWindow::Setup's call of the shown-options loop:
+    # `lea rcx, [window + S]` (its scope), `movzx edx, byte ptr [window + F]` (the flag it passes),
+    # `lea r8, [event + O]` (the event's options array); and the option's name object, which the
+    # button builder passes to CEventOption::GetName as `lea rcx, [option + N]`
+    setup = funcs.get("CEventWindow_Setup", {}).get("rva")
+    each = funcs.get("CEventWindow_ForEachShownOption", {}).get("rva")
+    got = {}
+    if setup and each:
+        ins = im.disasm_fn(setup, 0x4000)
+        for k, i in enumerate(ins):
+            if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - im.ib == each:
+                for j in ins[max(0, k - 8):k]:
+                    o = f"{j.mnemonic} {j.op_str}"
+                    m = re.match(r"^lea rcx, \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
+                    if m:
+                        got["CEventWindow_scope"] = int(m.group(1), 16)
+                    m = re.match(r"^movzx edx, byte ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
+                    if m:
+                        got["CEventWindow_option_flag"] = int(m.group(1), 16)
+                    m = re.match(r"^lea r8, \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
+                    if m:
+                        got["CEvent_options"] = int(m.group(1), 16)
+                break
+    add = funcs.get("CEventWindow_AddOptionButton", {}).get("rva")
+    get_name = funcs.get("CEventOption_GetName", {}).get("rva")
+    if add and get_name:
+        ins = im.disasm_fn(add, 0x1400)
+        for k, i in enumerate(ins):
+            if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - im.ib == get_name:
+                for j in ins[max(0, k - 6):k]:
+                    m = re.match(r"^lea rcx, \[r\w+ \+ (0x[0-9a-f]+)\]$", j.op_str and f"{j.mnemonic} {j.op_str}")
+                    if m:
+                        got["CEventOption_name"] = int(m.group(1), 16)
+                break
+    if len(got) != 4:
+        failures.append(f"event options: {got}")
+    else:
+        result["fields"].update(got)
+        print("event options:", {k: hex(v) for k, v in got.items()})
+
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
     cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])

@@ -249,6 +249,21 @@ static bool HasNonAscii(const std::string& str) {
     return false;
 }
 
+// Name-list entries carry grammar tags: "&!" and a comma-separated tag list at the end of the
+// entry (Chinese surnames: "孔$1$&!xing"). CPersistentName::ExtractTags cuts them off where it
+// substitutes the entry; GetLocalizedLeaderName's output can still hold one between the surname and
+// the first name, so remove "&!" and the tag list after it (tags are identifiers).
+static std::string StripNameTags(std::string name) {
+    for (size_t at = name.find("&!"); at != std::string::npos; at = name.find("&!", at)) {
+        size_t end = at + 2;
+        while (end < name.size() && (isalnum((unsigned char)name[end]) || name[end] == '_' || name[end] == ',')) {
+            ++end;
+        }
+        name.erase(at, end - at);
+    }
+    return name;
+}
+
 HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     HiredLeaderDetail detail{};
     detail.id = leader_id;
@@ -315,6 +330,7 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     if (detail.name.empty()) {
         detail.name = LocalizeKey(detail.key);
     }
+    detail.name = StripNameTags(detail.name);
 
     // 2. Class & Subclass
     void* class_ptr = nullptr;

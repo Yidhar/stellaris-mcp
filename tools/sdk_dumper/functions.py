@@ -725,6 +725,57 @@ FUNCTIONS = {
         "call_near": {"strings": ["NUM_EMPIRE_COLONIES", "CLICK_TO_OBSERVE"], "anchor": '"NUM_POPS"',
                       "pick": "last_call_before"},
     },
+    # --- event options as the event window builds them (any window type: standard, leader story)
+    "CEventWindow_Setup": {
+        "linux": "CEventWindow::Setup()",
+        # rcx = event window; builds the window and its option buttons
+        "signature": "void (*)(void* window)",
+        "strings": [" has no valid options!", "event_option_offset"],
+    },
+    "CEventWindow_ForEachShownOption": {
+        "linux": "(inlined into CEventWindow::Setup) the options shown: the matching exclusive one, else every potential one",
+        # rcx = scope, dl = window flag, r8 = event options array, r9 = callback object
+        "signature": "void (*)(const void* scope, bool flag, const void* options, void* callback)",
+        # Setup's call right after it loads the window flag byte
+        "call_in": {"from": "CEventWindow_Setup", "anchor": r"^movzx edx, byte ptr \[r\w+ \+ 0x[0-9a-f]+\]$",
+                    "pick": "first_call_after"},
+    },
+    "CEventOption_FindMatchingPotentialExclusiveOptionIndex": {
+        "linux": "CEventOption::FindMatchingPotentialExclusiveOptionIndex(CEventScope const&, bool, CPdxArray<...> const&)",
+        # rcx = scope, dl = window flag, r8 = event options array; the one option to show, or -1
+        "signature": "int (*)(const void* scope, bool flag, const void* options)",
+        "call_in": {"from": "CEventWindow_ForEachShownOption", "anchor": r"^movzx r\w+, dl$", "pick": "first_call_after"},
+    },
+    "CEventOption_IsPotentialIgnoreExclusive": {
+        "linux": "CEventOption::IsPotentialIgnoreExclusive(CEventScope const&, bool, bool) const",
+        # rcx = option, rdx = scope, r8b = window flag, r9b = true (as the window passes it)
+        "signature": "bool (*)(const void* option, const void* scope, bool flag, bool b)",
+        "call_in": {"from": "CEventWindow_ForEachShownOption", "anchor": r"^mov r9b, 1$", "pick": "first_call_after"},
+    },
+    "CEventWindow_AddOptionButton": {
+        "linux": "CEventWindow::Setup()::$_4 (creates one option button)",
+        # rcx = callback object, edx = option index, r8 = option
+        "signature": "void (*)(void* callback, int index, const void* option)",
+        "call_in": {"from": "CEventWindow_ForEachShownOption", "anchor": r"^mov r9b, 1$", "pick": "first_call_after",
+                    "skip": 1},
+    },
+    "CEventOption_GetName": {
+        "linux": "CEventOption::GetName(CEventScope const&) const",
+        # rcx = the option's name (option + sdk::rt::CEventOption_name), rdx = CString* out, r8 = scope;
+        # the button text
+        "signature": "void* (*)(const void* option_name, void* out_cstring, const void* scope)",
+        # the button builder's call after it addresses the option's name
+        "call_in": {"from": "CEventWindow_AddOptionButton", "anchor": r"^lea rcx, \[r\w+ \+ 0x[0-9a-f]{3,}\]$",
+                    "pick": "first_call_after"},
+    },
+    "CEventOption_IsAllowedSkipPotential": {
+        "linux": "CEventOption::IsAllowedSkipPotential(CEventScope const&) const",
+        # rcx = option, rdx = scope; whether the button is enabled
+        "signature": "bool (*)(const void* option, const void* scope)",
+        # the last direct call before the button stores its option index
+        "call_in": {"from": "CEventWindow_AddOptionButton", "anchor": r"^mov dword ptr \[r(?!sp)\w+ \+ 0x20\], r\w+d$",
+                    "pick": "last_call_before"},
+    },
     # --- UI entry points (the bridge checks the object's vtable before calling)
     "CMessage_LeftClick": {
         "linux": "CMessage::LeftClick()",

@@ -39,6 +39,7 @@ public:
 
 private:
     void ReadEventData(void* win, EventInfo& info);
+    void ReadShownOptions(void* win, void* event, EventInfo& info);
 public:
 
     using FnFindChild = void*(*)(void* container, void* pdx_string);

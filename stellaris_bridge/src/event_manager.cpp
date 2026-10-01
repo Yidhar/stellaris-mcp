@@ -196,7 +196,8 @@ constexpr std::ptrdiff_t kWinOpenEventId = 0xA1C;
 constexpr std::ptrdiff_t kGsOpenEvents = 0x180;
 constexpr std::ptrdiff_t kGsOpenEventCount = 0x18C;
 constexpr std::ptrdiff_t kEventKey = 0x10 + 0x10;  // CString header, then its std::string
-constexpr std::ptrdiff_t kEventOptions = 0x5E0;
+// CPdxArray of 0x10-byte entries {CEventOption*, ..}: data +8, size +0x14
+constexpr std::ptrdiff_t kArrayData = 0x8, kArraySize = 0x14, kOptionEntry = 0x10;
 constexpr std::ptrdiff_t kEventOptionEffectOwner = 0x590;
 constexpr std::ptrdiff_t kEffectInOwner = 0x60;
 
@@ -223,6 +224,31 @@ static void CallOptionEffects(void* c, void* out) {
     auto* x = (EventTextCtx*)c;
     ((void* (*)(void*, void*, bool, void*, int, void*, bool))x->fn)(out, x->scope, false, x->options, x->index,
                                                                     x->effect, true);
+}
+
+struct OptionCall {
+    uintptr_t fn;
+    const void* a;
+    const void* b;
+    const void* c;
+    bool flag;
+    int result;
+};
+static void CallFindExclusive(void* p, void*) {
+    auto* x = (OptionCall*)p;
+    x->result = ((int (*)(const void*, bool, const void*))x->fn)(x->a, x->flag, x->b);
+}
+static void CallIsPotential(void* p, void*) {
+    auto* x = (OptionCall*)p;
+    x->result = ((bool (*)(const void*, const void*, bool, bool))x->fn)(x->a, x->b, x->flag, true);
+}
+static void CallIsAllowed(void* p, void*) {
+    auto* x = (OptionCall*)p;
+    x->result = ((bool (*)(const void*, const void*))x->fn)(x->a, x->b);
+}
+static void CallOptionName(void* p, void* out) {
+    auto* x = (OptionCall*)p;
+    ((void* (*)(const void*, void*, const void*))x->fn)(x->a, out, x->b);
 }
 
 static void* FindOpenPlayerEvent(uintptr_t base, uint32_t id) {
@@ -277,10 +303,12 @@ void EventManager::ReadEventData(void* win, EventInfo& info) {
         info.description = CleanPdxString(text);
     }
 
+    ReadShownOptions(win, event, info);
+
     void* effect_owner = nullptr;
     SafeReadPtr((const void*)((uintptr_t)event + kEventOptionEffectOwner), &effect_owner);
     ctx.fn = base_address_ + sdk::fn::CEventOption_GetDescForOptionAtIndex;
-    ctx.options = (void*)((uintptr_t)event + kEventOptions);
+    ctx.options = (void*)((uintptr_t)event + sdk::rt::CEvent_options);
     ctx.effect = effect_owner ? (void*)((uintptr_t)effect_owner + kEffectInOwner) : nullptr;
     for (auto& opt : info.options) {
         text.clear();
@@ -289,6 +317,63 @@ void EventManager::ReadEventData(void* win, EventInfo& info) {
             opt.effects = CleanPdxString(text);
         }
     }
+}
+
+// The options the window shows, as CEventWindow::Setup picks them (the matching exclusive option,
+// else every potential one), with their text and whether they can be chosen. Works for every event
+// window type (standard, leader story ...), unlike the window's own button list. The index is the
+// option's place in the event, what the button carries and PostEventOptionSelection takes.
+void EventManager::ReadShownOptions(void* win, void* event, EventInfo& info) {
+    auto& cb = CommandBuilder::Get();
+    const void* scope = (const void*)((uintptr_t)win + sdk::rt::CEventWindow_scope);
+    uint8_t flag = 0;
+    SafeReadU8((const void*)((uintptr_t)win + sdk::rt::CEventWindow_option_flag), &flag);
+    const uintptr_t options = (uintptr_t)event + sdk::rt::CEvent_options;
+    void* data = nullptr;
+    uint32_t count = 0;
+    if (!SafeReadPtr((const void*)(options + kArrayData), &data) || !data ||
+        !SafeReadU32((const void*)(options + kArraySize), &count) || count == 0 || count > 64) {
+        return;
+    }
+    auto option_at = [&](uint32_t i) {
+        void* opt = nullptr;
+        SafeReadPtr((const void*)((uintptr_t)data + i * kOptionEntry), &opt);
+        return opt;
+    };
+
+    std::vector<uint32_t> shown;
+    OptionCall find{ base_address_ + sdk::fn::CEventOption_FindMatchingPotentialExclusiveOptionIndex, scope,
+                     (const void*)options, nullptr, flag != 0, -1 };
+    if (!cb.CallGuarded(&CallFindExclusive, &find)) return;
+    if (find.result >= 0 && (uint32_t)find.result < count) {
+        shown.push_back((uint32_t)find.result);
+    } else {
+        for (uint32_t i = 0; i < count; ++i) {
+            OptionCall pot{ base_address_ + sdk::fn::CEventOption_IsPotentialIgnoreExclusive, option_at(i), scope,
+                            nullptr, flag != 0, 0 };
+            if (pot.a && cb.CallGuarded(&CallIsPotential, &pot) && pot.result) shown.push_back(i);
+        }
+    }
+
+    std::vector<EventOptionInfo> out;
+    for (uint32_t i : shown) {
+        void* opt = option_at(i);
+        if (!opt) continue;
+        EventOptionInfo o;
+        o.index = (int)i;
+        OptionCall name{ base_address_ + sdk::fn::CEventOption_GetName,
+                         (const void*)((uintptr_t)opt + sdk::rt::CEventOption_name), scope, nullptr, false, 0 };
+        std::string text;
+        if (cb.CallForText(&CallOptionName, &name, &text)) o.text = CleanPdxString(text);
+        OptionCall allowed{ base_address_ + sdk::fn::CEventOption_IsAllowedSkipPotential, opt, scope, nullptr, false, 0 };
+        o.is_valid = cb.CallGuarded(&CallIsAllowed, &allowed) && allowed.result;
+        // the window's own button text when the name call gave none
+        for (const auto& b : info.options) {
+            if (b.index == o.index && o.text.empty()) o.text = b.text;
+        }
+        out.push_back(o);
+    }
+    if (!out.empty()) info.options = std::move(out);
 }
 
 // A CInGameIdler window view (start screen / anomaly / first contact) when it is the class the SDK
@@ -725,11 +810,15 @@ nlohmann::json EventManager::ResolveEvent(uint32_t window_id, int option_index) 
     // PostEventOptionSelection does not check the index, so only accept an option the window shows
     // (hidden options fail their potential trigger and must not be picked).
     bool option_shown = false;
+    bool option_valid = false;
     std::string shown;
     for (const auto& ev : GetActiveEvents()) {
         if (ev.window_id != window_id) continue;
         for (const auto& opt : ev.options) {
-            option_shown |= opt.index == option_index;
+            if (opt.index == option_index) {
+                option_shown = true;
+                option_valid = opt.is_valid;
+            }
             shown += (shown.empty() ? "" : ", ") + std::to_string(opt.index);
         }
     }
@@ -739,6 +828,16 @@ nlohmann::json EventManager::ResolveEvent(uint32_t window_id, int option_index) 
                 {"code", -32009},
                 {"message", "Option " + std::to_string(option_index) + " is not shown in event window " +
                                 std::to_string(window_id) + " (available: " + shown + ")"}
+            }}
+        };
+    }
+
+    if (!option_valid) {
+        return {
+            {"error", {
+                {"code", -32011},
+                {"message", "Option " + std::to_string(option_index) + " is disabled in event window " +
+                                std::to_string(window_id) + " (its allow conditions are not met)"}
             }}
         };
     }
