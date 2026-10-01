@@ -930,6 +930,29 @@ nlohmann::json GalaxyManager::MoveFleet(uint32_t fleet_id, uint32_t system_id, b
              {"message", "Move order posted; read the fleet's orders on a later call"} };
 }
 
+bool GalaxyManager::SurveyCommand(uint32_t fleet_id, uint32_t system_id, uint32_t planet_id, bool queue, bool post,
+                                  std::string* why) {
+    // CFleetSurveyDepositHolderCommand: galactic_object -1 surveys the one holder, else the system
+    namespace sv = sdk::cmd::survey_planet_order;
+    auto cmd = CommandBuilder::Get().Create(sv::kSpec);
+    cmd.Set<uint32_t>(sv::fleet, fleet_id)
+        .Set<uint32_t>(sv::deposit_holder + kMetaRefType, planet_id != kInvalidId ? kHolderPlanet : kHolderNone)
+        .Set<uint32_t>(sv::deposit_holder + kMetaRefId, planet_id)
+        .Set<uint32_t>(sv::galactic_object, planet_id != kInvalidId ? kInvalidId : system_id)
+        .Set<uint8_t>(sv::queue, queue ? 1 : 0)
+        .Set<uint8_t>(sv::queue_to_front, 0);
+    if (!cmd) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    if (!cmd.IsValid(why)) return false;
+    if (post && !cmd.Post(NativeCommand::Check::EngineGate)) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    return true;
+}
+
 nlohmann::json GalaxyManager::Survey(uint32_t fleet_id, uint32_t system_id, uint32_t planet_id, bool queue) {
     Snapshot s = Take();
     if (!s.player) return { {"error", "No player country (not in game?)"} };
@@ -945,20 +968,10 @@ nlohmann::json GalaxyManager::Survey(uint32_t fleet_id, uint32_t system_id, uint
     }
     if (!s.index.count(system_id)) return { {"success", false}, {"error", "Unknown system id: " + std::to_string(system_id)} };
 
-    // CFleetSurveyDepositHolderCommand: galactic_object -1 surveys the one holder, else the system
-    namespace sv = sdk::cmd::survey_planet_order;
-    auto cmd = CommandBuilder::Get().Create(sv::kSpec);
-    cmd.Set<uint32_t>(sv::fleet, fleet_id)
-        .Set<uint32_t>(sv::deposit_holder + kMetaRefType, planet_id != kInvalidId ? kHolderPlanet : kHolderNone)
-        .Set<uint32_t>(sv::deposit_holder + kMetaRefId, planet_id)
-        .Set<uint32_t>(sv::galactic_object, planet_id != kInvalidId ? kInvalidId : system_id)
-        .Set<uint8_t>(sv::queue, queue ? 1 : 0)
-        .Set<uint8_t>(sv::queue_to_front, 0);
     std::string why;
-    if (!cmd.IsValid(&why)) {
+    if (!SurveyCommand(fleet_id, system_id, planet_id, queue, true, &why)) {
         return { {"success", false}, {"error", why.empty() ? "Survey order rejected by the engine" : why} };
     }
-    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
     nlohmann::json out = { {"success", true}, {"fleet_id", fleet_id}, {"system_id", system_id},
                            {"system", SystemName(system_id, s.systems[s.index[system_id]].obj)}, {"queued", queue},
                            {"message", "Survey order posted"} };
@@ -1475,11 +1488,29 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
     };
 
     nlohmann::json out = nlohmann::json::array();
+    std::map<std::string, int> skipped;  // unsurveyed systems the fleet cannot survey, by the game's reason
     if (purpose == "unsurveyed") {
+        // the game decides what a science ship may survey (route, border access, nothing left to
+        // survey there for it): the survey order's IsValid, as the fleet's order menu checks it
+        if (fleet_id == kInvalidId) {
+            for (uint32_t f : fleets::Owned(s.player)) {
+                if (fleets::ClassOf(fleets::Find(base_address_, f)) == fleets::ShipClass::ScienceShip) {
+                    fleet_id = f;
+                    break;
+                }
+            }
+        }
         for (const auto& [d, id] : order) {
             if ((int)out.size() >= limit) break;
             const System& sys = s.systems[s.index[id]];
             if (SystemSurveyed(s, id, sys.obj)) continue;
+            if (fleet_id != kInvalidId) {
+                std::string why;
+                if (!SurveyCommand(fleet_id, id, kInvalidId, false, false, &why)) {
+                    skipped[why.empty() ? "rejected by the game" : RenderPdxMarkup(why)]++;
+                    continue;
+                }
+            }
             out.push_back(base_row(id, d));
         }
     } else if (purpose == "outpost") {
@@ -1601,7 +1632,14 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
         return { {"error", "purpose must be one of: unsurveyed, outpost, deposit, colonizable"} };
     }
     nlohmann::json res = { {"purpose", purpose}, {"from_system_id", from}, {"systems", out} };
-    if (purpose == "outpost") res["checked_with_fleet_id"] = fleet_id == kInvalidId ? nlohmann::json(nullptr) : nlohmann::json(fleet_id);
+    if (purpose == "outpost" || purpose == "unsurveyed") {
+        res["checked_with_fleet_id"] = fleet_id == kInvalidId ? nlohmann::json(nullptr) : nlohmann::json(fleet_id);
+    }
+    if (purpose == "unsurveyed" && !skipped.empty()) {
+        nlohmann::json sk = nlohmann::json::object();
+        for (const auto& [why, n] : skipped) sk[why] = n;
+        res["not_surveyable"] = sk;  // unsurveyed but refused for this fleet, counted by the game's reason
+    }
     return res;
 }
 

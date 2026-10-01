@@ -109,6 +109,7 @@ private:
     bool OwnFleet(const Snapshot& s, uint32_t fleet_id);
     // build_orbital_station_order for an outpost; IsValid only unless post
     bool OutpostCommand(uint32_t fleet_id, uint32_t system_id, bool queue, bool post, std::string* why);
+    bool SurveyCommand(uint32_t fleet_id, uint32_t system_id, uint32_t planet_id, bool queue, bool post, std::string* why);
 
     uintptr_t base_address_{ 0 };
     void* names_db_{ nullptr };  // the system database the name cache belongs to

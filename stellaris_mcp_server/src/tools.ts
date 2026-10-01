@@ -582,13 +582,13 @@ export function registerTools(server: McpServer, client: PipeClient) {
 
   server.tool(
     "stellaris_find_systems",
-    "Finds systems for a purpose, nearest first by hyperlane jumps from from_system_id (default: the capital), using only what the player knows. purpose: 'unsurveyed' (systems not fully surveyed), 'outpost' (unowned systems; with a construction ship, can_build and the game's reason come from the build order's own check), 'deposit' (surveyed planets whose deposit key contains `resource`, e.g. 'minerals', 'energy', 'alloys'), 'colonizable' (the expansion planner's list: unowned surveyed planets in systems with medium+ intel, with the game's habitability for species_id (default: the founder species) and the player's modifiers, best first).",
+    "Finds systems for a purpose, nearest first by hyperlane jumps from from_system_id (default: the capital), using only what the player knows. purpose: 'unsurveyed' (systems not fully surveyed that the science ship can survey now: the survey order's own check decides route, border access and whether anything is left to survey; the rest are counted by the game's reason in not_surveyable), 'outpost' (unowned systems; with a construction ship, can_build and the game's reason come from the build order's own check), 'deposit' (surveyed planets whose deposit key contains `resource`, e.g. 'minerals', 'energy', 'alloys'), 'colonizable' (the expansion planner's list: unowned surveyed planets in systems with medium+ intel, with the game's habitability for species_id (default: the founder species) and the player's modifiers, best first).",
     {
       purpose: z.enum(["unsurveyed", "outpost", "deposit", "colonizable"]).describe("What to look for"),
       species_id: z.number().int().optional().describe("colonizable: species to rate planets for (default: the founder species)"),
       from_system_id: z.number().int().optional().describe("Start system (default: the capital system)"),
       limit: z.number().int().min(1).max(50).optional().default(10).describe("Maximum systems to return"),
-      fleet_id: z.number().int().optional().describe("outpost: the construction ship to check with (default: the first one)"),
+      fleet_id: z.number().int().optional().describe("outpost: the construction ship to check with; unsurveyed: the science ship (default: the first one of that kind)"),
       resource: z.string().optional().describe("deposit: substring of the deposit key, e.g. 'minerals'"),
     },
     async ({ purpose, from_system_id, limit, fleet_id, resource, species_id }) =>

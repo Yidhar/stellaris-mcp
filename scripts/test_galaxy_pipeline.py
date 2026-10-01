@@ -121,9 +121,12 @@ def main():
     record("find_systems rejects an unknown purpose", "PASS" if "error" in bad else "FAIL")
     lanes = {(a, b) for a, b, _ in p.call("get_galaxy_map", {"jumps": 12}).get("hyperlanes", [])}
     target = rows[-1]["id"] if rows else capital
-    if constructors:
-        # the engine's route for the construction ship from where it is
-        fp = p.call("find_path", {"fleet_id": constructors[0], "to_system_id": target})
+    # the targets are systems a science ship can survey; only science ships may enter unexplored
+    # systems, so route the science ship (else the construction ship)
+    route_ships = [f["fleet_id"] for f in civ.get("science_ships", [])] + constructors
+    if route_ships:
+        # the engine's route for the fleet from where it is
+        fp = p.call("find_path", {"fleet_id": route_ships[0], "to_system_id": target})
         rows_fp = fp.get("systems", [])
         ids = [x["id"] for x in rows_fp]
         arr = [x["arrival_days"] for x in rows_fp]
