@@ -572,6 +572,13 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([planet_id, district_key]() {
             return OutlinerManager::Get().DemolishDistrictJson(planet_id, district_key);
         });
+    } else if (method == "cancel_construction") {
+        uint32_t item_id = params.value("item_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([item_id]() { return OutlinerManager::Get().CancelConstructionJson(item_id); });
+    } else if (method == "get_buildable_ships") {
+        fut = TaskQueue::Get().Enqueue([params]() { return ShipDesigner::Get().GetBuildableShipsJson(params); });
+    } else if (method == "build_ship") {
+        fut = TaskQueue::Get().Enqueue([params]() { return ShipDesigner::Get().BuildShipJson(params); });
     } else if (method == "build_building") {
         uint32_t planet_id = params.value("planet_id", 0);
         std::string building_key = params.value("building_key", "");

@@ -1598,8 +1598,28 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
 }
 
 nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_id) {
+    return ExtractConstructionQueue(GetPlanetQueueId(planet_id));
+}
+
+// A ship design by id (TPdxRef<CShipDesign>; the design's own id must match)
+void* OutlinerManager::FindShipDesignObj(uint32_t design_id) {
+    void* mgr = nullptr;
+    void* slots = nullptr;
+    uint32_t cap = 0;
+    if (design_id == 0xFFFFFFFF || !SafeReadPtr((const void*)(base_address_ + sdk::db::CShipDesign), &mgr) || !mgr ||
+        !SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &slots) || !slots ||
+        !SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &cap) || (design_id & 0xFFFFFF) >= cap) {
+        return nullptr;
+    }
+    void* obj = nullptr;
+    uint32_t id = 0xFFFFFFFF;
+    return SafeReadPtr((const void*)((uintptr_t)slots + (design_id & 0xFFFFFF) * 16 + 8), &obj) && obj &&
+           SafeReadU32((const void*)((uintptr_t)obj + sdk::rt::CShipDesign_id), &id) && id == design_id ? obj : nullptr;
+}
+
+// The items of one construction queue (a colony's, or a starbase's shipyard queue)
+nlohmann::json OutlinerManager::ExtractConstructionQueue(uint32_t queue_id) {
     nlohmann::json queue = nlohmann::json::array();
-    uint32_t queue_id = GetPlanetQueueId(planet_id);
     if (queue_id == 0xFFFFFFFF) return queue;
 
     void* mgr_eb8 = nullptr;
@@ -1643,10 +1663,34 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
         SafeReadPtr((const void*)((uintptr_t)item_obj + 0x18), &action_obj);
         std::string key;
         std::string item_type = "construction";
+        std::string ship_name;
         if (action_obj) {
             void* act_vt = nullptr;
             SafeReadPtr(action_obj, &act_vt);
-            if (act_vt == (void*)(base_address_ + kBuildableClearDepositBlockerVt)) {
+            // the buildable's token: its GetToken slot is `mov eax, TOKEN; ret`
+            uint32_t token = 0;
+            void* get_token = nullptr;
+            uint8_t op = 0, tail = 0;
+            if (act_vt && SafeReadPtr((const void*)((uintptr_t)act_vt + sdk::vt::CBuildableBase_GetToken * sizeof(void*)), &get_token) &&
+                get_token && SafeReadU8(get_token, &op) && op == 0xB8 && SafeReadU8((const void*)((uintptr_t)get_token + 5), &tail) &&
+                tail == 0xC3) {
+                SafeReadU32((const void*)((uintptr_t)get_token + 1), &token);
+            }
+            const bool colony_ship = token == sdk::rt::Token_buildable_colony_ship;
+            const bool ship = colony_ship || token == sdk::rt::Token_buildable_ship ||
+                              token == sdk::rt::Token_buildable_federation_ship ||
+                              token == sdk::rt::Token_buildable_galactic_community_ship;
+            if (ship) {
+                // a ship buildable embeds the design's implementation; its base design names the ship
+                item_type = colony_ship ? "colony_ship" : "ship";
+                uint32_t design_id = 0xFFFFFFFF;
+                SafeReadU32((const void*)((uintptr_t)action_obj + sdk::rt::CBuildableShip_implementation +
+                                          sdk::rt::CShipDesignImplementation_design), &design_id);
+                key = std::to_string(design_id);
+                if (void* design = FindShipDesignObj(design_id)) {
+                    ship_name = PersistentNameText((const void*)((uintptr_t)design + sdk::ent::CShipDesign::name));
+                }
+            } else if (act_vt == (void*)(base_address_ + kBuildableClearDepositBlockerVt)) {
                 item_type = "clear_blocker";
                 uint32_t dep_id = 0;
                 SafeReadU32((const void*)((uintptr_t)action_obj + 8), &dep_id);
@@ -1690,7 +1734,7 @@ nlohmann::json OutlinerManager::ExtractPlanetConstructionQueue(uint32_t planet_i
         queue.push_back({
             {"item_id", item_id},
             {"key", key},
-            {"item_name", LocalizeKey(key)},
+            {"item_name", ship_name.empty() ? LocalizeKey(key) : ship_name},
             {"type", item_type},
             {"progress", display_prog},
             {"total_days", display_tot},
@@ -1877,6 +1921,10 @@ void OutlinerManager::FillBuildable(uint8_t (&obj)[0x20], void* building_type, u
 }
 
 nlohmann::json OutlinerManager::BuildableCostJson(uint8_t (&obj)[0x20]) {
+    return BuildableCostJsonPtr(obj);
+}
+
+nlohmann::json OutlinerManager::BuildableCostJsonPtr(void* obj) {
     const auto& names = GameState::Get().ResourceNames();
     StackResourceTable cost{}, other{};
     for (StackResourceTable* t : { &cost, &other }) {
@@ -2107,6 +2155,21 @@ nlohmann::json OutlinerManager::BuildDistrictJson(uint32_t planet_id, const std:
                            {"message", "District queued"} };
     out.update(cost);
     return out;
+}
+
+// CRemoveBuildableFromQueueCommand: takes one item out of a construction queue (a colony's or a
+// shipyard's; item_id as the queues list it), as the queue's cancel button
+nlohmann::json OutlinerManager::CancelConstructionJson(uint32_t item_id) {
+    // the token has two vtables; this one has a real factory (the other's is a clone)
+    namespace rq = sdk::cmd::remove_buildable_from_queue_command_2;
+    auto cmd = CommandBuilder::Get().Create(rq::kSpec);
+    cmd.Set<uint32_t>(rq::country, GetPlayerCountryId()).Set<uint32_t>(rq::item, item_id);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "The game refused to cancel item " + std::to_string(item_id) : why} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"item_id", item_id}, {"message", "Construction item removed from its queue"} };
 }
 
 // CDestroyDistrictCommand: removes one district of the type from the colony
@@ -4968,7 +5031,28 @@ bool OutlinerManager::QueueBuildable(const void* buildable, size_t size, uint32_
         return false;
     }
     memcpy(heap, buildable, size);
-    cmd.Set<void*>(kBuildable, heap)
+    return QueueCommandWithBuildable(cmd, heap, country_id, queue_id, dispatch, why);
+}
+
+// A buildable the engine built on its own heap (NConstruction::CreateBuildable): the command takes
+// it over and frees it with itself.
+bool OutlinerManager::QueueOwnedBuildable(void* heap_buildable, uint32_t country_id, uint32_t queue_id,
+                                          bool dispatch, std::string* why) {
+    namespace q = sdk::cmd::add_buildable_to_queue_command;
+    auto cmd = CommandBuilder::Get().Create(q::kSpec);
+    if (!cmd) {
+        if (why) *why = cmd.error();
+        LOGF("[OUTLINER] queue command not created; buildable %p not freed", heap_buildable);
+        return false;
+    }
+    return QueueCommandWithBuildable(cmd, heap_buildable, country_id, queue_id, dispatch, why);
+}
+
+bool OutlinerManager::QueueCommandWithBuildable(NativeCommand& cmd, void* heap_buildable, uint32_t country_id,
+                                                uint32_t queue_id, bool dispatch, std::string* why) {
+    namespace q = sdk::cmd::add_buildable_to_queue_command;
+    constexpr std::ptrdiff_t kBuildable = 0x20;  // the owned CBuildable* (see QueueBuildable)
+    cmd.Set<void*>(kBuildable, heap_buildable)
        .Set<uint32_t>(q::country, country_id)
        .Set<uint32_t>(q::queue, queue_id);
     if (!cmd.IsValid(why)) {

@@ -47,6 +47,28 @@ def camel(token_name):
     return "C" + "".join(p[:1].upper() + p[1:] for p in token_name.split("_") if p)
 
 
+def copies_from_rcx(ins):
+    """True for a function that dereferences its first argument before allocating: rcx saved into a
+    register (or used directly) and read through ([R + d]), as a clone or copy constructor does."""
+    held = {"rcx"}
+    for i in ins[:40]:
+        if i.mnemonic == "call":
+            held.discard("rcx")  # clobbered by the call; a saved copy (rbx, rdi ...) survives it
+            if not held:
+                return False
+            continue
+        if i.mnemonic in ("ret", "jmp"):
+            break
+        m = re.match(r"^(r\w+), rcx$", i.op_str)
+        if i.mnemonic == "mov" and m:
+            held.add(m.group(1))
+            continue
+        for r in held:
+            if re.search(r"\[" + r + r"(?: \+ [^\]]+)?\]", i.op_str) and not i.op_str.startswith("qword ptr [rsp"):
+                return True
+    return False
+
+
 def discover_commands(im, names, layouts, linux_cmd_classes, newline_fn=None):
     lea = im.lea_index()
     linux = json.loads((OUT / "linux_index.json").read_text(encoding="utf-8"))
@@ -94,6 +116,8 @@ def discover_commands(im, names, layouts, linux_cmd_classes, newline_fn=None):
         best = None
         for f in per_vt_fns[vt]:
             ins = im.disasm_fn(f, 0x200)
+            if copies_from_rcx(ins):
+                continue  # a clone / copy constructor reads its source from rcx; a factory takes none
             for n, i in enumerate(ins[:-1]):
                 if i.mnemonic == "mov" and i.op_str.startswith("ecx, 0x") and \
                         any(j.mnemonic == "call" and j.operands[0].type == X86_OP_IMM and j.operands[0].imm - im.ib == alloc_fn

@@ -120,7 +120,7 @@ def main():
     bad = p.call("find_systems", {"purpose": "nonsense"})
     record("find_systems rejects an unknown purpose", "PASS" if "error" in bad else "FAIL")
     lanes = {(a, b) for a, b, _ in p.call("get_galaxy_map", {"jumps": 12}).get("hyperlanes", [])}
-    target = rows[-1]["id"] if rows else capital
+    target = rows[0]["id"] if rows else capital  # the nearest, inside the 12-jump lane map below
     # the targets are systems a science ship can survey; only science ships may enter unexplored
     # systems, so route the science ship (else the construction ship)
     route_ships = [f["fleet_id"] for f in civ.get("science_ships", [])] + constructors

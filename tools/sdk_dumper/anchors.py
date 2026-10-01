@@ -118,8 +118,15 @@ def data_range(im):
 
 
 def is_deleting_dtor(im, fn):
-    ins = im.disasm_fn(fn, 0x40)[:8]
-    return any(i.mnemonic == "test" and i.op_str.endswith("dl, 1") for i in ins)
+    """MSVC's deleting destructor tests the flags argument (edx, or the register it was saved in) for 1."""
+    ins = im.disasm_fn(fn, 0x40)[:10]
+    flag_regs = {"dl"}
+    for i in ins:
+        m = re.match(r"^(e\w\w|r\d+d), edx$", i.op_str)
+        if i.mnemonic == "mov" and m:
+            r = m.group(1)
+            flag_regs.add({"ebx": "bl", "esi": "sil", "edi": "dil", "ecx": "cl", "eax": "al"}.get(r, r.replace("d", "b")))
+    return any(i.mnemonic == "test" and any(i.op_str == f"{r}, 1" for r in flag_regs) for i in ins)
 
 
 def buildable_vtables(im, tokens):
@@ -492,6 +499,21 @@ def main():
             print(f"CInGameIdler paused 0x{paused[0]:X}, speed 0x{speed[0]:X}")
     else:
         failures.append("CInGameIdler paused/speed: CInGameIdler_SetGameSpeed missing")
+
+    # CGameIdler multiplayer flag: the is_multiplayer trigger tests `cmp byte ptr [rax + M], 0` on the
+    # idler (CGameIdler::IsMultiplayer is a one-byte getter, inlined everywhere)
+    is_mp = funcs.get("CIsMultiplayerTrigger_ActualEvaluate", {}).get("rva")
+    if is_mp:
+        ins = im.disasm_fn(is_mp, 0x60)[:8]
+        mp = [int(m.group(1), 16) for i in ins
+              for m in [re.search(r"^byte ptr \[rax \+ (0x[0-9a-f]+)\], 0$", i.op_str)] if i.mnemonic == "cmp" and m]
+        if len(mp) != 1:
+            failures.append(f"CGameIdler multiplayer flag: {mp}")
+        else:
+            result["fields"]["CGameIdler_is_multiplayer"] = mp[0]
+            print(f"CGameIdler multiplayer flag 0x{mp[0]:X}")
+    else:
+        failures.append("CGameIdler multiplayer flag: CIsMultiplayerTrigger_ActualEvaluate missing")
 
     # CInGameIdler views: the idler's builder allocates each window view and stores it in a member
     # (`call <ctor>; nop; mov qword ptr [reg + X], rax`). A view's constructor names its gui window
@@ -1146,6 +1168,180 @@ def main():
     else:
         result["fields"].update(got)
         print("event options:", {k: hex(v) for k, v in got.items()})
+
+    # CShipDesignImplementation: the vtable its constructor installs last, the deleting destructor slot
+    # of that vtable (first slot that is one) and the object size the destructor frees
+    ctor = funcs.get("CShipDesignImplementation_Ctor", {}).get("rva")
+    got = {}
+    if ctor:
+        ins = im.disasm_fn(ctor, 0x200)
+        vt = None
+        for a, b in zip(ins, ins[1:]):
+            if a.mnemonic == "lea" and a.op_str.startswith("rax, [rip + ") and b.mnemonic == "mov" \
+                    and re.match(r"^qword ptr \[r\w+\], rax$", b.op_str):
+                vt = rip_target(im, a)  # the last one is the derived class
+        if vt:
+            for k in range(0, 8):
+                f = slot_fn(im, vt, k)
+                if is_deleting_dtor(im, f):
+                    got["slot"] = k
+                    for i in im.disasm_fn(f, 0x100)[:24]:
+                        m = re.match(r"^edx, (0x[0-9a-f]+)$", i.op_str)
+                        if i.mnemonic == "mov" and m:
+                            got["size"] = int(m.group(1), 16)
+                    break
+            got["vt"] = vt
+    # the design id the constructor stores (`mov dword ptr [impl + D], <register holding edx>`) and
+    # where the ship buildables keep their implementation (`lea rax, [impl vtable]; mov [this + K], rax`
+    # in the constructors CreateBuildable calls)
+    if ctor and got.get("vt"):
+        ins = im.disasm_fn(ctor, 0x200)
+        held = None
+        for i in ins:
+            m = re.match(r"^(e\w\w|r\d+d), edx$", i.op_str)
+            if i.mnemonic == "mov" and m and held is None:
+                held = m.group(1)
+            m = re.match(r"^dword ptr \[r\w+ \+ (0x[0-9a-f]+)\], (\w+)$", i.op_str)
+            if i.mnemonic == "mov" and m and held and m.group(2) == held:
+                result["fields"]["CShipDesignImplementation_design"] = int(m.group(1), 16)
+        create = funcs.get("NConstruction_CreateShipBuildable", {}).get("rva")
+        offs = set()
+        ship_vts = []
+        if create:
+            for i in im.disasm_fn(create, 0x1000):
+                if i.mnemonic != "call" or not i.op_str.startswith("0x"):
+                    continue
+                callee = int(i.op_str, 16) - im.ib
+                cins = im.disasm_fn(callee, 0x200)[:60]
+                hit = False
+                final_vt = None
+                last_lea = None  # rax's vtable; an unrelated instruction may sit before its store
+                for i2 in cins:
+                    if i2.mnemonic == "lea" and i2.op_str.startswith("rax, [rip + "):
+                        last_lea = rip_target(im, i2)
+                    elif i2.mnemonic == "mov" and last_lea is not None and i2.op_str.endswith(", rax"):
+                        m = re.match(r"^qword ptr \[r\w+ \+ (0x[0-9a-f]+|\d+)\], rax$", i2.op_str)
+                        if last_lea == got["vt"] and m:
+                            offs.add(int(m.group(1), 0))
+                            hit = True
+                        elif re.match(r"^qword ptr \[r\w+\], rax$", i2.op_str):
+                            final_vt = last_lea  # the class's own vtable, stored last
+                        last_lea = None
+                if hit and final_vt:
+                    ship_vts.append(final_vt)
+        # a ship buildable's GetToken slot is `mov eax, TOKEN; ret` with one of the ship tokens (the
+        # linear sweep may run into the next function, whose vtables are not)
+        ship_tokens = {tokens.get(n) for n in ("buildable_ship", "buildable_federation_ship",
+                                               "buildable_galactic_community_ship")} - {None}
+        token_slot = result["slots"].get("CBuildableBase_GetToken")
+
+        def buildable_token(vt):
+            if token_slot is None:
+                return None
+            b = im.img[slot_fn(im, vt, token_slot):][:6]
+            return struct.unpack_from("<I", b, 1)[0] if b[0] == 0xB8 and b[5] == 0xC3 else None
+
+        # the vtables the objects end up with: CreateBuildable stores them at [object] itself after
+        # each constructor returns (the constructors' own last stores are their base classes)
+        ship_vts = []
+        if create:
+            last_lea = None
+            for i2 in im.disasm_fn(create, 0x1000):
+                if i2.mnemonic == "lea" and i2.op_str.startswith("rax, [rip + "):
+                    last_lea = rip_target(im, i2)
+                elif i2.mnemonic == "mov" and last_lea is not None and re.match(r"^qword ptr \[r\w+\], rax$", i2.op_str):
+                    if last_lea not in ship_vts and buildable_token(last_lea) in ship_tokens:
+                        ship_vts.append(last_lea)
+                    last_lea = None
+        if len(offs) == 1 and ship_vts and "CShipDesignImplementation_design" in result["fields"]:
+            # the ship buildables' tokens (what their GetToken slot returns): a queue item's buildable
+            # is a ship when its token is one of these
+            for n in ("buildable_ship", "buildable_federation_ship", "buildable_galactic_community_ship",
+                      "buildable_colony_ship"):
+                if tokens.get(n) is not None:
+                    result["fields"][f"Token_{n}"] = tokens[n]
+            result["fields"]["CBuildableShip_implementation"] = offs.pop()
+            print(f"ship buildable: implementation +0x{result['fields']['CBuildableShip_implementation']:X}, "
+                  f"design +0x{result['fields']['CShipDesignImplementation_design']:X}")
+        else:
+            failures.append(f"ship buildable implementation: {offs}")
+    # the colony ship buildable: the vtable the constructor CreateBuildable's colony overload calls
+    # stores last at [this]
+    colony_create = funcs.get("NConstruction_CreateColonyShipBuildable", {}).get("rva")
+    colony_vts = set()
+    if colony_create:
+        for i in im.disasm_fn(colony_create, 0x400):
+            if i.mnemonic != "call" or not i.op_str.startswith("0x"):
+                continue
+            last_lea, final_vt = None, None
+            for i2 in im.disasm_fn(int(i.op_str, 16) - im.ib, 0x200)[:60]:
+                if i2.mnemonic == "lea" and i2.op_str.startswith("rax, [rip + "):
+                    last_lea = rip_target(im, i2)
+                elif i2.mnemonic == "mov" and last_lea is not None and re.match(r"^qword ptr \[r\w+\], rax$", i2.op_str):
+                    final_vt = last_lea
+            if final_vt:
+                colony_vts.add(final_vt)
+    if len(colony_vts) != 1:
+        failures.append(f"CBuildableColonyShip vtable: {[hex(v) for v in colony_vts]}")
+    else:
+        result["vtables"]["CBuildableColonyShip"] = colony_vts.pop()
+        print(f"CBuildableColonyShip vtable 0x{result['vtables']['CBuildableColonyShip']:X}")
+    if len(got) != 3:
+        failures.append(f"CShipDesignImplementation layout: {got}")
+    else:
+        result["vtables"]["CShipDesignImplementation"] = got["vt"]
+        result["slots"]["CShipDesignImplementation_Destroy"] = got["slot"]
+        result["fields"]["CShipDesignImplementation_size"] = got["size"]
+        print(f"CShipDesignImplementation vtable 0x{got['vt']:X}, destroy slot {got['slot']}, size 0x{got['size']:X}")
+
+    # A design's ship class (EShipClass; 2 = colony ship) inside its implementation: CFleet::UpdateShipClass
+    # copies the ship's `movzx R, byte ptr [ship + K]` into `mov byte ptr [fleet + ship_class], R`;
+    # the ship embeds its implementation at CShip::ship_design_implementation
+    sdk_text = (HERE.parent.parent / "stellaris_bridge" / "include" / "sdk" / "stellaris_sdk.hpp").read_text(encoding="utf-8")
+    fleet_cls = re.search(r"namespace CFleet \{.*?ship_class = (0x[0-9A-F]+);", sdk_text, re.S)
+    ship_impl = re.search(r"namespace CShip \{.*?ship_design_implementation = (0x[0-9A-F]+);", sdk_text, re.S)
+    votes = collections.Counter()
+    if fleet_cls and ship_impl:
+        fc, si = int(fleet_cls.group(1), 16), int(ship_impl.group(1), 16)
+        text = im.img[im.text0:im.text1]
+        for m in re.finditer(re.escape(struct.pack("<I", fc)), text):
+            at = im.text0 + m.start()
+            ins = list(im.md.disasm(im.img[at - 24:at + 8], im.ib + at - 24))
+            store = [i for i in ins if i.mnemonic == "mov" and re.match(r"^byte ptr \[r\w+ \+ " + hex(fc) + r"\], \w+$", i.op_str)]
+            if not store:
+                continue
+            for i in ins:
+                mm = re.match(r"^\w+, byte ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", i.op_str)
+                # a byte inside the ship's embedded implementation (CShipDesignImplementation_size)
+                k = int(mm.group(1), 16) - si if mm else -1
+                if i.mnemonic in ("movzx", "mov") and 0 < k < 0x1000:
+                    votes[k] += 1
+    if not votes:
+        failures.append("CShipDesignImplementation ship class: no CFleet::UpdateShipClass copy")
+    else:
+        result["fields"]["CShipDesignImplementation_ship_class"] = votes.most_common(1)[0][0]
+        print(f"implementation ship class +0x{votes.most_common(1)[0][0]:X} (votes {dict(votes)})")
+
+    # TPdxNullObject<CColonyType>::_pInstance: SColonizationData's default designation, the global a
+    # default-constructed one reads (`mov R, [rip + G]; mov [data + designation], R; mov ..., -1` for
+    # the species) right after allocating it
+    nulls = collections.Counter()
+    text = im.img[im.text0:im.text1]
+    for m in re.finditer(rb"\xB9\x18\x00\x00\x00\xE8", text):  # mov ecx, 0x18; call alloc
+        at = im.text0 + m.start()
+        ins = list(im.md.disasm(im.img[at:at + 0x40], im.ib + at))[:9]
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        joined = " | ".join(ops)
+        if "+ 8], r" in joined and "0x10], " in joined and "0x14], 0" in joined and "0xffffffff" in joined:
+            for i in ins:
+                if i.mnemonic == "mov" and "qword ptr [rip + " in i.op_str and not i.op_str.startswith("qword"):
+                    nulls[rip_target(im, i)] += 1
+                    break
+    if len(nulls) != 1:
+        failures.append(f"TPdxNullObject<CColonyType>: {[hex(k) for k in nulls]}")
+    else:
+        result["globals"]["TPdxNullObject<CColonyType>::_pInstance"] = next(iter(nulls))
+        print(f"TPdxNullObject<CColonyType> 0x{next(iter(nulls)):X}")
 
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]

@@ -73,6 +73,10 @@ public:
     nlohmann::json UpgradeFleetJson(const nlohmann::json& params);
 
     bool DeleteShipDesign(uint32_t design_id, std::string& out_message);
+
+    // Shipyard: ships of any design built at a starbase (civilian, colony and military alike)
+    nlohmann::json GetBuildableShipsJson(const nlohmann::json& params);
+    nlohmann::json BuildShipJson(const nlohmann::json& params);
     nlohmann::json DeleteShipDesignJson(const nlohmann::json& params);
 
     using FnEngineAlloc = void* (*)(size_t size);
@@ -96,6 +100,9 @@ private:
     std::string LocalizeKey(const std::string& key);
     bool SetShipDesignName(void* design, const std::string& name);
     std::vector<void*> PlayerDesigns();  // the player's design collection
+    void* ShipBuildable(uint32_t design_id, uint32_t starbase_id, uint32_t species_id, std::string* why, bool* is_colony);
+    bool ShipyardOf(uint32_t starbase_id, uint32_t system_id, uint32_t* out_starbase, uint32_t* out_queue, std::string* why);
+    nlohmann::json ShipDesignRow(void* design);
     // edits a design object (component slots and required components); counts real changes
     bool ApplyDesignEdits(void* design, void* country, const nlohmann::json& slots_json,
                           const nlohmann::json& cores_json, int* changes, std::string* why);

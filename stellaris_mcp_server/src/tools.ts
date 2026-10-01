@@ -2346,6 +2346,43 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   // Tool 48: stellaris_get_buildable_buildings
+  const shipyardTool = (name: string, method: string, description: string, shape: Record<string, z.ZodTypeAny>) =>
+    server.tool(name, description, shape, async (args: Record<string, unknown>) => {
+      try {
+        const result = await client.request(method, args);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: "text", text: `Error (${method}): ${err.message}` }] };
+      }
+    });
+  const shipyardWhere = {
+    starbase_id: z.number().int().optional().describe("The starbase whose shipyard builds the ship."),
+    system_id: z.number().int().optional().describe("Or the system of that starbase (e.g. the capital system)."),
+  };
+
+  shipyardTool(
+    "stellaris_cancel_construction",
+    "cancel_construction",
+    "Removes one item from a construction queue (native CRemoveBuildableFromQueueCommand, as the queue's cancel button): a building, district or zone on a planet (get_planet_details construction_queue) or a ship at a shipyard (stellaris_get_buildable_ships queue). Refunds as the game does.",
+    { item_id: z.number().int().describe("item_id of the queue entry.") }
+  );
+  shipyardTool(
+    "stellaris_get_buildable_ships",
+    "get_buildable_ships",
+    "Ships a starbase's shipyard can build now (Layer 2): every design of the empire (science, construction and colony ships as well as warships), each checked with the engine's own construction validation, with cost after the empire's modifiers and build_days. Pass design_id to check one design and get the game's reason when it cannot be built. To keep military fleets topped up, the fleet manager (stellaris_set_fleet_template_quota / stellaris_reinforce_fleet) is the better tool.",
+    { ...shipyardWhere, design_id: z.number().int().optional().describe("Optional design id to check."),
+      species_id: z.number().int().optional().describe("Colony ships: the species to check with (default: the founder species).") }
+  );
+  shipyardTool(
+    "stellaris_build_ship",
+    "build_ship",
+    "Queues ships of a design at a starbase's shipyard (native CAddBuildableToQueueCommand with the engine's ship buildable, as the starbase view's Build button): science, construction and colony ships (colony ships carry species_id, default the founder species), or single warships. Refused with the game's reason (no shipyard, resources, tech, ...). For building warships in bulk, use the fleet manager instead (stellaris_set_fleet_template_quota, then stellaris_reinforce_fleet): it plans and queues them for you.",
+    { ...shipyardWhere,
+      design_id: z.number().int().describe("Ship design id (stellaris_get_buildable_ships or stellaris_get_ship_designs)."),
+      count: z.number().int().min(1).max(10).optional().describe("How many to queue (default 1)."),
+      species_id: z.number().int().optional().describe("Colony ships: the species that settles (default: the founder species), as the game's species dialog asks.") }
+  );
+
   const districtTool = (name: string, method: string, description: string, keyRequired: boolean) =>
     server.tool(
       name,

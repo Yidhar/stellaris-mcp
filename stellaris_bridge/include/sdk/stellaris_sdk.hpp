@@ -196,6 +196,7 @@ namespace glob {
     inline constexpr uintptr_t TPdxNullObject_CArmy_pInstance = 0x3112BC0;  // TPdxNullObject<CArmy>::_pInstance  score=1.0 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CBuilding_pInstance = 0x3113298;  // TPdxNullObject<CBuilding>::_pInstance  score=1.0 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CColony_pInstance = 0x31139F8;  // TPdxNullObject<CColony>::_pInstance  score=0.833 live=not-checked
+    inline constexpr uintptr_t TPdxNullObject_CColonyType_pInstance = 0x31121E0;  // TPdxNullObject<CColonyType>::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t TPdxNullObject_CConstructionQueue_pInstance = 0x31132F0;  // TPdxNullObject<CConstructionQueue>::_pInstance  score=1.0 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CConstructionQueueItem_pInstance = 0x3113EA8;  // TPdxNullObject<CConstructionQueueItem>::_pInstance  score=1.0 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CCouncilPosition_pInstance = 0x3113EC0;  // TPdxNullObject<CCouncilPosition>::_pInstance  score=1.0 live=not-checked
@@ -348,6 +349,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CArchaeologicalSite_id = 0x8;
     inline constexpr std::ptrdiff_t CArmy_id = 0x10;
     inline constexpr std::ptrdiff_t CAstralRift_id = 0x8;
+    inline constexpr std::ptrdiff_t CBuildableShip_implementation = 0x8;
     inline constexpr std::ptrdiff_t CBuilding_id = 0x8;
     inline constexpr std::ptrdiff_t CBypass_id = 0x8;
     inline constexpr std::ptrdiff_t CColony_id = 0x10;
@@ -393,6 +395,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CFleet_id = 0x30;
     inline constexpr std::ptrdiff_t CGalacticObject_id = 0x8;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
+    inline constexpr std::ptrdiff_t CGameIdler_is_multiplayer = 0x180;
     inline constexpr std::ptrdiff_t CGameState_date_hours = 0xC0;
     inline constexpr std::ptrdiff_t CGoMIACommand_mia_type = 0x38;
     inline constexpr std::ptrdiff_t CGroundCombat_id = 0x10;
@@ -440,6 +443,9 @@ namespace rt {
     inline constexpr std::ptrdiff_t CShipDesignComponent_size = 0x20;
     inline constexpr std::ptrdiff_t CShipDesignComponent_slot = 0x8;
     inline constexpr std::ptrdiff_t CShipDesignComponent_template = 0x10;
+    inline constexpr std::ptrdiff_t CShipDesignImplementation_design = 0x530;
+    inline constexpr std::ptrdiff_t CShipDesignImplementation_ship_class = 0x468;
+    inline constexpr std::ptrdiff_t CShipDesignImplementation_size = 0x538;
     inline constexpr std::ptrdiff_t CShipDesignSection_component_count = 0x5C;
     inline constexpr std::ptrdiff_t CShipDesignSection_components = 0x50;
     inline constexpr std::ptrdiff_t CShipDesignSection_template = 0x40;
@@ -477,6 +483,10 @@ namespace rt {
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
     inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CZone_id = 0x8;
+    inline constexpr std::ptrdiff_t Token_buildable_colony_ship = 0x3DF4;
+    inline constexpr std::ptrdiff_t Token_buildable_federation_ship = 0x3DF3;
+    inline constexpr std::ptrdiff_t Token_buildable_galactic_community_ship = 0x3EBE;
+    inline constexpr std::ptrdiff_t Token_buildable_ship = 0x3DF2;
     inline constexpr std::ptrdiff_t kComponentSizeAny = 0xB;
     inline constexpr std::ptrdiff_t kComponentTypeAny = 0x4;
 }  // namespace rt
@@ -489,6 +499,7 @@ namespace vt {
     inline constexpr uintptr_t CBuildableArmy = 0x2376748;
     inline constexpr uintptr_t CBuildableBuilding = 0x2391FF0;
     inline constexpr uintptr_t CBuildableClearDepositBlocker = 0x2391F40;
+    inline constexpr uintptr_t CBuildableColonyShip = 0x23C4788;
     inline constexpr uintptr_t CBuildableDistrict = 0x2391BD0;
     inline constexpr uintptr_t CBuildableUpgradeBuilding = 0x2391D30;
     inline constexpr uintptr_t CBuildableZone = 0x2391E90;
@@ -496,6 +507,7 @@ namespace vt {
     inline constexpr uintptr_t CFirstContactView = 0x2411EF8;
     inline constexpr uintptr_t CFleetPath = 0x23DB020;
     inline constexpr uintptr_t CPdxArray_CFleetPath_SNode = 0x2344588;
+    inline constexpr uintptr_t CShipDesignImplementation = 0x23446D0;
     inline constexpr uintptr_t CStartScreenWindow = 0x242D350;
     inline constexpr uintptr_t NSpeciesModification_SSpeciesColonyPair = 0x2335870;
     inline constexpr int CBuildableBase_CalcCost = 9;
@@ -504,6 +516,7 @@ namespace vt {
     inline constexpr int CBuildableBase_GetToken = 16;
     inline constexpr int CFleet_GetCoordinate = 1;
     inline constexpr int CGuiView_Hide = 7;
+    inline constexpr int CShipDesignImplementation_Destroy = 0;
 }  // namespace vt
 
 // ============================== functions =============================
@@ -587,6 +600,10 @@ namespace fn {
     inline constexpr uintptr_t CGalacticObject_GetClaimsBy = 0x8659A0;
     // CGameState::HandleTurnTick(CPdxArray<CCommand*, int>&)  --  void (*)(void* game_state, void* commands)
     inline constexpr uintptr_t CGameState_HandleTurnTick = 0x2511D0;
+    // CGameState::OnNewGameStarted()  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_OnNewGameStarted = 0x270AC0;
+    // CGameState::OnSavedGameStarted()  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_OnSavedGameStarted = 0x271340;
     // CGameState::MicroUpdate() -- the fleet parallel-for (CFleet::MicroUpdateParallel), split out on Windows  --  void (*)(void* game_state)
     inline constexpr uintptr_t CGameState_UpdateShipParallel = 0x252390;
     // CGovernmentCivicType::IsPossible(SEthicGovernmentConfiguration const&, EModdableCivicCondition, CCountry const*, CString*) const  --  bool (*)(const void* civic, const void* config, uint16_t flags, const void* country, void* reason)
@@ -597,6 +614,8 @@ namespace fn {
     inline constexpr uintptr_t CInGameIdler_SetGameSpeed = 0x935BE0;
     // CInGameIdler::SetPaused(SPauseGameSettings const&)  --  void (*)(void* idler, const void* settings)
     inline constexpr uintptr_t CInGameIdler_SetPaused = 0x9362D0;
+    // CIsMultiplayerTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* scope)
+    inline constexpr uintptr_t CIsMultiplayerTrigger_ActualEvaluate = 0x197AD90;
     // CMessage::LeftClick()  --  void (*)(void* message)
     inline constexpr uintptr_t CMessage_LeftClick = 0x3211A0;
     // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Update()  --  void (*)(void* node)
@@ -623,6 +642,8 @@ namespace fn {
     inline constexpr uintptr_t CRandomLog_Get = 0x1B47DE0;
     // CScriptedRule::Evaluate(CEventScope&, CString*, CScriptedRule::EShowTooltip, bool) const  --  bool (*)(const void* rule, void* scope, void* reason, uint8_t show_tooltip, bool flag)
     inline constexpr uintptr_t CScriptedRule_Evaluate = 0x5B71D0;
+    // CShipDesignImplementation::CShipDesignImplementation(TPdxRef<CShipDesign>, int)  --  void* (*)(void* impl, uint32_t design_id, int growth_stage)
+    inline constexpr uintptr_t CShipDesignImplementation_Ctor = 0xCD5D40;
     // CShipDesignSection::SetComponentOnSlot(CComponentTemplate const*, CComponentSlot const*)  --  void (*)(void* section, const void* component, const void* slot)
     inline constexpr uintptr_t CShipDesignSection_SetComponentOnSlot = 0xD6F040;
     // CShipDesign::CalcLongName()  --  void (*)(void* design)
@@ -647,6 +668,8 @@ namespace fn {
     inline constexpr uintptr_t CSpecies_CopyCtor = 0x3DE770;
     // CSpecies::~CSpecies()  --  void (*)(void* species)
     inline constexpr uintptr_t CSpecies_Dtor = 0x1F8760;
+    // CStarbase::GetShipsBuildQueueRef() const  --  uint32_t* (*)(const void* starbase, uint32_t* out)
+    inline constexpr uintptr_t CStarbase_GetShipsBuildQueueRef = 0x7D1AA0;
     // CStartScreenWindow::Close()  --  void (*)(void* window)
     inline constexpr uintptr_t CStartScreenWindow_Close = 0x12D3160;
     // CStrategicResource::GetMaximumForCountry(CCountry const&) const  --  int64_t* (*)(const void* resource, int64_t* out, const void* country)
@@ -665,6 +688,10 @@ namespace fn {
     inline constexpr uintptr_t GetDynamicFlag = 0x9F8A10;
     // SLeaderName::GetLocalizedName (the %LEADER_1% / %LEADER_2% formatter)  --  void (*)(void* out_cstring, const void* name, int mode)
     inline constexpr uintptr_t GetLocalizedLeaderName = 0x3E8E20;
+    // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&, SColonizationData const&)  --  void** (*)(void** out, const void* orbitable, const void* impl, const void* colonization)
+    inline constexpr uintptr_t NConstruction_CreateColonyShipBuildable = 0xAB6DF0;
+    // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&)  --  void** (*)(void** out, const void* orbitable, const void* impl)
+    inline constexpr uintptr_t NConstruction_CreateShipBuildable = 0xAB6AA0;
     // NEventWindowUtil::GetEventWindowDesc(CEvent const&, CEventScope const&)  --  void* (*)(void* out_cstring, void* event, void* scope)
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077830;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
@@ -4531,7 +4558,8 @@ namespace add_system_claim_command {  // CAddSystemClaimCommand (token-name)
 namespace rename_species_command {  // CRenameSpeciesCommand (token-name)
     inline constexpr uint32_t kToken = 0x3915;
     inline constexpr uintptr_t kVtableRva = 0x2392D68;
-    inline constexpr uintptr_t kFactoryRva = 0x6CE8B0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x130;
     inline constexpr CmdSpec kSpec{"rename_species_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t name = 0x20;  // tok 0x1b persistent
@@ -6097,7 +6125,8 @@ namespace oppose_proposed_resolution_command {  // COpposeProposedResolutionComm
 namespace remove_buildable_from_queue_command {  // CRemoveBuildableFromQueueCommand (token-name)
     inline constexpr uint32_t kToken = 0x3DE3;
     inline constexpr uintptr_t kVtableRva = 0x23C16B0;
-    inline constexpr uintptr_t kFactoryRva = 0xACE570;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"remove_buildable_from_queue_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6106,7 +6135,8 @@ namespace remove_buildable_from_queue_command {  // CRemoveBuildableFromQueueCom
 namespace increase_max_buildable_priority_command {  // CIncreaseMaxBuildablePriorityCommand (token-name)
     inline constexpr uint32_t kToken = 0x3DE5;
     inline constexpr uintptr_t kVtableRva = 0x23C1768;
-    inline constexpr uintptr_t kFactoryRva = 0xACE430;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"increase_max_buildable_priority_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6115,7 +6145,8 @@ namespace increase_max_buildable_priority_command {  // CIncreaseMaxBuildablePri
 namespace increase_once_buildable_priority_command {  // CIncreaseOnceBuildablePriorityCommand (token-name)
     inline constexpr uint32_t kToken = 0x3DE4;
     inline constexpr uintptr_t kVtableRva = 0x23C1820;
-    inline constexpr uintptr_t kFactoryRva = 0xACE4D0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"increase_once_buildable_priority_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6124,7 +6155,8 @@ namespace increase_once_buildable_priority_command {  // CIncreaseOnceBuildableP
 namespace decrease_max_buildable_priority_command {  // CDecreaseMaxBuildablePriorityCommand (token-name)
     inline constexpr uint32_t kToken = 0x3DE7;
     inline constexpr uintptr_t kVtableRva = 0x23C18D8;
-    inline constexpr uintptr_t kFactoryRva = 0xACE2F0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"decrease_max_buildable_priority_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6133,7 +6165,8 @@ namespace decrease_max_buildable_priority_command {  // CDecreaseMaxBuildablePri
 namespace decrease_once_buildable_priority_command {  // CDecreaseOnceBuildablePriorityCommand (token-name)
     inline constexpr uint32_t kToken = 0x3DE6;
     inline constexpr uintptr_t kVtableRva = 0x23C1990;
-    inline constexpr uintptr_t kFactoryRva = 0xACE390;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"decrease_once_buildable_priority_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6511,7 +6544,7 @@ namespace change_leader_name_command {  // CChangeLeaderNameCommand (token-name)
 namespace change_ruler_titles_command {  // CChangeRulerTitlesCommand (token-name)
     inline constexpr uint32_t kToken = 0x3C22;
     inline constexpr uintptr_t kVtableRva = 0x23CA9A8;
-    inline constexpr uintptr_t kFactoryRva = 0xBE5020;
+    inline constexpr uintptr_t kFactoryRva = 0xBE8B50;
     inline constexpr std::size_t kSize = 0xE0;
     inline constexpr CmdSpec kSpec{"change_ruler_titles_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6620,7 +6653,8 @@ namespace auto_ship_design_command {  // CAutoGenerateShipDesignCommand (seriali
 namespace create_or_update_ship_design {  // CCreateOrUpdateShipDesignCommand (token-name)
     inline constexpr uint32_t kToken = 0x2E01;
     inline constexpr uintptr_t kVtableRva = 0x23CB7D0;
-    inline constexpr uintptr_t kFactoryRva = 0xC19C20;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x238;
     inline constexpr CmdSpec kSpec{"create_or_update_ship_design", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t design = 0x20;  // tok 0x2c6b persistent
@@ -6807,7 +6841,8 @@ namespace complete_focus_card_command {  // ?
 namespace complete_focus_card_command_2 {  // ?
     inline constexpr uint32_t kToken = 0x441C;
     inline constexpr uintptr_t kVtableRva = 0x243E370;
-    inline constexpr uintptr_t kFactoryRva = 0x13D5670;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"complete_focus_card_command_2", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -6816,7 +6851,8 @@ namespace complete_focus_card_command_2 {  // ?
 namespace dismiss_focus_card_command {  // ?
     inline constexpr uint32_t kToken = 0x441D;
     inline constexpr uintptr_t kVtableRva = 0x243E428;
-    inline constexpr uintptr_t kFactoryRva = 0x13D55D0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"dismiss_focus_card_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
@@ -7027,7 +7063,8 @@ namespace remove_unusable_resource_command {  // ?
 namespace add_unusable_resource_command {  // ?
     inline constexpr uint32_t kToken = 0x4292;
     inline constexpr uintptr_t kVtableRva = 0x245E678;
-    inline constexpr uintptr_t kFactoryRva = 0x15538E0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x30;
     inline constexpr CmdSpec kSpec{"add_unusable_resource_command", kToken, kVtableRva, kFactoryRva, kSize};
 }
@@ -7041,7 +7078,8 @@ namespace add_unusable_resource_command_2 {  // ?
 namespace remove_unusable_resource_command_2 {  // ?
     inline constexpr uint32_t kToken = 0x4293;
     inline constexpr uintptr_t kVtableRva = 0x245E7E8;
-    inline constexpr uintptr_t kFactoryRva = 0x1553830;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x30;
     inline constexpr CmdSpec kSpec{"remove_unusable_resource_command_2", kToken, kVtableRva, kFactoryRva, kSize};
 }
@@ -7057,7 +7095,8 @@ namespace set_current_focus_priority {  // CSetCurrentFocusPriorityCommand (toke
 namespace track_poi_command_2 {  // ?
     inline constexpr uint32_t kToken = 0x31A4;
     inline constexpr uintptr_t kVtableRva = 0x2463680;
-    inline constexpr uintptr_t kFactoryRva = 0x15975C0;
+    // no engine factory: CommandBuilder allocates kSize (from Clone) and writes the header
+    inline constexpr uintptr_t kFactoryRva = 0x0;
     inline constexpr std::size_t kSize = 0x30;
     inline constexpr CmdSpec kSpec{"track_poi_command_2", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>

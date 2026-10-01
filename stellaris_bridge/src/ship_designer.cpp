@@ -4,6 +4,7 @@
 #include "common.hpp"
 #include "command_builder.hpp"
 #include "game_state.hpp"
+#include "outliner_manager.hpp"
 #include <windows.h>
 #include <algorithm>
 
@@ -322,6 +323,233 @@ bool SameComponents(void* a, void* b) {
     return true;
 }
 }  // namespace designs
+
+// ---- shipyard ------------------------------------------------------------------------------
+// A ship of a design built at a starbase's shipyard, as the starbase view's ship list builds it
+// (CBuildableShipListItem::Build): CShipDesignImplementation(design, growth stage 0) ->
+// NConstruction::CreateBuildable(orbitable = the starbase, implementation) -> CAddBuildableToQueueCommand
+// on the starbase's shipyard queue. Military, civilian and colony ships alike.
+namespace shipyard {
+// CRefObjectOrbitableRef<CFleetOrbitableEnumType>: {id +0, type byte +4, has_extra +8, extra +0x10};
+// the starbase view passes {starbase id, 2}
+constexpr uint8_t kOrbitableStarbase = 2;
+
+struct ImplCall {
+    uintptr_t fn;
+    void* impl;
+    uint32_t design_id;
+};
+void CallImplCtor(void* p, void*) {
+    auto* x = (ImplCall*)p;
+    ((void* (*)(void*, uint32_t, int))x->fn)(x->impl, x->design_id, 0);
+}
+void CallImplDestroy(void* p, void*) {
+    auto* x = (ImplCall*)p;
+    void** vt = *(void***)x->impl;
+    ((void* (*)(void*, unsigned))vt[sdk::vt::CShipDesignImplementation_Destroy])(x->impl, 0);  // no free
+}
+struct CreateCall {
+    uintptr_t fn;
+    const void* orbitable;
+    const void* impl;
+    const void* colonization;  // colony ships only
+    void* out;
+};
+void CallCreate(void* p, void*) {
+    auto* x = (CreateCall*)p;
+    if (x->colonization) {
+        ((void** (*)(void**, const void*, const void*, const void*))x->fn)(&x->out, x->orbitable, x->impl, x->colonization);
+    } else {
+        ((void** (*)(void**, const void*, const void*))x->fn)(&x->out, x->orbitable, x->impl);
+    }
+}
+struct QueueCall {
+    uintptr_t fn;
+    const void* starbase;
+    uint32_t queue;
+};
+void CallShipsQueue(void* p, void*) {
+    auto* x = (QueueCall*)p;
+    ((uint32_t* (*)(const void*, uint32_t*))x->fn)(x->starbase, &x->queue);
+}
+}  // namespace shipyard
+
+// The engine-heap ship buildable for a design at a starbase, or null with the reason. Colony ships
+// (the implementation's ship class) carry who settles: SColonizationData {designation: the default
+// (TPdxNullObject<CColonyType>), species}, as the starbase view builds one after the species dialog.
+void* ShipDesigner::ShipBuildable(uint32_t design_id, uint32_t starbase_id, uint32_t species_id, std::string* why,
+                                  bool* is_colony) {
+    auto& cb = CommandBuilder::Get();
+    alignas(16) uint8_t impl[0x600];
+    if ((size_t)sdk::rt::CShipDesignImplementation_size > sizeof(impl)) {
+        *why = "CShipDesignImplementation grew past the bridge's buffer";
+        return nullptr;
+    }
+    memset(impl, 0, sizeof(impl));
+    shipyard::ImplCall ic{ cb.Base() + sdk::fn::CShipDesignImplementation_Ctor, impl, design_id };
+    if (!cb.CallGuarded(&shipyard::CallImplCtor, &ic)) {
+        *why = "CShipDesignImplementation could not be built for design " + std::to_string(design_id);
+        return nullptr;
+    }
+    uint8_t orbitable[0x18]{};
+    *(uint32_t*)orbitable = starbase_id;
+    orbitable[4] = shipyard::kOrbitableStarbase;
+    const bool colony = impl[sdk::rt::CShipDesignImplementation_ship_class] == (uint8_t)fleets::ShipClass::Colonizer;
+    if (is_colony) *is_colony = colony;
+    uint8_t colonization[0x18]{};
+    if (colony) {
+        if (species_id == 0xFFFFFFFF) {
+            species_id = designs::Rd<uint32_t>((uintptr_t)GetPlayerCountry() + sdk::ent::CCountry::founder_species_ref, 0xFFFFFFFF);
+        }
+        *(void**)(colonization + sdk::ent::SColonizationData::designation) =
+            designs::Rd<void*>(cb.Base() + sdk::glob::TPdxNullObject_CColonyType_pInstance, nullptr);
+        *(uint32_t*)(colonization + sdk::ent::SColonizationData::species) = species_id;
+        colonization[sdk::ent::SColonizationData::automation] = 0;
+    }
+    shipyard::CreateCall cc{ cb.Base() + (colony ? sdk::fn::NConstruction_CreateColonyShipBuildable
+                                                 : sdk::fn::NConstruction_CreateShipBuildable),
+                             orbitable, impl, colony ? colonization : nullptr, nullptr };
+    bool made = cb.CallGuarded(&shipyard::CallCreate, &cc);
+    cb.CallGuarded(&shipyard::CallImplDestroy, &ic);
+    if (!made || !cc.out) {
+        *why = "the game makes no buildable for this design (owner type)";
+        return nullptr;
+    }
+    return cc.out;
+}
+
+// starbase_id, else the starbase in system_id; with its shipyard queue
+bool ShipDesigner::ShipyardOf(uint32_t starbase_id, uint32_t system_id, uint32_t* out_starbase, uint32_t* out_queue,
+                              std::string* why) {
+    auto ref = [&](uintptr_t db, uint32_t id, std::ptrdiff_t id_off) -> void* {
+        void* mgr = designs::Rd<void*>(base_address_ + db, nullptr);
+        if (!mgr || id == 0xFFFFFFFF) return nullptr;
+        void* slots = designs::Rd<void*>((uintptr_t)mgr + 0x18, nullptr);
+        uint32_t cap = designs::Rd<uint32_t>((uintptr_t)mgr + 0x20, 0);
+        if (!slots || (id & 0xFFFFFF) >= cap) return nullptr;
+        void* obj = designs::Rd<void*>((uintptr_t)slots + (id & 0xFFFFFF) * 16 + 8, nullptr);
+        return obj && designs::Rd<uint32_t>((uintptr_t)obj + id_off, 0xFFFFFFFF) == id ? obj : nullptr;
+    };
+    if (starbase_id == 0xFFFFFFFF) {
+        void* sys = ref(sdk::db::CGalacticObject, system_id, sdk::rt::CGalacticObject_id);
+        if (!sys) {
+            *why = "Pass starbase_id, or system_id of a system with a starbase";
+            return false;
+        }
+        uintptr_t arr = (uintptr_t)sys + sdk::ent::CGalacticObject::starbases;
+        void* data = designs::Rd<void*>(arr + 0x8, nullptr);  // CPdxArray: data +8, size +0x14
+        if (!data || designs::Rd<int32_t>(arr + 0x14, 0) <= 0) {
+            *why = "System " + std::to_string(system_id) + " has no starbase";
+            return false;
+        }
+        starbase_id = designs::Rd<uint32_t>((uintptr_t)data, 0xFFFFFFFF);
+    }
+    void* sb = ref(sdk::db::CStarbase, starbase_id, sdk::rt::CStarbase_id);
+    if (!sb) {
+        *why = "Starbase " + std::to_string(starbase_id) + " not found";
+        return false;
+    }
+    *out_starbase = starbase_id;
+    // CStarbase::GetShipsBuildQueueRef: the starbase's ship may carry the one queue it builds into
+    shipyard::QueueCall qc{ CommandBuilder::Get().Base() + sdk::fn::CStarbase_GetShipsBuildQueueRef, sb, 0xFFFFFFFF };
+    if (!CommandBuilder::Get().CallGuarded(&shipyard::CallShipsQueue, &qc) || qc.queue == 0xFFFFFFFF) {
+        *why = "Starbase " + std::to_string(starbase_id) + " has no shipyard queue";
+        return false;
+    }
+    *out_queue = qc.queue;
+    return true;
+}
+
+nlohmann::json ShipDesigner::ShipDesignRow(void* design) {
+    uint32_t did = designs::Rd<uint32_t>((uintptr_t)design + sdk::rt::CShipDesign_id, 0xFFFFFFFF);
+    std::string size_key;
+    if (void* size = designs::SizeOf(designs::Stage0(design))) {
+        SafeReadPdxString((const void*)((uintptr_t)size + designs::kShipSizeKey), size_key);
+    }
+    return { {"design_id", did},
+             {"name", PersistentNameText((const void*)((uintptr_t)design + sdk::ent::CShipDesign::name))},
+             {"ship_size", size_key}, {"ship_size_name", LocalizeKey(size_key)} };
+}
+
+nlohmann::json ShipDesigner::GetBuildableShipsJson(const nlohmann::json& params) {
+    if (!CommandBuilder::Get().SdkMatchesExe()) return { {"success", false}, {"error", "SDK does not match this stellaris.exe"} };
+    uint32_t starbase_id = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    std::string why;
+    if (!ShipyardOf(params.value("starbase_id", 0xFFFFFFFFu), params.value("system_id", 0xFFFFFFFFu), &starbase_id,
+                    &queue_id, &why)) {
+        return { {"success", false}, {"error", why} };
+    }
+    const uint32_t only = params.value("design_id", 0xFFFFFFFFu);
+    const uint32_t species_id = params.value("species_id", 0xFFFFFFFFu);  // colony ships (default: founder species)
+    const uint32_t country_id = GameState::Get().GetPlayerCountryId();
+    nlohmann::json buildable = nlohmann::json::array(), refused = nlohmann::json::array();
+    for (void* design : PlayerDesigns()) {
+        nlohmann::json row = ShipDesignRow(design);
+        if (only != 0xFFFFFFFF && row["design_id"] != only) continue;
+        std::string reason;
+        bool colony = false;
+        void* b = ShipBuildable(row["design_id"], starbase_id, species_id, &reason, &colony);
+        if (colony) row["colony_ship"] = true;
+        if (!b) {
+            row["can_build"] = false;
+            row["reason"] = reason;
+            refused.push_back(row);
+            continue;
+        }
+        nlohmann::json cost = OutlinerManager::Get().BuildableCostJsonPtr(b);
+        bool ok = OutlinerManager::Get().QueueOwnedBuildable(b, country_id, queue_id, false, &reason);  // frees b
+        row["can_build"] = ok;
+        if (ok) {
+            row.update(cost);
+            buildable.push_back(row);
+        } else {
+            row["reason"] = reason.empty() ? "The game does not build it at this shipyard (no reason given)"
+                                           : RenderPdxMarkup(reason);
+            refused.push_back(row);
+        }
+    }
+    nlohmann::json out = { {"success", true}, {"starbase_id", starbase_id}, {"queue_id", queue_id},
+                           {"queue", OutlinerManager::Get().ExtractConstructionQueue(queue_id)}, {"buildable", buildable} };
+    if (only != 0xFFFFFFFF) out["refused"] = refused;  // one design: say why not
+    else out["refused_count"] = refused.size();
+    return out;
+}
+
+nlohmann::json ShipDesigner::BuildShipJson(const nlohmann::json& params) {
+    if (!CommandBuilder::Get().SdkMatchesExe()) return { {"success", false}, {"error", "SDK does not match this stellaris.exe"} };
+    uint32_t design_id = params.value("design_id", 0xFFFFFFFFu);
+    int count = std::clamp(params.value("count", 1), 1, 10);
+    void* design = FindShipDesign(design_id);
+    if (!design) return { {"success", false}, {"error", "Ship design " + std::to_string(design_id) + " not found (see stellaris_get_buildable_ships)"} };
+    uint32_t starbase_id = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    std::string why;
+    if (!ShipyardOf(params.value("starbase_id", 0xFFFFFFFFu), params.value("system_id", 0xFFFFFFFFu), &starbase_id,
+                    &queue_id, &why)) {
+        return { {"success", false}, {"error", why} };
+    }
+    const uint32_t country_id = GameState::Get().GetPlayerCountryId();
+    const uint32_t species_id = params.value("species_id", 0xFFFFFFFFu);
+    nlohmann::json cost;
+    int queued = 0;
+    bool colony = false;
+    for (int i = 0; i < count; ++i) {
+        void* b = ShipBuildable(design_id, starbase_id, species_id, &why, &colony);
+        if (!b) break;
+        if (i == 0) cost = OutlinerManager::Get().BuildableCostJsonPtr(b);
+        if (!OutlinerManager::Get().QueueOwnedBuildable(b, country_id, queue_id, true, &why)) break;
+        ++queued;
+    }
+    nlohmann::json out = ShipDesignRow(design);
+    out.update({ {"starbase_id", starbase_id}, {"queue_id", queue_id}, {"queued", queued}, {"success", queued > 0} });
+    if (colony) {
+        out["colony_ship"] = true;
+        out["species_id"] = species_id != 0xFFFFFFFF ? species_id
+            : designs::Rd<uint32_t>((uintptr_t)GetPlayerCountry() + sdk::ent::CCountry::founder_species_ref, 0xFFFFFFFF);
+    }
+    if (!cost.is_null()) out.update(cost);
+    if (queued < count) out["error"] = why.empty() ? "The game refused the ship" : RenderPdxMarkup(why);
+    return out;
+}
 
 ShipDesigner& ShipDesigner::Get() {
     static ShipDesigner instance;

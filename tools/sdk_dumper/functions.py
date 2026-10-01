@@ -776,6 +776,83 @@ FUNCTIONS = {
         "call_in": {"from": "CEventWindow_AddOptionButton", "anchor": r"^mov dword ptr \[r(?!sp)\w+ \+ 0x20\], r\w+d$",
                     "pick": "last_call_before"},
     },
+    "CGameState_OnSavedGameStarted": {
+        "linux": "CGameState::OnSavedGameStarted()",
+        # rcx = game state. Runs once when a loaded save (single player, multiplayer host or joining client)
+        # starts, from CInGameIdler::RestoreDeviceObjects; fires on_single_player_save_game_load when the
+        # idler's multiplayer flag is off
+        "signature": "void (*)(void* game_state)",
+        "strings": ["on_single_player_save_game_load"],
+    },
+    "CGameState_OnNewGameStarted": {
+        "linux": "CGameState::OnNewGameStarted()",
+        # rcx = game state. Runs once when a new galaxy starts, from CInGameIdler::RestoreDeviceObjects:
+        # fires on_game_start, then CCountry::OnNewGameStarted for every country
+        "signature": "void (*)(void* game_state)",
+        "strings": ["on_game_start"],
+    },
+    "CIsMultiplayerTrigger_ActualEvaluate": {
+        "linux": "CIsMultiplayerTrigger::ActualEvaluate(CEventScope&) const",
+        # rcx = scope. `is_multiplayer = yes/no`: CGameIdler::IsMultiplayer() of g_CurrentInGameIdler (null =
+        # no) compared with the trigger's yes/no byte; the getter is inlined, so this is where the flag's
+        # offset is visible (anchors.py reads it)
+        "signature": "bool (*)(const void* scope)",
+        "pattern": [(r"^mov rax, qword ptr \[rip", "]"), (r"^test rax, rax$", ""), (r"^je ", ""),
+                    (r"^cmp byte ptr \[rax \+ 0x[0-9a-f]+\], 0$", ""), (r"^je ", ""),
+                    (r"^movzx eax, byte ptr \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^mov edx, 1$", ""),
+                    (r"^cmp edx, eax$", ""), (r"^sete al$", ""), (r"^ret", "")],
+        "prefilter_bytes": [b"\x80\xB8\x80\x01\x00\x00\x00"],  # cmp byte ptr [rax + 0x180], 0
+        "window": 14,
+    },
+    # --- shipyard: a ship buildable for a design, as the starbase's ship list builds it
+    "CShipDesignImplementation_Ctor": {
+        "linux": "CShipDesignImplementation::CShipDesignImplementation(TPdxRef<CShipDesign>, int)",
+        # rcx = implementation (sdk::rt::CShipDesignImplementation_size bytes), edx = design id,
+        # r8d = growth stage (0 for a new ship); computes the design's values (RecalcSpecialValues).
+        # Destroy with the vtable's deleting destructor (sdk::vt::CShipDesignImplementation_Destroy), flag 0
+        "signature": "void* (*)(void* impl, uint32_t design_id, int growth_stage)",
+        "pattern": [(r"^mov edi, r8d$", ""), (r"^mov ebx, edx$", ""), (r"^mov rsi, rcx$", ""),
+                    (r"^lea rax, \[rip", ""), (r"^mov qword ptr \[rcx\], rax$", ""),
+                    (r"^mov qword ptr \[rcx \+ 8\], 0$", ""), (r"^add rcx, 0x10$", ""), (r"^call 0x", ""),
+                    (r"^mov dword ptr \[rsi \+ 0x[0-9a-f]+\], edi$", ""), (r"^lea rax, \[rip", ""),
+                    (r"^mov qword ptr \[rsi\], rax$", ""), (r"^mov dword ptr \[rsi \+ 0x[0-9a-f]+\], ebx$", ""),
+                    (r"^mov dword ptr \[rsi \+ 0x[0-9a-f]+\], 0xffffffff$", ""), (r"^mov rcx, rsi$", ""), (r"^call 0x", "")],
+        "prefilter_bytes": [b"\x41\x8B\xF8\x8B\xDA"],  # mov edi, r8d; mov ebx, edx
+        "window": 24,
+    },
+    "NConstruction_CreateColonyShipBuildable": {
+        "linux": "NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&, SColonizationData const&)",
+        # rcx = CBuildableBase** out, rdx = orbitable ref, r8 = implementation, r9 = SColonizationData
+        # {designation +8, species +0x10, automation +0x14} (sdk::ent::SColonizationData); one
+        # CBuildableColonyShip, as the starbase view builds a colony ship after picking the species
+        "signature": "void** (*)(void** out, const void* orbitable, const void* impl, const void* colonization)",
+        "pattern": [(r"^mov rbx, r9$", ""), (r"^mov rbp, r8$", ""), (r"^mov rsi, rdx$", ""), (r"^mov rdi, rcx$", ""),
+                    (r"^mov ecx, 0x[0-9a-f]+$", ""), (r"^call 0x", "")],
+        "prefilter_bytes": [b"\x49\x8B\xD9\x49\x8B\xE8"],  # mov rbx, r9; mov rbp, r8
+        "window": 14,
+    },
+    "CStarbase_GetShipsBuildQueueRef": {
+        "linux": "CStarbase::GetShipsBuildQueueRef() const",
+        # rcx = starbase, rdx = TPdxRef<CConstructionQueue>* out; the queue its shipyard builds into:
+        # its ship's single queue (+0x104) when the carrier uses one, else its own shipyard queue
+        # (sdk::ent::CStarbase::shipyard_build_queue; the main queue getter reads build_queue instead)
+        "signature": "uint32_t* (*)(const void* starbase, uint32_t* out)",
+        "pattern": [(r"^mov rdi, rdx$", ""), (r"^mov rsi, rcx$", ""), (r"^call qword ptr \[rax \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^mov eax, dword ptr \[rbx \+ 0x[0-9a-f]+\]$", ""), (r"^mov eax, dword ptr \[rsi \+ 0x884\]$", "")],
+        "prefilter_bytes": [b"\x84\x08\x00\x00"],
+        "window": 50,
+    },
+    "NConstruction_CreateShipBuildable": {
+        "linux": "NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&)",
+        # rcx = CBuildableBase** out (engine heap object, or null), rdx = orbitable ref {id +0, type
+        # byte +4, has_extra +8, extra +0x10}, r8 = implementation; the ship, federation or galactic
+        # community buildable by the design's owner type (three 0x560-byte allocations)
+        "signature": "void** (*)(void** out, const void* orbitable, const void* impl)",
+        "pattern": [(r"^mov rsi, r8$", ""), (r"^mov rbx, rdx$", ""), (r"^mov rdi, rcx$", ""),
+                    (r"^mov rax, qword ptr \[r8\]$", ""), (r"^mov rcx, r8$", ""), (r"^call qword ptr \[rax \+ 0x[0-9a-f]+\]$", "")],
+        "prefilter_bytes": [b"\xB9\x60\x05\x00\x00"],
+        "window": 16,
+    },
     # --- UI entry points (the bridge checks the object's vtable before calling)
     "CMessage_LeftClick": {
         "linux": "CMessage::LeftClick()",

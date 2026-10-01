@@ -119,6 +119,15 @@ public:
     nlohmann::json GetBuildableDistrictsJson(uint32_t planet_id, const std::string& district_key);
     nlohmann::json BuildDistrictJson(uint32_t planet_id, const std::string& district_key);
     nlohmann::json DemolishDistrictJson(uint32_t planet_id, const std::string& district_key);
+    nlohmann::json CancelConstructionJson(uint32_t item_id);
+
+    // CAddBuildableToQueueCommand with a buildable already on the engine heap (it takes it over);
+    // dispatch=false only runs the command's IsValid
+    bool QueueOwnedBuildable(void* heap_buildable, uint32_t country_id, uint32_t queue_id, bool dispatch, std::string* why);
+    // cost and build days of a buildable (CalcCost / CalcProgressionTimeNeeded, after modifiers)
+    nlohmann::json BuildableCostJsonPtr(void* buildable);
+    nlohmann::json ExtractConstructionQueue(uint32_t queue_id);
+    void* FindShipDesignObj(uint32_t design_id);
     nlohmann::json UpgradeBuildingJson(uint32_t planet_id, uint32_t building_id, const std::string& upgrade_to_key = "");
 
     // Planetary Features & Subpage Operations
@@ -215,6 +224,8 @@ private:
     bool PlanetColonyQueue(uint32_t planet_id, uint32_t* cid, uint32_t* queue_id, std::string* error);
     std::vector<std::pair<std::string, int>> ColonyDistrictCounts(void* colony_obj);
     nlohmann::json BuildableCostJson(uint8_t (&obj)[0x20]);
+    bool QueueCommandWithBuildable(NativeCommand& cmd, void* heap_buildable, uint32_t country_id, uint32_t queue_id,
+                                   bool dispatch, std::string* why);
     // Armies stationed at a colony (its army list), read through bridge::armies.
     std::vector<armies::ArmyInfo> ReadColonyArmies(void* colony_obj);
     std::string SpeciesName(uint32_t species_id);
