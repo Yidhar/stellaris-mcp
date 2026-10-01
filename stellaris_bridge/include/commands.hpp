@@ -35,7 +35,6 @@ private:
     FnSetPaused fn_set_paused_{ nullptr };
     FnSetGameSpeed fn_set_game_speed_{ nullptr };
 
-    uintptr_t FindPattern(const uint8_t* pattern, const char* mask, size_t size);
 };
 
 } // namespace bridge

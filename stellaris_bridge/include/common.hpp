@@ -22,12 +22,21 @@
 #include <iostream>
 #include <chrono>
 #include <nlohmann/json.hpp>
+#include "sdk/stellaris_sdk.hpp"
 
 namespace bridge {
 
-constexpr uintptr_t kRvaPostCommand = 0x5F8640;
-constexpr uintptr_t kRvaEngineAlloc = 0x20213E8;
-constexpr uintptr_t kRvaFreePdxString = 0x15BBE0;  // releases a PdxString's heap buffer
+// Whether the loaded stellaris.exe is the build the SDK was dumped from (PE TimeDateStamp). Every
+// direct call into engine code checks this first: after a game update the RVAs point elsewhere.
+inline bool SdkMatchesImage(uintptr_t base_address) {
+    static const bool matches = [base_address] {
+        if (!base_address) return false;
+        auto dos = (PIMAGE_DOS_HEADER)base_address;
+        auto nt = (PIMAGE_NT_HEADERS)(base_address + dos->e_lfanew);
+        return nt->FileHeader.TimeDateStamp == sdk::kExeTimestamp;
+    }();
+    return matches;
+}
 
 class Logger {
 public:
@@ -179,10 +188,10 @@ inline std::string RenderPdxMarkup(const std::string& s) {
 }
 
 inline std::string SafeLocalize(uintptr_t base_address, const std::string& key) {
-    if (key.empty() || !base_address) return key;
+    if (key.empty() || !base_address || !SdkMatchesImage(base_address)) return key;
 
-    void* fn_localize = (void*)(base_address + 0x16D2D0);
-    void* fn_free = (void*)(base_address + kRvaFreePdxString);
+    void* fn_localize = (void*)(base_address + sdk::fn::PdxLocalize);
+    void* fn_free = (void*)(base_address + sdk::fn::CString_Free);
 
     PdxStringView in_sv{ key.data(), key.size() };
     PdxLocResult out_str{};

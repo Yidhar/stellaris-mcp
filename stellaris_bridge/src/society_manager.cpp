@@ -94,27 +94,6 @@ static bool SafeReadPdxString(const void* pdx_str_addr, std::string& out) {
     return false;
 }
 
-static bool SafeLocalizeCall(SocietyManager::FnLocalize fn_localize,
-                             SocietyManager::FnFreePdxStr fn_free_pdx,
-                             const RawPdxString* in_key,
-                             RawPdxString* out_str) {
-    __try {
-        fn_localize(out_str, in_key);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(SocietyManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
-    __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 SocietyManager& SocietyManager::Get() {
     static SocietyManager instance;
     return instance;
@@ -123,8 +102,6 @@ SocietyManager& SocietyManager::Get() {
 bool SocietyManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
 
     LOGF("[SOCIETY] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
 

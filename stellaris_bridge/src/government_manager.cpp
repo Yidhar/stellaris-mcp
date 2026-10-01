@@ -246,7 +246,7 @@ CouncilSummary GovernmentManager::GetSummary() {
             summary.agenda_progress = std::round((double)raw_progress / 1000.0) / 100.0;
 
             int64_t raw_cost = 0;
-            if (SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda, country, &raw_cost) && raw_cost > 0) {
+            if (SdkMatchesImage(base_address_) && SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda, country, &raw_cost) && raw_cost > 0) {
                 summary.agenda_cost = std::round((double)raw_cost / 1000.0) / 100.0;
                 summary.agenda_ready = raw_progress >= raw_cost;
             }
@@ -348,7 +348,7 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
             state.agenda.progress = std::round((double)raw_progress / 1000.0) / 100.0;
 
             int64_t raw_cost = 0;
-            if (SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda_ptr, country, &raw_cost) && raw_cost > 0) {
+            if (SdkMatchesImage(base_address_) && SafeAgendaCost(base_address_ + sdk::fn::CCouncilAgenda_GetCost, agenda_ptr, country, &raw_cost) && raw_cost > 0) {
                 state.agenda.cost = std::round((double)raw_cost / 1000.0) / 100.0;
                 state.agenda.is_ready = raw_progress >= raw_cost;
             }

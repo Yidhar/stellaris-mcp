@@ -31,6 +31,7 @@ private:
     AlertManager() = default;
     ~AlertManager() = default;
 
+    bool ReadAlertWindow(void* idler, void** out);
     uintptr_t base_address_{ 0 };
     FnOnAlertClick fn_on_alert_click_{ nullptr };
 

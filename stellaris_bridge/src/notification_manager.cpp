@@ -69,8 +69,9 @@ NotificationManager& NotificationManager::Get() {
 bool NotificationManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    // RVA: Notification::OnLeftClick = 0x3211A0
-    fn_notif_left_click_ = (FnNotificationLeftClick)(base_address_ + 0x3211A0);
+    // CMessage::LeftClick: what clicking the notification does (opens its event, view or target)
+    fn_notif_left_click_ = SdkMatchesImage(base_address_)
+        ? (FnNotificationLeftClick)(base_address_ + sdk::fn::CMessage_LeftClick) : nullptr;
 
     LOGF("[NOTIF_MGR] Initialized: Base=0x%llX, NotifLeftClick=0x%llX",
         (unsigned long long)base_address_,
@@ -239,7 +240,7 @@ nlohmann::json NotificationManager::OpenNotification(uint32_t index) {
         return {
             {"error", {
                 {"code", -32025},
-                {"message", "fn_notif_left_click_ is null"}
+                {"message", "SDK does not match this stellaris.exe; regenerate it with tools/sdk_dumper/dump.py"}
             }}
         };
     }

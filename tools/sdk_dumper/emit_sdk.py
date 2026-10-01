@@ -47,8 +47,11 @@ def camel(token_name):
     return "C" + "".join(p[:1].upper() + p[1:] for p in token_name.split("_") if p)
 
 
-def discover_commands(im, names, layouts, linux_cmd_classes):
+def discover_commands(im, names, layouts, linux_cmd_classes, newline_fn=None):
     lea = im.lea_index()
+    linux = json.loads((OUT / "linux_index.json").read_text(encoding="utf-8"))
+    linux_cmd_fields = {v["class"]: v["fields"] for v in linux.values() if v.get("method") == "WriteCommandMembers"}
+    known_tokens = {f["token"] for v in linux.values() for f in v["fields"]} | set(names)
     tok_vts = []
     for vt in lea:
         if not (im.rdata0 <= vt < im.rdata1):
@@ -127,10 +130,18 @@ def discover_commands(im, names, layouts, linux_cmd_classes):
         lay = layouts.get(f"{cls}::WriteCommandMembers") if cls else None
         if lay is None and by_serializer.get(s20):
             lay = layouts[by_serializer[s20][0]]  # shared serializer => identical payload layout
+        fields = [f for f in (lay["fields"] if lay else []) if f["win_off"] is not None]
+        if lay and lay["win_fn"] != s20 and s20 not in by_serializer and linux_cmd_fields.get(cls):
+            # the class's fingerprint matched a sibling with the same tokens; the command's own
+            # serializer is slot 20 (commands have no this-adjust)
+            fields, _ = wx["build_fields"](im, s20, linux_cmd_fields[cls], known_tokens, names, newline_fn)
+            for f in fields:
+                f["win_off"] = f["win_disp"]
+            fields = [f for f in fields if f["win_off"] is not None]
         out.append({
             "token": t, "token_name": tname, "class": cls, "class_how": how,
             "vtable": vt, "factory": factory, "size": size, "serializer": s20,
-            "fields": [f for f in (lay["fields"] if lay else []) if f["win_off"] is not None],
+            "fields": fields,
         })
     # Some tokens have two vtables: the command and a prototype object whose slot 12 clones
     # from `this` (not a factory) and whose slot 20 is _purecall. Keep the one with a real
@@ -151,19 +162,22 @@ def discover_commands(im, names, layouts, linux_cmd_classes):
     return out, alloc_fn
 
 
-def flatten_entity(key, layouts, depth=0, base=0, seen=None):
-    """Own fields + sub-object fields (recursively) with absolute offsets."""
+def flatten_entity(key, layouts, depth=0, base=0, seen=None, rejected=None):
+    """Own fields + sub-object fields (recursively) with absolute offsets. `rejected` maps a class
+    to field names located code contradicts (anchors.py); those are left out."""
     seen = seen or set()
+    rejected = rejected or {}
     if key in seen or depth > 5:
         return []
     seen = seen | {key}
     lay = layouts[key]
     rows = []
+    drop = set(rejected.get(lay["class"], []))
     for f in lay["fields"]:
-        if f["win_off"] is not None:
+        if f["win_off"] is not None and f["name"] not in drop:
             rows.append({**f, "abs": base + f["win_off"], "via": []})
     for s in lay.get("subobjects", []):
-        for r in flatten_entity(s["serializer"], layouts, depth + 1, base + s["win_off"], seen):
+        for r in flatten_entity(s["serializer"], layouts, depth + 1, base + s["win_off"], seen, rejected):
             rows.append({**r, "via": [s["class"]] + r["via"]})
     return rows
 
@@ -186,13 +200,16 @@ def main():
     linux_cmd_classes = set(json.loads((OUT / "linux_classes.json").read_text())["execute_classes"])
     im = Image(EXE)
 
-    commands, alloc_fn = discover_commands(im, names, layouts, linux_cmd_classes)
+    apath0 = OUT / "anchors.json"
+    rejected = (json.loads(apath0.read_text(encoding="utf-8")) if apath0.exists() else {}).get("rejected_fields", {})
+
+    commands, alloc_fn = discover_commands(im, names, layouts, linux_cmd_classes, data["helpers"]["newline"])
 
     entities = {}
     for key, lay in sorted(layouts.items()):
         if lay["method"] != "WriteMembers" or lay["this_adjust"] is None:
             continue
-        rows = flatten_entity(key, layouts)
+        rows = flatten_entity(key, layouts, rejected=rejected)
         if rows:
             entities[lay["class"]] = {"serializer_rva": lay["win_fn"], "score": lay["score"],
                                       "subobjects": lay.get("subobjects", []), "fields": rows}

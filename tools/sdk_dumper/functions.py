@@ -612,6 +612,143 @@ FUNCTIONS = {
         "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^cmp dword ptr \[rbp \+ 0x[0-9a-f]+\], 0$",
                       "pick": "first_call_after"},
     },
+    # --- helpers the bridge used through hand-written addresses (all calls go through the SDK)
+    "PostCommand": {
+        "linux": "PostCommandToSession(CCommand*, bool)",
+        # rcx = command (ownership passes to the engine), dl = force (skip IsValid)
+        "signature": "void (*)(void* command, bool force)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 8\], rbx$", ""), (r"^mov qword ptr \[rsp \+ 0x10\], rbp$", ""),
+                    (r"^mov qword ptr \[rsp \+ 0x18\], rsi$", ""), (r"^push rdi$", ""), (r"^sub rsp, 0x30$", ""),
+                    (r"^movzx ebp, dl$", ""), (r"^mov rdi, rcx$", "")],
+        "prefilter_bytes": [b"\x48\x89\x5c\x24\x08\x48\x89\x6c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x83\xec\x30\x0f\xb6\xea\x48"],
+        "window": 8,
+    },
+    "PdxLocalize": {
+        "linux": "PdxLocalize(std::string_view) -> CString (return slot)",
+        # rcx = CString* out (constructed here), rdx = {const char*, size_t} key view
+        "signature": "void* (*)(void* out_cstring, const void* key_view)",
+        "pattern": [(r"^push rbx$", ""), (r"^sub rsp, 0x40$", ""), (r"^mov rbx, rcx$", ""),
+                    (r"^movups xmm0, xmmword ptr \[rdx\]$", ""), (r"^movaps xmmword ptr \[rsp \+ 0x20\], xmm0$", ""),
+                    (r"^xor r9d, r9d$", ""), (r"^xor r8d, r8d$", ""), (r"^lea rdx, \[rsp \+ 0x20\]$", ""),
+                    (r"^lea rcx, \[rsp \+ 0x30\]$", ""), (r"^call 0x", ""), (r"^nop", ""),
+                    (r"^movups xmm1, xmmword ptr \[rax\]$", "")],
+        "prefilter_bytes": [b"\x0F\x10\x02\x0F\x29\x44\x24\x20\x45\x33\xC9\x45\x33\xC0"],
+        "window": 14,
+    },
+    "CString_Assign": {
+        "linux": "CString::assign(char const*, size_t) (std::basic_string assign)",
+        # rcx = CString (MSVC string at +0x10: buffer/pointer, size +0x20, capacity +0x28), rdx = chars, r8 = length
+        "signature": "void* (*)(void* cstring, const char* chars, size_t length)",
+        "pattern": [(r"^mov rbp, qword ptr \[rcx \+ 0x28\]$", ""), (r"^mov rsi, r8$", ""), (r"^mov r15, rdx$", ""),
+                    (r"^mov rbx, rcx$", ""), (r"^cmp r8, rbp$", ""), (r"^ja ", ""),
+                    (r"^cmp qword ptr \[rcx \+ 0x28\], 0x10$", ""), (r"^lea rdi, \[rcx \+ 0x10\]$", "")],
+        "prefilter_bytes": [b"\x48\x8B\x69\x28\x49\x8B\xF0\x4C\x8B\xFA"],
+        "window": 16,
+    },
+    "CString_Free": {
+        "linux": "CString::~CString() (frees the heap buffer, back to an empty inline string)",
+        "signature": "void (*)(void* cstring)",
+        "pattern": [(r"^push rbx$", ""), (r"^sub rsp, 0x20$", ""), (r"^cmp qword ptr \[rcx \+ 0x28\], 0x10$", ""),
+                    (r"^mov rbx, rcx$", ""), (r"^jb ", ""), (r"^cmp dword ptr \[rcx\], 1$", ""), (r"^je ", ""),
+                    (r"^mov rcx, qword ptr \[rcx \+ 0x10\]$", ""), (r"^call 0x", ""),
+                    (r"^mov byte ptr \[rbx \+ 0x10\], 0$", ""), (r"^mov qword ptr \[rbx \+ 0x20\], 0$", ""),
+                    (r"^mov qword ptr \[rbx \+ 0x28\], 0xf$", "")],
+        "prefilter_bytes": [b"\x48\x83\x79\x28\x10\x48\x8B\xD9"],
+        "window": 13,
+        "identical_ok": True,  # the linker kept a byte-identical copy
+    },
+    "CTraitSet_SetTraits": {
+        "linux": "CTraitSet::SetTraits(CPdxArray<CSpeciesTrait const*, int> const&)",
+        # rcx = trait set (CSpecies::traits), rdx = CPdxArray {vtable, data +8, capacity +0x10, size +0x14}
+        "signature": "void (*)(void* trait_set, const void* traits_array)",
+        "pattern": [(r"^mov dword ptr \[rcx \+ 0x1c\], 0$", ""), (r"^mov rbx, rcx$", ""),
+                    (r"^mov r9d, dword ptr \[rdx \+ 0x14\]$", ""), (r"^add rcx, 8$", ""),
+                    (r"^mov r8, qword ptr \[rdx \+ 8\]$", ""), (r"^mov edx, dword ptr \[rcx \+ 0x14\]$", ""),
+                    (r"^call 0x", ""), (r"^mov rcx, rbx$", ""), (r"^call 0x", ""), (r"^mov byte ptr \[rbx \+ 0x20\], 0$", "")],
+        "prefilter_bytes": [b"\xC7\x41\x1C\x00\x00\x00\x00"],
+        "window": 14,
+    },
+    "CSpecies_CopyCtor": {
+        "linux": "CSpecies::CSpecies(CSpecies const&)",
+        # rcx = destination (uninitialized, CSpecies size), rdx = source species
+        "signature": "void* (*)(void* species, const void* source)",
+        "vtable_ref": {"layout": "CSpecies::WriteMembers", "window": 14,
+                       "pattern": [r"^mov rsi, rdx$", r"^mov dword ptr \[rcx \+ 0x10\], 0xffffffff$", r"^lea rax, \[rip"]},
+    },
+    "CSpecies_Dtor": {
+        "linux": "CSpecies::~CSpecies()",
+        # rcx = species; destroys members in place (what the scalar deleting destructor calls)
+        "signature": "void (*)(void* species)",
+        "vtable_ref": {"layout": "CSpecies::WriteMembers", "window": 40,
+                       "pattern": [r"^mov esi, edx$", r"^test sil, 1$"], "anchor": r"^test sil, 1$", "pick": "last_call_before"},
+    },
+    "GetLocalizedLeaderName": {
+        "linux": "SLeaderName::GetLocalizedName (the %LEADER_1% / %LEADER_2% formatter)",
+        # rcx = CString* out, rdx = leader name object, r8d = mode
+        "signature": "void (*)(void* out_cstring, const void* name, int mode)",
+        "strings": ["%LEADER_1%", "%LEADER_2%"],
+        # anchored to the prologue: the body scan runs on into the next function
+        "require": [r"^(?:[^|]*\| ){0,10}mov r15d, r8d \| mov rsi, rdx \| mov rdi, rcx \| lea rbx, \[rdx \+ 0x18\]"],
+    },
+    # --- species modification (trait points as the species view computes them)
+    "NSpeciesModification_HasFreeSpeciesTraitPoints": {
+        "linux": "NSpeciesModification::HasFreeSpeciesTraitPoints(CCountry const*, CSpecies const*, int*, int*)",
+        # rcx = country, rdx = species, r8 = int* free trait points, r9 = int* free trait picks
+        # (either may be null); true when both are positive
+        "signature": "bool (*)(const void* country, const void* species, int* points, int* picks)",
+        # CTopBarSpeciesViewImp::UpdateSelectedSpecies, right before the trait points text box;
+        # it forwards the species' class, extra points and trait array to CalcFreeTraitPoints
+        "call_near": {"strings": ["selected_species_amount", "selected_species_trait_points"],
+                      "anchor": '"selected_species_trait_points"', "pick": "last_call_before",
+                      "require": [r"^(?:[^|]*\| ){0,20}lea rax, \[rdx \+ 0x[0-9a-f]+\] \| mov edx, dword ptr \[rdx \+ 0x[0-9a-f]+\]"]},
+    },
+    "NSpeciesModification_CalcFreeTraitPoints": {
+        "linux": "NSpeciesModification::CalcFreeTraitPoints(CCountry const*, int, int, CSpeciesClass const*, CPdxArray<CTrait const*> const&, int*, int*)",
+        "signature": "void (*)(const void* country, int extra_points, int extra_picks, const void* species_class, const void* traits, int* points, int* picks)",
+        # HasFreeSpeciesTraitPoints' call after it loads the species' extra trait points
+        "call_in": {"from": "NSpeciesModification_HasFreeSpeciesTraitPoints", "anchor": r"^mov edx, dword ptr \[rdx \+ 0x[0-9a-f]+\]$",
+                    "occurrence": 0, "pick": "first_call_after"},
+    },
+    "CTrait_GetCost": {
+        "linux": "CTrait::GetCost(CCountry const*) const",
+        # rcx = trait, rdx = country (null: the base cost); trait points it costs for that country
+        "signature": "int (*)(const void* trait, const void* country)",
+        # CalcFreeTraitPoints' only direct call in its loop over the trait array
+        "call_in": {"from": "NSpeciesModification_CalcFreeTraitPoints", "anchor": r"^movsxd r\w+, dword ptr \[r\w+ \+ 0x14\]$",
+                    "pick": "first_call_after"},
+    },
+    "CCountry_CalcAllPops": {
+        "linux": "CCountry::CalcAllPops() const",
+        # rcx = country; pops on all its owned colonies
+        "signature": "int (*)(const void* country)",
+        # the observer outliner's country tooltip: the count, then "NUM_POPS"
+        "call_near": {"strings": ["NUM_EMPIRE_COLONIES", "CLICK_TO_OBSERVE"], "anchor": '"NUM_POPS"',
+                      "pick": "last_call_before"},
+    },
+    # --- UI entry points (the bridge checks the object's vtable before calling)
+    "CMessage_LeftClick": {
+        "linux": "CMessage::LeftClick()",
+        # rcx = notification (CMessage); opens what the notification points at (event, view, camera)
+        "signature": "void (*)(void* message)",
+        "pattern": [(r"^mov rdi, rcx$", ""), (r"^mov rax, qword ptr \[rcx\]$", ""), (r"^call qword ptr \[rax \+ 0x38\]$", ""),
+                    (r"^test al, al$", ""), (r"^je ", ""), (r"^mov rax, qword ptr \[rdi \+ 0x18\]$", ""),
+                    (r"^cmp byte ptr \[rax \+ 0x100\], 0$", "")],
+        "prefilter_bytes": [b"\x80\xB8\x00\x01\x00\x00\x00"],
+        "window": 20,
+    },
+    "CAlertIconsWindow_Click": {
+        "linux": "CAlertManager::Click(CGuiObject*)",
+        # rcx = alert icons window (CInGameIdler's alerticon_window), rdx = the clicked alert banner;
+        # dispatches to the alert type's handler
+        "signature": "void (*)(void* alert_window, void* banner)",
+        "strings": ["alerticon_banner", "minor_artifacts"],
+    },
+    "CStartScreenWindow_Close": {
+        "linux": "CStartScreenWindow::Close()",
+        # rcx = start screen window: hides it, focuses the capital, fires on_press_begin
+        "signature": "void (*)(void* window)",
+        "strings": ["on_press_begin"],
+    },
     "CRT_purecall": {
         "linux": "__cxa_pure_virtual (MSVC: _purecall)",
         "signature": "void (*)()  -- calls the registered purecall handler, then abort()",
@@ -711,6 +848,11 @@ def match_call_near(im, spec):
     fns = match_by_strings(im, {"strings": cn["strings"]})
     # several functions may share the strings; they count if they all lead to one target
     targets = {t for f in fns for t in call_near_in(im, f, cn)}
+    if cn.get("require"):
+        # regexes over the target's opening instructions ("mnemonic op_str" joined by " | ")
+        def head(t):
+            return " | ".join(f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(t, 0x200)[:40])
+        targets = {t for t in targets if all(re.search(rx, head(t)) for rx in cn["require"])}
     return sorted(targets)
 
 
@@ -763,6 +905,40 @@ def match_vtable_call(im, spec):
     return [t - im.ib if t > im.ib else t]
 
 
+def match_vtable_ref(im, spec):
+    """Functions that store one of a class's vtables (`lea reg, [rip + vtable]`; vtables of the
+    class's serializer from win_layouts.json) and whose first `window` instructions contain the
+    pattern in order. With "pick" (an anchor regex and first_call_after / last_call_before), the
+    answer is that call's target instead of the function."""
+    vr = spec["vtable_ref"]
+    layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
+    vts = [a for a, _ in layouts.get(vr["layout"], {}).get("vtables", [])]
+    lea = im.lea_index()
+    cands = sorted({im.fn_of(r) for v in vts for r in lea.get(v, [])} - {None})
+    out = []
+    for f in cands:
+        ins = im.disasm_fn(f, 0x800)[:vr.get("window", 60)]
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        k = 0
+        for o in ops:
+            if k < len(vr["pattern"]) and re.search(vr["pattern"][k], o):
+                k += 1
+        if k < len(vr["pattern"]):
+            continue
+        if "anchor" not in vr:
+            out.append(f)
+            continue
+        hit = next((n for n, o in enumerate(ops) if re.search(vr["anchor"], o)), None)
+        if hit is None:
+            continue
+        order = range(hit + 1, len(ins)) if vr.get("pick") == "first_call_after" else range(hit - 1, -1, -1)
+        for n in order:
+            if ins[n].mnemonic == "call" and ins[n].op_str.startswith("0x"):
+                out.append(int(ins[n].op_str, 16) - im.ib)
+                break
+    return sorted(set(out))
+
+
 def main():
     im = Image(EXE)
     text = im.img[im.text0:im.text1]
@@ -786,6 +962,27 @@ def main():
             else:
                 failures.append(name)
                 print(f"{name}: {len(matches)} callers {[hex(m) for m in matches]} -- fingerprint needs updating")
+            continue
+        if "call_in" in spec:
+            # the call next to an anchor inside a function located earlier in this table
+            ci = spec["call_in"]
+            src = result.get(ci["from"], {}).get("rva")
+            matches = call_near_in(im, src, ci) if src is not None else []
+            if len(matches) == 1:
+                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
+                print(f"{name}: 0x{matches[0]:X}")
+            else:
+                failures.append(name)
+                print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
+            continue
+        if "vtable_ref" in spec:
+            matches = match_vtable_ref(im, spec)
+            if len(matches) == 1:
+                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
+                print(f"{name}: 0x{matches[0]:X}")
+            else:
+                failures.append(name)
+                print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
             continue
         if "mnemonics" in spec or "strings" in spec or "call_near" in spec or "vtable_call" in spec:
             matches = (match_by_mnemonics(im, spec) if "mnemonics" in spec else
@@ -825,6 +1022,19 @@ def main():
                     if k == len(spec["pattern"]):
                         matches.append(f)
                         break
+        if spec.get("identical_ok") and len(matches) > 1:
+            # the linker kept byte-identical copies (same instructions, same call targets): any one is it
+            def body(f):
+                out = []
+                for i in im.disasm_fn(f, 0x200):
+                    op = i.op_str
+                    if i.mnemonic.startswith("j") and op.startswith("0x") and 0 <= int(op, 16) - im.ib - f < 0x200:
+                        op = f"+{int(op, 16) - im.ib - f:#x}"  # branch inside the function
+                    out.append(f"{i.mnemonic} {op}")
+                return tuple(out)
+            bodies = {body(f) for f in matches}
+            if len(bodies) == 1:
+                matches = [min(matches)]
         if spec.get("follow_call"):
             # the fingerprint matched a thin wrapper; the function wanted is what it calls
             targets = set()

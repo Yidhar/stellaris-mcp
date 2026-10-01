@@ -1,5 +1,6 @@
 #include "alert_manager.hpp"
 #include "game_state.hpp"
+#include "sdk/stellaris_sdk.hpp"
 #include <unordered_map>
 #include <algorithm>
 
@@ -53,6 +54,16 @@ static bool SafeAlertClick(AlertManager::FnOnAlertClick fn, void* alert_win, voi
     }
 }
 
+// CInGameIdler's alert icons window, checked against its vtable
+bool AlertManager::ReadAlertWindow(void* idler, void** out) {
+    void* win = nullptr;
+    void* vt = nullptr;
+    if (!SafeReadPtr((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_CAlertIconsWindow), &win) || !win) return false;
+    if (!SafeReadPtr(win, &vt) || (uintptr_t)vt != base_address_ + sdk::vt::CAlertIconsWindow) return false;
+    *out = win;
+    return true;
+}
+
 AlertManager& AlertManager::Get() {
     static AlertManager instance;
     return instance;
@@ -61,8 +72,10 @@ AlertManager& AlertManager::Get() {
 bool AlertManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    // RVA: CAlertIconsWindow::OnAlertClick = 0x9E2EB0 (4.5.0 Cygnus)
-    fn_on_alert_click_ = (FnOnAlertClick)(base_address_ + 0x9E2EB0);
+    // CAlertManager::Click(CGuiObject*): the alert icons window's click handler; finds the alert whose
+    // "alerticon_banner" is the clicked object and runs that alert type's action
+    fn_on_alert_click_ = SdkMatchesImage(base_address_)
+        ? (FnOnAlertClick)(base_address_ + sdk::fn::CAlertIconsWindow_Click) : nullptr;
 
     LOGF("[ALERT_MGR] Initialized: Base=0x%llX, OnAlertClick=0x%llX",
         (unsigned long long)base_address_,
@@ -211,7 +224,7 @@ std::vector<AlertItem> AlertManager::GetAlerts() {
     if (!idler) return items;
 
     void* alert_win = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)idler + 0xBC8), &alert_win) || !alert_win) {
+    if (!ReadAlertWindow(idler, &alert_win)) {
         return items;
     }
 
@@ -289,7 +302,7 @@ nlohmann::json AlertManager::OpenAlert(uint32_t alert_id) {
     }
 
     void* alert_win = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)idler + 0xBC8), &alert_win) || !alert_win) {
+    if (!ReadAlertWindow(idler, &alert_win)) {
         return {
             {"error", {
                 {"code", -32032},
@@ -347,7 +360,7 @@ nlohmann::json AlertManager::OpenAlert(uint32_t alert_id) {
         return {
             {"error", {
                 {"code", -32037},
-                {"message", "fn_on_alert_click_ is null"}
+                {"message", "SDK does not match this stellaris.exe; regenerate it with tools/sdk_dumper/dump.py"}
             }}
         };
     }

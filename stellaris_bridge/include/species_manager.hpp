@@ -7,6 +7,8 @@
 
 namespace bridge {
 
+class NativeCommand;
+
 struct SpeciesRights {
     std::string citizenship;
     std::string citizenship_localized;
@@ -63,9 +65,6 @@ struct RightOption {
 
 class SpeciesManager {
 public:
-    using FnLocalize = void(__fastcall*)(void* out_pdx_str, const void* in_key_pdx_str);
-    using FnFreePdxStr = void(__fastcall*)(void* pdx_str);
-    using FnEngineAlloc = void* (*)(size_t size);
     using FnSpeciesCopyCtor = void*(__fastcall*)(void* dest_species, const void* src_species);
     using FnSpeciesDtor = void(__fastcall*)(void* species);
     using FnTraitSetSetTraits = void(__fastcall*)(void* trait_set_ptr, void* p_pdx_array_traits);
@@ -97,15 +96,12 @@ public:
     // Helpers
     void* GetPlayerCountry();
     uint32_t GetCurrentGameHours();
+    std::vector<TraitInfo> ReadTraits(void* pSpecies);
 
 private:
     SpeciesManager() = default;
 
     uintptr_t base_address_{ 0 };
-
-    FnLocalize fn_localize_{ nullptr };
-    FnFreePdxStr fn_free_pdx_str_{ nullptr };
-    FnEngineAlloc fn_engine_alloc_{ nullptr };
 
     FnSpeciesCopyCtor fn_species_copy_ctor_{ nullptr };
     FnSpeciesDtor fn_species_dtor_{ nullptr };
@@ -119,15 +115,17 @@ private:
     // Traits cache
     std::unordered_map<std::string, TraitInfo> traits_catalog_;
     std::unordered_map<std::string, void*> trait_objects_;
-    std::unordered_map<std::string, int32_t> trait_costs_;
 
     void EnsureDatabasesLoaded();
     void LoadRightDatabase(const std::string& category, uintptr_t db_rva);
     void EnsureTraitsLoaded();
 
     SpeciesRights ReadRights(void* pRightsMgr, void* pSpecies);
-    std::vector<TraitInfo> ReadTraits(void* pSpecies);
+    std::vector<void*> TraitObjects(void* pSpecies);
     uint32_t CalculateEmpirePops(uint32_t* out_colony_count = nullptr);
+    std::string FillTemplateSpecies(NativeCommand& cmd, std::ptrdiff_t species_off, void* source,
+                                    uint32_t base_species_id, const std::string& name,
+                                    const std::vector<std::string>& trait_keys);
 };
 
 } // namespace bridge

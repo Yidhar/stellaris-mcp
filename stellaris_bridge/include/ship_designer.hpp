@@ -76,8 +76,6 @@ public:
     nlohmann::json DeleteShipDesignJson(const nlohmann::json& params);
 
     using FnEngineAlloc = void* (*)(size_t size);
-    using FnLocalize = void* (*)(void* out_str, const void* in_key);
-    using FnFreePdxStr = void (*)(void* str);
 
 private:
     ShipDesigner() = default;
@@ -93,8 +91,6 @@ private:
     uintptr_t base_address_{ 0 };
 
     FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnLocalize fn_localize_{ nullptr };
-    FnFreePdxStr fn_free_pdx_str_{ nullptr };
 
     bool CanCountryUseComponent(void* p_tmpl, void* p_country);
     std::string LocalizeKey(const std::string& key);

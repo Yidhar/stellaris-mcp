@@ -29,6 +29,7 @@ namespace glob {
     inline constexpr uintptr_t CDesignerDatabase_pInstance = 0x31532F0;  // CDesignerDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CDiploPhraseDatabase_pInstance = 0x3151FD0;  // CDiploPhraseDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CFallenEmpiresDatabase_pInstance = 0x3153140;  // CFallenEmpiresDatabase::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t CModifier_Definitions = 0x2813390;  // CModifier::_Definitions  score=anchor live=anchor
     inline constexpr uintptr_t COnActionDatabase_pInstance = 0x3151FC8;  // COnActionDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t COpinionModifierDatabase_pInstance = 0x3151FA0;  // COpinionModifierDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CRandom_Forbidden = 0x2812CF9;  // CRandom_Forbidden  score=anchor live=anchor
@@ -364,6 +365,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CCouncilPosition_id = 0x8;
     inline constexpr std::ptrdiff_t CCountryFocusCard_id = 0x10;
     inline constexpr std::ptrdiff_t CCountry_id = 0x20;
+    inline constexpr std::ptrdiff_t CCountry_species_rights_module = 0x2B70;
     inline constexpr std::ptrdiff_t CDebris_id = 0x20;
     inline constexpr std::ptrdiff_t CDeposit_id = 0x10;
     inline constexpr std::ptrdiff_t CDistrict_id = 0x8;
@@ -393,6 +395,10 @@ namespace rt {
     inline constexpr std::ptrdiff_t CHasFlagTrigger_dynamic_size = 0x248;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_flag = 0x220;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_vt_GetFlags = 0xF0;
+    inline constexpr std::ptrdiff_t CInGameIdler_CAlertIconsWindow = 0xBC8;
+    inline constexpr std::ptrdiff_t CInGameIdler_CAnomalyWindow = 0xB08;
+    inline constexpr std::ptrdiff_t CInGameIdler_CFirstContactView = 0xC90;
+    inline constexpr std::ptrdiff_t CInGameIdler_CStartScreenWindow = 0xBE8;
     inline constexpr std::ptrdiff_t CInGameIdler_paused = 0x594;
     inline constexpr std::ptrdiff_t CInGameIdler_speed = 0x590;
     inline constexpr std::ptrdiff_t CLeader_id = 0x20;
@@ -443,11 +449,25 @@ namespace rt {
     inline constexpr std::ptrdiff_t CShipSize_flags = 0xC8;
     inline constexpr std::ptrdiff_t CShip_id = 0x18;
     inline constexpr std::ptrdiff_t CSituation_id = 0x8;
+    inline constexpr std::ptrdiff_t CSpeciesRightType_key = 0x20;
+    inline constexpr std::ptrdiff_t CSpeciesRightType_right_base = 0x40;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_citizenship = 0xA4;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_colonization_control = 0xBC;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_living_standard = 0xA8;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_migration_control = 0xC0;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_military_service = 0xAC;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_population_control = 0xB8;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_purge = 0xB4;
+    inline constexpr std::ptrdiff_t CSpeciesRightsCountryConfiguration_changed_slavery = 0xB0;
     inline constexpr std::ptrdiff_t CSpecies_id = 0x10;
     inline constexpr std::ptrdiff_t CSpyNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CStarbase_id = 0x8;
     inline constexpr std::ptrdiff_t CStrikeCraft_id = 0x8;
     inline constexpr std::ptrdiff_t CTradeDeal_id = 0x10;
+    inline constexpr std::ptrdiff_t CTraitDatabase_traits = 0x10;
+    inline constexpr std::ptrdiff_t CTraitSet_traits_count = 0x1C;
+    inline constexpr std::ptrdiff_t CTraitSet_traits_data = 0x10;
+    inline constexpr std::ptrdiff_t CTrait_key = 0x148;
     inline constexpr std::ptrdiff_t CTruce_id = 0x10;
     inline constexpr std::ptrdiff_t CVivariumCritter_id = 0x10;
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
@@ -460,24 +480,32 @@ namespace rt {
 // ============================== vtables ===============================
 // Engine class vtables and virtual slot indices derived by tools/sdk_dumper/anchors.py.
 namespace vt {
+    inline constexpr uintptr_t CAlertIconsWindow = 0x23B5B08;
+    inline constexpr uintptr_t CAnomalyWindow = 0x23F2E90;
     inline constexpr uintptr_t CBuildableArmy = 0x2376748;
     inline constexpr uintptr_t CBuildableBuilding = 0x2391FF0;
     inline constexpr uintptr_t CBuildableClearDepositBlocker = 0x2391F40;
     inline constexpr uintptr_t CBuildableUpgradeBuilding = 0x2391D30;
     inline constexpr uintptr_t CBuildableZone = 0x2391E90;
     inline constexpr uintptr_t CCelestialCoordinate = 0x2344C00;
+    inline constexpr uintptr_t CFirstContactView = 0x2411EF8;
     inline constexpr uintptr_t CFleetPath = 0x23DB020;
     inline constexpr uintptr_t CPdxArray_CFleetPath_SNode = 0x2344588;
+    inline constexpr uintptr_t CStartScreenWindow = 0x242D350;
+    inline constexpr uintptr_t NSpeciesModification_SSpeciesColonyPair = 0x2335870;
     inline constexpr int CBuildableBase_CalcCost = 9;
     inline constexpr int CBuildableBase_CalcProgressionSpeed = 10;
     inline constexpr int CBuildableBase_CalcProgressionTimeNeeded = 11;
     inline constexpr int CBuildableBase_GetToken = 16;
     inline constexpr int CFleet_GetCoordinate = 1;
+    inline constexpr int CGuiView_Hide = 7;
 }  // namespace vt
 
 // ============================== functions =============================
 // Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).
 namespace fn {
+    // CAlertManager::Click(CGuiObject*)  --  void (*)(void* alert_window, void* banner)
+    inline constexpr uintptr_t CAlertIconsWindow_Click = 0x9E34F0;
     // CArmyType::CalcMorale(CModifier const*) const  --  int64_t* (*)(const void* army_type, int64_t* out, const void* modifier)
     inline constexpr uintptr_t CArmyType_CalcMorale = 0x42EF40;
     // CArmy::CalcMilitaryPower() const  --  int64_t* (*)(const void* army, int64_t* out)
@@ -492,6 +520,8 @@ namespace fn {
     inline constexpr uintptr_t CConsole_RunCommandNow = 0x1B12C50;
     // CCouncilAgenda::GetCost(CCountry const*, CString*) const  --  int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason)
     inline constexpr uintptr_t CCouncilAgenda_GetCost = 0x4AC180;
+    // CCountry::CalcAllPops() const  --  int (*)(const void* country)
+    inline constexpr uintptr_t CCountry_CalcAllPops = 0x73CAD0;
     // CCountry::CalcGovernmentReformCost() const  --  int64_t* (*)(const void* country, int64_t* out)
     inline constexpr uintptr_t CCountry_CalcGovernmentReformCost = 0x71F670;
     // CCountry::CalcOurOpinionOfOther(CCountry const*, CString*) const  --  int (*)(const void* country, const void* other, void* reason)
@@ -548,6 +578,8 @@ namespace fn {
     inline constexpr uintptr_t CInGameIdler_SetGameSpeed = 0x935BE0;
     // CInGameIdler::SetPaused(SPauseGameSettings const&)  --  void (*)(void* idler, const void* settings)
     inline constexpr uintptr_t CInGameIdler_SetPaused = 0x9362D0;
+    // CMessage::LeftClick()  --  void (*)(void* message)
+    inline constexpr uintptr_t CMessage_LeftClick = 0x3211A0;
     // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Update()  --  void (*)(void* node)
     inline constexpr uintptr_t CModifierNodeBase_Update = 0x237C90;
     // (inlined) CModifierNodeBase::Invalidate -> per-thread invalid-id set insert  --  void (*)(void* mgr, uint32_t node_id, uint32_t category)
@@ -592,20 +624,44 @@ namespace fn {
     inline constexpr uintptr_t CSpeciesRightBase_IsAllowed = 0x39CBB0;
     // CSpeciesRightBase::IsPotential(CCountry const*, CSpecies const*) const  --  bool (*)(void* right_base, void* country, void* species)
     inline constexpr uintptr_t CSpeciesRightBase_IsPotential = 0x39BF30;
+    // CSpecies::CSpecies(CSpecies const&)  --  void* (*)(void* species, const void* source)
+    inline constexpr uintptr_t CSpecies_CopyCtor = 0x3DE770;
+    // CSpecies::~CSpecies()  --  void (*)(void* species)
+    inline constexpr uintptr_t CSpecies_Dtor = 0x1F8760;
+    // CStartScreenWindow::Close()  --  void (*)(void* window)
+    inline constexpr uintptr_t CStartScreenWindow_Close = 0x12D3160;
     // CStrategicResource::GetMaximumForCountry(CCountry const&) const  --  int64_t* (*)(const void* resource, int64_t* out, const void* country)
     inline constexpr uintptr_t CStrategicResource_GetMaximumForCountry = 0x3ADB80;
+    // CString::assign(char const*, size_t) (std::basic_string assign)  --  void* (*)(void* cstring, const char* chars, size_t length)
+    inline constexpr uintptr_t CString_Assign = 0x15BA40;
+    // CString::~CString() (frees the heap buffer, back to an empty inline string)  --  void (*)(void* cstring)
+    inline constexpr uintptr_t CString_Free = 0x15BBE0;
+    // CTraitSet::SetTraits(CPdxArray<CSpeciesTrait const*, int> const&)  --  void (*)(void* trait_set, const void* traits_array)
+    inline constexpr uintptr_t CTraitSet_SetTraits = 0x3D8E50;
+    // CTrait::GetCost(CCountry const*) const  --  int (*)(const void* trait, const void* country)
+    inline constexpr uintptr_t CTrait_GetCost = 0x4F6E50;
     // DrawMovementDebugLines()  --  void (*)()
     inline constexpr uintptr_t DrawMovementDebugLines = 0x9209A0;
     // GetDynamicFlag(CEventScope&, CEventTarget const&, CString const&, CString const&, bool)  --  uint16_t* (*)(uint16_t* out, void* scope, const void* target, const void* base, const void* where, bool log)
     inline constexpr uintptr_t GetDynamicFlag = 0x9F8A10;
+    // SLeaderName::GetLocalizedName (the %LEADER_1% / %LEADER_2% formatter)  --  void (*)(void* out_cstring, const void* name, int mode)
+    inline constexpr uintptr_t GetLocalizedLeaderName = 0x3E8E20;
     // NEventWindowUtil::GetEventWindowDesc(CEvent const&, CEventScope const&)  --  void* (*)(void* out_cstring, void* event, void* scope)
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077830;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
     inline constexpr uintptr_t NHabitability_CalcHabitability = 0xA21D60;
     // NShipDesignUtil::CanBuildComponent(CComponentTemplate const*, EDesignOwner, CShipGrowthStage const&, CComponentSlot const*, CString*)  --  bool (*)(const void* component, uint32_t owner, const void* stage, const void* slot, void* reason)
     inline constexpr uintptr_t NShipDesignUtil_CanBuildComponent = 0xE7CB20;
+    // NSpeciesModification::CalcFreeTraitPoints(CCountry const*, int, int, CSpeciesClass const*, CPdxArray<CTrait const*> const&, int*, int*)  --  void (*)(const void* country, int extra_points, int extra_picks, const void* species_class, const void* traits, int* points, int* picks)
+    inline constexpr uintptr_t NSpeciesModification_CalcFreeTraitPoints = 0x8EE360;
+    // NSpeciesModification::HasFreeSpeciesTraitPoints(CCountry const*, CSpecies const*, int*, int*)  --  bool (*)(const void* country, const void* species, int* points, int* picks)
+    inline constexpr uintptr_t NSpeciesModification_HasFreeSpeciesTraitPoints = 0x8EE2D0;
+    // PdxLocalize(std::string_view) -> CString (return slot)  --  void* (*)(void* out_cstring, const void* key_view)
+    inline constexpr uintptr_t PdxLocalize = 0x16D2D0;
     // PdxLocalize<char const(&)[N], CString const&>(key, param_name, value)  --  void* (*)(void* out_cstring, const void* key_view, const char* param, const void* value_cstring)
     inline constexpr uintptr_t PdxLocalize_OneParam = 0x326F30;
+    // PostCommandToSession(CCommand*, bool)  --  void (*)(void* command, bool force)
+    inline constexpr uintptr_t PostCommand = 0x5F8640;
     // SEthicGovernmentConfiguration::SEthicGovernmentConfiguration(CCountry const*)  --  void* (*)(void* config, const void* country)
     inline constexpr uintptr_t SEthicGovernmentConfiguration_ctor_country = 0xA1D250;
     // SEthicGovernmentConfiguration::~SEthicGovernmentConfiguration()  --  void (*)(void* config)
@@ -1120,6 +1176,7 @@ namespace CCosmicStorm {  // CCosmicStorm serializer 0xDA0CF0, match 0.963
     inline constexpr std::ptrdiff_t affected_country_ids = 0x310;  // tok 0x4398 ref_array<unsigned_int>
     inline constexpr std::ptrdiff_t visible_country_ids = 0x328;  // tok 0x4380 ref_array<unsigned_int>
     inline constexpr std::ptrdiff_t type = 0x340;  // tok 0xe1 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
+    inline constexpr std::ptrdiff_t path = 0x348;  // tok 0x174 ref_array<TPdxRef<CGalacticObject>>
     inline constexpr std::ptrdiff_t flags = 0x390;  // tok 0x2e26 persistent
     inline constexpr std::ptrdiff_t storm_daily_move_index = 0x3E0;  // tok 0x430a i32
     inline constexpr std::ptrdiff_t storm_days_till_next_system = 0x3E4;  // tok 0x430b i32
@@ -1799,6 +1856,7 @@ namespace CFleetMovementManager {  // CFleetMovementManager serializer 0xE25C40,
     inline constexpr std::ptrdiff_t time_since_last_path_update = 0xE8;  // tok 0x34ca i32
     inline constexpr std::ptrdiff_t path = 0xF0;  // tok 0x174 persistent
     inline constexpr std::ptrdiff_t formation = 0x118;  // tok 0x3096 persistent
+    inline constexpr std::ptrdiff_t custom_formation = 0x138;  // tok 0x391f ptr:CPdxArray
     inline constexpr std::ptrdiff_t ftl_windup = 0x150;  // tok 0x3018 i32
     inline constexpr std::ptrdiff_t ftl_total_windup = 0x154;  // tok 0x3b65 i32
     inline constexpr std::ptrdiff_t ftl_winddown = 0x158;  // tok 0x34ce i32
@@ -2656,6 +2714,7 @@ namespace CSavedLeader {  // CSavedLeader serializer 0x8A28B0, match 1.0
     inline constexpr std::ptrdiff_t leader = 0x38;  // tok 0x4033 ref<CLeader>
 }
 namespace CScriptedFleetOrder {  // CScriptedFleetOrder serializer 0xD0EB60, match 0.75
+    inline constexpr std::ptrdiff_t target = 0x28;  // tok 0x6b persistent
     inline constexpr std::ptrdiff_t progress = 0x30;  // tok 0x2c79 u64
     inline constexpr std::ptrdiff_t scripted_action = 0x38;  // tok 0x3925 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
     inline constexpr std::ptrdiff_t progress_started = 0x40;  // tok 0x4613 other
@@ -2878,6 +2937,7 @@ namespace CSpecialProjectInstance {  // CSpecialProjectInstance serializer 0x821
     inline constexpr std::ptrdiff_t status = 0x1C8;  // tok 0xd0 other  [check: positional]
     inline constexpr std::ptrdiff_t ai_research_date = 0x1CC;  // tok 0x36dd persistent  [check: positional]
     inline constexpr std::ptrdiff_t convert_to = 0x1D0;  // tok 0x2b47 ref<CSpecies>
+    inline constexpr std::ptrdiff_t species = 0x1D8;  // tok 0x2b52 ref_array<NSpeciesModification::SSpeciesColonyPair>
 }
 namespace CSpecialistSubjectConversionProcess_CSerializer {  // CSpecialistSubjectConversionProcess::CSerializer serializer 0x575F70, match 1.0
     inline constexpr std::ptrdiff_t progress = 0x30;  // tok 0x2c79 u64 (ptr; value at +0x0)
@@ -2936,12 +2996,6 @@ namespace CSpeciesRightsCountryConfiguration {  // CSpeciesRightsCountryConfigur
     inline constexpr std::ptrdiff_t former_colonization_control = 0x88;  // tok 0x38e3 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
     inline constexpr std::ptrdiff_t former_migration_control = 0x90;  // tok 0x38ba ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
     inline constexpr std::ptrdiff_t species_index = 0xA0;  // tok 0x2b55 ref<CSpecies>
-    inline constexpr std::ptrdiff_t last_changed_purge_type = 0xA8;  // tok 0x3887 persistent
-    inline constexpr std::ptrdiff_t last_changed_citizenship_type = 0xAC;  // tok 0x3884 persistent
-    inline constexpr std::ptrdiff_t last_changed_military_service_type = 0xB0;  // tok 0x3885 persistent
-    inline constexpr std::ptrdiff_t last_changed_slavery_type = 0xB4;  // tok 0x3886 persistent
-    inline constexpr std::ptrdiff_t last_changed_colonization_control = 0xB8;  // tok 0x38e4 persistent
-    inline constexpr std::ptrdiff_t last_changed_living_standard = 0xBC;  // tok 0x3888 persistent
 }
 namespace CSpeciesRightsModule {  // CSpeciesRightsModule serializer 0x7F5CA0, match 1.0
     inline constexpr std::ptrdiff_t primary = 0x20;  // tok 0x4074 persistent
@@ -3294,6 +3348,7 @@ namespace NSpeciesModification_SSpeciesColonyPair {  // NSpeciesModification::SS
 }
 namespace NWar_SProxyWarData {  // NWar::SProxyWarData serializer 0xAB1EF0, match 0.667
     inline constexpr std::ptrdiff_t instigator = 0x8;  // tok 0x4443 ref<CCountry>
+    inline constexpr std::ptrdiff_t attackers = 0x10;  // tok 0x2d3f ref_array<NWar::SWarAttendantData>
     inline constexpr std::ptrdiff_t defender = 0x28;  // tok 0x400f ref<CCountry>
 }
 namespace NWar_SWarAttendantData {  // NWar::SWarAttendantData serializer 0xAB1E50, match 1.0
@@ -3540,6 +3595,7 @@ namespace SMegaStructureUpgrade {  // SMegaStructureUpgrade serializer 0xD7CED0,
     inline constexpr std::ptrdiff_t indefinitely_halted = 0xA4;  // tok 0x3f9a other
 }
 namespace SMegastructureCurrentAction {  // SMegastructureCurrentAction serializer 0xD0EB60, match 0.556
+    inline constexpr std::ptrdiff_t target = 0x28;  // tok 0x6b persistent
     inline constexpr std::ptrdiff_t progress = 0x30;  // tok 0x2c79 u64
     inline constexpr std::ptrdiff_t scripted_action = 0x38;  // tok 0x3925 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
 }
@@ -4213,8 +4269,8 @@ namespace close_branch_office_command {  // CCloseBranchOfficeCommand (token-nam
     inline constexpr uintptr_t kFactoryRva = 0x6B9340;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"close_branch_office_command", kToken, kVtableRva, kFactoryRva, kSize};
-    inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
-    inline constexpr std::ptrdiff_t colony = 0x24;  // tok 0x3931 ref<CColony>
+    inline constexpr std::ptrdiff_t country = 0x24;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t colony = 0x20;  // tok 0x3931 ref<CColony>
 }
 namespace set_colony_type_command {  // CSetColonyTypeCommand (token-name)
     inline constexpr uint32_t kToken = 0x2AF9;
@@ -4276,8 +4332,8 @@ namespace establish_branch_office_command {  // CEstablishBranchOfficeCommand (t
     inline constexpr uintptr_t kFactoryRva = 0x6B92F0;
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"establish_branch_office_command", kToken, kVtableRva, kFactoryRva, kSize};
-    inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
-    inline constexpr std::ptrdiff_t colony = 0x24;  // tok 0x3931 ref<CColony>
+    inline constexpr std::ptrdiff_t country = 0x24;  // tok 0x2c88 ref<CCountry>
+    inline constexpr std::ptrdiff_t colony = 0x20;  // tok 0x3931 ref<CColony>
 }
 namespace enact_decision_planet_command {  // CEnactDecisionCommand (serializer)
     inline constexpr uint32_t kToken = 0x2B85;
@@ -4324,7 +4380,8 @@ namespace borrow_diplo_weight_for_resolution_command {  // CBorrowDiploWeightFor
     inline constexpr uintptr_t kFactoryRva = 0x6D2C10;
     inline constexpr std::size_t kSize = 0x48;
     inline constexpr CmdSpec kSpec{"borrow_diplo_weight_for_resolution_command", kToken, kVtableRva, kFactoryRva, kSize};
-    inline constexpr std::ptrdiff_t resolution = 0x8;  // tok 0x3d6a ref<CResolution>
+    inline constexpr std::ptrdiff_t resolution = 0x20;  // tok 0x3d6a ref<CResolution>
+    inline constexpr std::ptrdiff_t country = 0x24;  // tok 0x2c88 ref<CCountry>
 }
 namespace ai_remove_diplo_action_command {  // CAIRemoveDiploAction (serializer)
     inline constexpr uint32_t kToken = 0x3E22;
@@ -4802,7 +4859,7 @@ namespace track_all_situations_command {  // CTrackAllSituationsCommand (token-n
     inline constexpr std::size_t kSize = 0x28;
     inline constexpr CmdSpec kSpec{"track_all_situations_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
-    inline constexpr std::ptrdiff_t track = 0x28;  // tok 0x8b bool_cond  [check: beyond kSize]
+    inline constexpr std::ptrdiff_t track = 0x24;  // tok 0x8b bool_cond
 }
 namespace auto_research_technology_command {  // CAutoResearchTechnologyCommand (token-name)
     inline constexpr uint32_t kToken = 0x3E33;
@@ -4901,6 +4958,7 @@ namespace update_gui_presence_command {  // CUpdateGuiPresenceCommand (token-nam
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"update_gui_presence_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t id = 0x20;  // tok 0xb i32
+    inline constexpr std::ptrdiff_t gui = 0x28;  // tok 0xc0 ref_array<CGuiViewPresenceData>
 }
 namespace request_to_initialize_hotjoin_gui_presence_command {  // CRequestToInitializeHotjoinGuiPresenceCommand (token-name)
     inline constexpr uint32_t kToken = 0x41F4;
@@ -4990,6 +5048,7 @@ namespace request_to_update_gui_presence_command {  // CRequestToUpdateGuiPresen
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"request_to_update_gui_presence_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t id = 0x20;  // tok 0xb i32
+    inline constexpr std::ptrdiff_t gui = 0x28;  // tok 0xc0 ref_array<CGuiViewPresenceData>
 }
 namespace berserk_ai_command {  // ?
     inline constexpr uint32_t kToken = 0x3952;
@@ -5104,6 +5163,7 @@ namespace diplo_action_start_proxy_war_command {  // CStartProxyWarCommand (seri
     inline constexpr CmdSpec kSpec{"diplo_action_start_proxy_war_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t instigator = 0x20;  // tok 0x4443 ref<CCountry>
     inline constexpr std::ptrdiff_t target = 0x24;  // tok 0x6b ref<CCountry>
+    inline constexpr std::ptrdiff_t attackers = 0x28;  // tok 0x2d3f ref_array<NWar::SWarAttendantData>
 }
 namespace set_fleet_automation_default_command {  // CSetFleetAutomationDefaultCommand (token-name)
     inline constexpr uint32_t kToken = 0x3F51;
@@ -6118,7 +6178,8 @@ namespace megastructure_scripted_action {  // CLaunchMegastructureScriptedAction
     inline constexpr CmdSpec kSpec{"megastructure_scripted_action", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t actor = 0x20;  // tok 0x2d58 ref<CCountry>
     inline constexpr std::ptrdiff_t megastructure = 0x24;  // tok 0x37a8 ref<CMegaStructure>
-    inline constexpr std::ptrdiff_t scripted_action = 0x28;  // tok 0x3925 ptr (object pointer; serialized as its key string)
+    inline constexpr std::ptrdiff_t target = 0x28;  // tok 0x6b persistent
+    inline constexpr std::ptrdiff_t scripted_action = 0x30;  // tok 0x3925 ptr (object pointer; serialized as its key string)
 }
 namespace request_post_load_sync_command {  // ?
     inline constexpr uint32_t kToken = 0x2A6B;
@@ -6198,6 +6259,7 @@ namespace response_from_host_coop_member_camera_coord {  // CResponseFromHostCoo
     inline constexpr uintptr_t kFactoryRva = 0xB2C490;
     inline constexpr std::size_t kSize = 0x60;
     inline constexpr CmdSpec kSpec{"response_from_host_coop_member_camera_coord", kToken, kVtableRva, kFactoryRva, kSize};
+    inline constexpr std::ptrdiff_t camera = 0x20;  // tok 0x68 persistent
 }
 namespace response_camera_coord {  // CResponseCameraCoord (token-name)
     inline constexpr uint32_t kToken = 0x34C4;
@@ -6282,7 +6344,7 @@ namespace create_species_mod_and_start_special_project {  // CCreateSpeciesModAn
     inline constexpr CmdSpec kSpec{"create_species_mod_and_start_special_project", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
     inline constexpr std::ptrdiff_t template_ = 0x28;  // tok 0x2cd persistent
-    inline constexpr std::ptrdiff_t species = 0x24;  // tok 0x2b52 ref_array<NSpeciesModification::SSpeciesColonyPair>
+    inline constexpr std::ptrdiff_t species = 0x568;  // tok 0x2b52 ref_array<NSpeciesModification::SSpeciesColonyPair>
 }
 namespace cancel_contract_command {  // CCancelContractCommand (token-name)
     inline constexpr uint32_t kToken = 0x45A7;
@@ -7100,8 +7162,8 @@ namespace create_species_mod_special_project {  // CCreateSpeciesModSpecialProje
     inline constexpr std::size_t kSize = 0x40;
     inline constexpr CmdSpec kSpec{"create_species_mod_special_project", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t country = 0x20;  // tok 0x2c88 ref<CCountry>
-    inline constexpr std::ptrdiff_t template_ = 0x28;  // tok 0x2cd ref<CSpecies>
-    inline constexpr std::ptrdiff_t species = 0x24;  // tok 0x2b52 ref_array<NSpeciesModification::SSpeciesColonyPair>
+    inline constexpr std::ptrdiff_t template_ = 0x24;  // tok 0x2cd ref<CSpecies>
+    inline constexpr std::ptrdiff_t species = 0x28;  // tok 0x2b52 ref_array<NSpeciesModification::SSpeciesColonyPair>
 }
 namespace disband_army_command {  // CDisbandArmyCommand (token-name)
     inline constexpr uint32_t kToken = 0x2DC4;
@@ -7126,6 +7188,7 @@ namespace spawn_cosmic_storm_command {  // CSpawnCosmicStormCommand (token-name)
     inline constexpr std::size_t kSize = 0x68;
     inline constexpr CmdSpec kSpec{"spawn_cosmic_storm_command", kToken, kVtableRva, kFactoryRva, kSize};
     inline constexpr std::ptrdiff_t type = 0x58;  // tok 0xe1 ptr (object pointer; serialized as its key string) (ptr; value at +0x20)
+    inline constexpr std::ptrdiff_t path = 0x20;  // tok 0x174 ref_array<TPdxRef<CGalacticObject>>
     inline constexpr std::ptrdiff_t immediate = 0x64;  // tok 0x2ca8 other
 }
 namespace execute_storm_area_placer_callback_command {  // CExecuteStormAreaPlacerCallback (token-name)

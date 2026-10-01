@@ -214,6 +214,23 @@ def regs_rw(ins):
     return {fam(ins.reg_name(x)) for x in r}, {fam(ins.reg_name(x)) for x in w}
 
 
+_helper_tokens = {}
+
+
+def writer_helper_token(im, fn, known_tokens):
+    """The key a writer helper writes itself: `mov edx, TOKEN` then a call in its first instructions."""
+    if fn not in _helper_tokens:
+        _helper_tokens[fn] = None
+        if im.text0 <= fn < im.text1:
+            ins = im.disasm_fn(fn, 0x100)[:16]
+            for a, b in zip(ins, ins[1:]):
+                if a.mnemonic == "mov" and a.op_str.startswith("edx, 0x") and b.mnemonic == "call":
+                    tok = int(a.op_str.split(", ")[1], 16)
+                    _helper_tokens[fn] = tok if tok in known_tokens else None
+                    break
+    return _helper_tokens[fn]
+
+
 def extract_fields(im, fn, known_tokens, newline_fn):
     """Token events and `this`-relative references of one Windows serializer."""
     insns = im.disasm_fn(fn, 0x20000)
@@ -287,7 +304,15 @@ def extract_fields(im, fn, known_tokens, newline_fn):
                 and all(b.mnemonic in ("mov", "add", "pop") for b in insns[last_edx_imm[1] + 1:n])
                 # an epilogue, not `mov edx, TOKEN; jmp shared_write` inside the function
                 and any(b.mnemonic == "pop" or b.op_str.startswith("rsp, ") for b in insns[last_edx_imm[1] + 1:n]))
-        if mnem == "call" or tail:
+        # a writer helper that emits its own key (`WriteUniform<T>(writer, array)` inlined with the
+        # token: `mov edx, TOKEN; call WriteToken` at its start), also reached by a tail jump
+        helper_tok = None
+        if mnem in ("call", "jmp") and ops and ops[0].type == X86_OP_IMM and not last_edx_imm:
+            helper_tok = writer_helper_token(im, ops[0].imm - im.ib, known_tokens)
+            if mnem == "jmp" and not any(b.mnemonic == "pop" or b.op_str.startswith("rsp, ")
+                                         for b in insns[max(0, n - 6):n]):
+                helper_tok = None
+        if mnem == "call" or tail or helper_tok:
             tgt = ops[0].imm - im.ib if ops and ops[0].type == X86_OP_IMM else None
             if last_edx_imm and n - last_edx_imm[1] <= (6 if tail else 3):
                 tok = last_edx_imm[0]
@@ -311,6 +336,8 @@ def extract_fields(im, fn, known_tokens, newline_fn):
                         break
                 if tgt is not None and rcx_disp is not None:
                     calls.append({"i": n, "target": tgt, "disp": rcx_disp})
+                elif helper_tok is not None:
+                    events.append({"i": n, "kind": "tok", "token": helper_tok, "call": tgt})
             last_edx_imm = None
             nxt_ins = insns[n + 1] if n + 1 < len(insns) else None
             if nxt_ins is not None and nxt_ins.mnemonic == "sub" and nxt_ins.op_str == "rsp, rax":
@@ -479,6 +506,43 @@ def this_adjust(im, fn):
     return None, vts
 
 
+def build_fields(im, fn, linux_fields, known_tokens, names, newline_fn):
+    """Fields of one serializer: Windows token events paired with the Linux fields (same tokens, in
+    order). win_disp is relative to the serializer's `this`; the caller adds the this-adjust."""
+    events, refs, calls, insns = extract_fields(im, fn, known_tokens, newline_fn)
+    cls = {"fields": linux_fields}
+    # kind per Windows token event, taken from the Linux field with the same token (in order)
+    lk = collections.defaultdict(list)
+    for lf in cls["fields"]:
+        lk[lf["token"]].append((lf["kind"], lf.get("indirect", False)))
+    kinds_ind = [lk[e["token"]].pop(0) if lk.get(e["token"]) else (None, False)
+                 for e in events if e["kind"] == "tok"]
+    pairs = assign_offsets(events, refs, insns, [k for k, _ in kinds_ind], [i for _, i in kinds_ind])
+    # align Linux fields to Windows events by token, in order
+    pool = collections.defaultdict(list)
+    for p in pairs:
+        pool[p["token"]].append(p)
+    fields = []
+    for lf in cls["fields"]:
+        p = pool[lf["token"]].pop(0) if pool.get(lf["token"]) else None
+        r = p["ref"] if p else None
+        disp = r["disp"] if r else None
+        fields.append({
+            "token": lf["token"],
+            "name": names.get(lf["token"]),
+            "kind": lf["kind"],
+            "ref": lf["ref"],
+            "linux_off": lf["linux_off"],
+            "linux_indirect": lf.get("indirect", False),
+            "win_disp": disp,
+            "indirect_off": r["ind"] if r else None,
+            "size": r["size"] if r else None,
+            "found": p is not None,
+            "evidence": p["where"] if p else None,
+        })
+    return fields, calls
+
+
 def main():
     linux = json.loads(LINUX.read_text(encoding="utf-8"))
     im = Image(EXE)
@@ -556,40 +620,12 @@ def main():
     for key, m in matched.items():
         cls = linux[key]
         # every engine-registered token delimits a key, even ones Linux writes via helpers
-        events, refs, calls, insns = extract_fields(im, m["fn"], known | set(names), newline_fn)
-        # kind per Windows token event, taken from the Linux field with the same token (in order)
-        lk = collections.defaultdict(list)
-        for lf in cls["fields"]:
-            lk[lf["token"]].append((lf["kind"], lf.get("indirect", False)))
-        kinds_ind = [lk[e["token"]].pop(0) if lk.get(e["token"]) else (None, False)
-                     for e in events if e["kind"] == "tok"]
-        pairs = assign_offsets(events, refs, insns, [k for k, _ in kinds_ind], [i for _, i in kinds_ind])
+        fields, calls = build_fields(im, m["fn"], cls["fields"], known | set(names), names, newline_fn)
         adj, vts = this_adjust(im, m["fn"])
         if cls["method"] == "WriteCommandMembers":
             adj = 0  # commands: WriteCommandMembers lives in the primary vtable at [obj+0]
-        # align Linux fields to Windows events by token, in order
-        pool = collections.defaultdict(list)
-        for p in pairs:
-            pool[p["token"]].append(p)
-        fields = []
-        for lf in cls["fields"]:
-            p = pool[lf["token"]].pop(0) if pool.get(lf["token"]) else None
-            r = p["ref"] if p else None
-            disp = r["disp"] if r else None
-            fields.append({
-                "token": lf["token"],
-                "name": names.get(lf["token"]),
-                "kind": lf["kind"],
-                "ref": lf["ref"],
-                "linux_off": lf["linux_off"],
-                "linux_indirect": lf.get("indirect", False),
-                "win_disp": disp,
-                "win_off": (adj + disp) if (disp is not None and adj is not None) else None,
-                "indirect_off": r["ind"] if r else None,
-                "size": r["size"] if r else None,
-                "found": p is not None,
-                "evidence": p["where"] if p else None,
-            })
+        for f in fields:
+            f["win_off"] = (adj + f["win_disp"]) if (f["win_disp"] is not None and adj is not None) else None
         subs = []
         for c in calls:
             for sk in fn_to_key.get(c["target"], []):

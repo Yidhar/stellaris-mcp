@@ -83,27 +83,6 @@ static bool SafeReadPdxString(const void* pdx_str_addr, std::string& out) {
     return false;
 }
 
-static bool SafeLocalizeCall(ContactsManager::FnLocalize fn_localize,
-                             ContactsManager::FnFreePdxStr fn_free_pdx,
-                             const RawPdxString* in_key,
-                             RawPdxString* out_str) {
-    __try {
-        fn_localize(out_str, in_key);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(ContactsManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
-    __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 ContactsManager& ContactsManager::Get() {
     static ContactsManager instance;
     return instance;
@@ -112,8 +91,6 @@ ContactsManager& ContactsManager::Get() {
 bool ContactsManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
 
     return true;
 }

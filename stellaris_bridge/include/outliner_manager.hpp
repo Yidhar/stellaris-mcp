@@ -89,8 +89,6 @@ class OutlinerManager {
 public:
     // The country's name as the game shows it (CCountry name).
     std::string CountryDisplayName(uint32_t country_id);
-    using FnLocalize = void* (*)(void* out_str, const void* in_key);
-    using FnFreePdxStr = void (*)(void* str);
 
     static OutlinerManager& Get();
 
@@ -182,8 +180,6 @@ private:
     using FnConstructBuildableBuilding = void* (*)(void* this_ptr, uint32_t colony_id, uint32_t zone_id, void* bldg_def);
     using FnEnqueueCmd = void (*)(void* cmd_queue_mgr, void* cmd);
 
-    FnLocalize fn_localize_{ nullptr };
-    FnFreePdxStr fn_free_pdx_str_{ nullptr };
     FnEngineAlloc fn_engine_alloc_{ nullptr };
     FnPostCommand fn_post_command_{ nullptr };
     FnConstructCmd fn_construct_cmd_{ nullptr };

@@ -73,6 +73,14 @@ static bool SafeGetLocalizedLeaderNameCall(LeaderManager::FnGetLocalizedLeaderNa
     }
 }
 
+using FnFreeCString = void (*)(void* cstring);
+static void SafeFreePdxStr(RawPdxString* str) {
+    __try {
+        ((FnFreeCString)((uintptr_t)GetModuleHandleA(nullptr) + sdk::fn::CString_Free))(str);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 static bool SafeReadPdxStringRaw(const void* src, char* out_buf, size_t max_len) {
     __try {
         const RawPdxString* pdx = (const RawPdxString*)src;
@@ -106,25 +114,6 @@ static bool SafeReadPdxString(const void* src, std::string& out) {
     return false;
 }
 
-static bool SafeLocalizeCall(LeaderManager::FnLocalize fn_localize, LeaderManager::FnFreePdxStr fn_free,
-    const RawPdxString* in_key, RawPdxString* out_str) {
-    __try {
-        fn_localize(out_str, in_key);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(LeaderManager::FnFreePdxStr fn_free_pdx, RawPdxString* str) {
-    __try {
-        if (str->capacity >= 16 && str->heap_ptr) {
-            fn_free_pdx(str);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 nlohmann::json TraitsJson(const std::vector<LeaderTraitDetail>& traits) {
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& t : traits) {
@@ -141,9 +130,7 @@ LeaderManager& LeaderManager::Get() {
 bool LeaderManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_get_localized_leader_name_ = (FnGetLocalizedLeaderName)(base_address_ + 0x3E8E20);
+    fn_get_localized_leader_name_ = (FnGetLocalizedLeaderName)(base_address_ + sdk::fn::GetLocalizedLeaderName);
 
     LOGF("[LEADER] Initialized (Base: 0x%llX)", (unsigned long long)base_address_);
     return true;
@@ -273,7 +260,7 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
 
     // 1. Resolve Localized Leader Name
     void* name_obj = (void*)((uintptr_t)leader + 0x38);
-    if (fn_get_localized_leader_name_) {
+    if (fn_get_localized_leader_name_ && CommandBuilder::Get().SdkMatchesExe()) {
         RawPdxString out_name{};
         if (SafeGetLocalizedLeaderNameCall(fn_get_localized_leader_name_, &out_name, name_obj)) {
             if (out_name.size > 0 && out_name.size < 256) {
@@ -285,9 +272,7 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
                     detail.name = std::string(out_name.heap_ptr, out_name.size);
                 }
             }
-            if (fn_free_pdx_str_) {
-                SafeFreePdxStr(fn_free_pdx_str_, &out_name);
-            }
+            SafeFreePdxStr(&out_name);
         }
     }
 

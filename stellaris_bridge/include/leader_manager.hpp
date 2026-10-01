@@ -64,8 +64,6 @@ struct CandidateDetail {
 
 class LeaderManager {
 public:
-    using FnLocalize = void* (*)(void* out_str, const void* in_key);
-    using FnFreePdxStr = void (*)(void* str);
     using FnGetLocalizedLeaderName = void (*)(void* out_str, void* name_obj, int mode);
 
     static LeaderManager& Get();
@@ -95,8 +93,6 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnLocalize fn_localize_{ nullptr };
-    FnFreePdxStr fn_free_pdx_str_{ nullptr };
     FnGetLocalizedLeaderName fn_get_localized_leader_name_{ nullptr };
 
 

@@ -44,7 +44,7 @@ HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 
 wx = runpy.run_path(str(HERE / "win_extract.py"), run_name="sdk_anchors")
-Image, EXE, token_names = wx["Image"], wx["EXE"], wx["token_names"]
+Image, EXE, token_names, find_calls_to = wx["Image"], wx["EXE"], wx["token_names"], wx["find_calls_to"]
 
 BUILDABLES = {
     "CBuildableBuilding": "buildable_planet_building",
@@ -73,6 +73,7 @@ REQUIRED = [
     "TGameDatabase<CArmyTypeDatabase>::_pInstance",
     "TGameDatabase<CBuildingTypeDatabase>::_pInstance",
     "CTerraformDatabase::_pInstance",
+    "CModifier::_Definitions",
     "CTraitDatabase::_pInstance",
     "CShipDesignTemplatesDatabase::_pInstance",
     "TPdxRef<CDeposit>::_pDatabase",
@@ -490,6 +491,71 @@ def main():
             print(f"CInGameIdler paused 0x{paused[0]:X}, speed 0x{speed[0]:X}")
     else:
         failures.append("CInGameIdler paused/speed: CInGameIdler_SetGameSpeed missing")
+
+    # CInGameIdler views: the idler's builder allocates each window view and stores it in a member
+    # (`call <ctor>; nop; mov qword ptr [reg + X], rax`). A view's constructor names its gui window
+    # and installs the class vtable right after the base constructor.
+    views = {"CStartScreenWindow": "start_screen_window", "CAnomalyWindow": "anomaly_view_window",
+             "CFirstContactView": "first_contact_view", "CAlertIconsWindow": "alerticon_window"}
+    xrefs = string_xrefs(im, list(views.values()))
+    builders = collections.defaultdict(dict)
+    for cls, gui in views.items():
+        for ctor in xrefs[gui]:
+            head = im.disasm_fn(ctor, 0x200)[:24]
+            vt = None
+            for a, b in zip(head, head[1:]):
+                if (a.mnemonic == "lea" and a.op_str.startswith("rax, [rip + ") and b.mnemonic == "mov"
+                        and re.match(r"^qword ptr \[r\w+\], rax$", b.op_str)):
+                    vt = rip_target(im, a)
+                    break
+            if vt is None:
+                continue
+            for site in find_calls_to(im, ctor):
+                after = list(im.md.disasm(im.img[site:site + 0x20], im.ib + site))[1:3]
+                if (len(after) == 2 and after[0].mnemonic == "nop" and after[1].mnemonic == "mov"):
+                    m = re.match(r"^qword ptr \[r\w+ \+ (0x[0-9a-f]+)\], rax$", after[1].op_str)
+                    if m:
+                        builders[im.fn_of(site)][cls] = (int(m.group(1), 16), vt)
+    full = [b for b, v in builders.items() if len(v) == len(views)]
+    if len(full) != 1:
+        failures.append(f"CInGameIdler views: builders {[hex(b) for b in builders]}")
+    else:
+        for cls, (off, vt) in builders[full[0]].items():
+            result["fields"][f"CInGameIdler_{cls}"] = off
+            result["vtables"][cls] = vt
+            print(f"CInGameIdler {cls} at +0x{off:X}, vtable 0x{vt:X}")
+        # CGuiView::Hide: the slot CAnomalyWindow overrides with OnLeaveBe's body (hide the gui
+        # window at +0x78 when visible, clear the shown flag at +0x90, return)
+        avt = builders[full[0]]["CAnomalyWindow"][1]
+        hide = []
+        for k in range(40):
+            body = " | ".join(f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(slot_fn(im, avt, k), 0x60)[:14])
+            if re.search(r"mov rcx, qword ptr \[rcx \+ 0x78\] \| .*cmp byte ptr \[rcx \+ 0x41\], 0 \| .*"
+                         r"call qword ptr \[rax \+ 0x[0-9a-f]+\] \| mov byte ptr \[rbx \+ 0x90\], 0 \| add rsp, 0x20 \| pop rbx \| ret", body):
+                hide.append(k)
+        if len(hide) != 1:
+            failures.append(f"CGuiView::Hide slot: {hide}")
+        else:
+            result["slots"]["CGuiView_Hide"] = hide[0]
+            print(f"slots: CGuiView::Hide {hide[0]}")
+
+    # CModifier definitions: CPdxArray<CPdxModifierDefinition> {data, capacity +8, size +0xC} that
+    # CModifier::LogDefinitions walks (stride 0xB0)
+    log_defs = string_xrefs(im, ["Printing Modifier Definitions:"])["Printing Modifier Definitions:"]
+    d0, d1 = data_range(im)
+    loads = collections.defaultdict(set)
+    for f in log_defs:
+        for i in im.disasm_fn(f, 0x400)[:120]:
+            if i.mnemonic in ("mov", "movsxd") and "ptr [rip + " in i.op_str:
+                g = rip_target(im, i)
+                if d0 <= g < d1:
+                    loads[i.op_str.split(",")[1].split()[0]].add(g)
+    arr = [g for g in loads["qword"] if g + 0xC in loads["dword"]]
+    if len(log_defs) != 1 or len(arr) != 1:
+        failures.append(f"CModifier definitions: fns {len(log_defs)} arrays {[hex(g) for g in arr]}")
+    else:
+        result["globals"]["CModifier::_Definitions"] = arr[0]
+        print(f"CModifier definitions 0x{arr[0]:X}")
 
     # CGameState date in hours: HandleTurnTick advances it with `add dword ptr [reg], 0x18` after
     # `lea reg, [state + X]`
@@ -1040,6 +1106,164 @@ def main():
     for t, off in ids.items():
         result["fields"][f"{t}_id"] = off
     print("object id offsets: " + ", ".join(f"{t}=0x{o:X}" for t, o in sorted(ids.items())))
+    # Species rights and modification, from the code that uses them.
+    layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
+    cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])
+    rights_vt = next((c["vtable"] for c in cmds if c.get("token_name") == "set_species_right_command"), None)
+
+    # CCountry::GetSpeciesRightsModule, inlined into CCountrySetSpeciesRightsCommand::IsValid: the
+    # member is loaded, a virtual check on it decides, and the same member is loaded again (else a
+    # null object)
+    module = set()
+    if rights_vt:
+        ins = im.disasm_fn(slot_fn(im, rights_vt, 8), 0x800)
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        for k in range(len(ops) - 5):
+            m = re.match(r"^mov rcx, qword ptr \[(r\w+) \+ (0x[0-9a-f]+)\]$", ops[k])
+            if (m and ops[k + 1] == "mov rax, qword ptr [rcx]" and ops[k + 2].startswith("call qword ptr [rax + ")
+                    and ops[k + 3] == "test al, al" and ops[k + 4].startswith("je ")
+                    and ops[k + 5] == f"mov rcx, qword ptr [{m.group(1)} + {m.group(2)}]"):
+                module.add(int(m.group(2), 16))
+    if len(module) != 1:
+        failures.append(f"CCountry species rights module: {sorted(module)}")
+    else:
+        result["fields"]["CCountry_species_rights_module"] = module.pop()
+        print(f"CCountry species rights module +0x{result['fields']['CCountry_species_rights_module']:X}")
+
+    # CSpeciesRightsCountryConfiguration::CopySettingsFrom: per category `mov R, [rdx + P]; cmp [this
+    # + P], R; mov dword ptr [this + D], eax` stamps the date the category may change again. Reached
+    # from the rights command's vtable (its Execute calls it)
+    pairs = {}
+    if rights_vt:
+        seen = set()
+        for slot in range(4, 24):
+            f = slot_fn(im, rights_vt, slot)
+            for g in [f] + [int(i.op_str, 16) - im.ib for i in im.disasm_fn(f, 0x1000)
+                            if i.mnemonic == "call" and i.op_str.startswith("0x")]:
+                if g in seen or not (im.text0 <= g < im.text1):
+                    continue
+                seen.add(g)
+                ops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(g, 0x600)]
+                found = {}
+                for k in range(len(ops) - 3):
+                    a = re.match(r"^mov (r\w+), qword ptr \[rdx \+ (0x[0-9a-f]+)\]$", ops[k])
+                    if not a:
+                        continue
+                    b = re.match(r"^cmp qword ptr \[(r\w+) \+ (0x[0-9a-f]+)\], (r\w+)$", ops[k + 1])
+                    st = k + 3 if ops[k + 2].startswith("je ") and k + 3 < len(ops) else k + 2
+                    d = re.match(r"^mov dword ptr \[(r\w+) \+ (0x[0-9a-f]+)\], eax$", ops[st])
+                    if b and d and b.group(2) == a.group(2) and b.group(3) == a.group(1) and b.group(1) == d.group(1):
+                        found.setdefault(int(a.group(2), 16), int(d.group(2), 16))
+                if len(found) >= 6:
+                    pairs[g] = found
+    conf = layouts.get("CSpeciesRightsCountryConfiguration::WriteMembers", {})
+    names = {}
+    for fld in conf.get("fields", []):
+        if fld.get("found") and not fld["name"].startswith("former_"):
+            names.setdefault(fld["win_off"], fld["name"])
+    if len(pairs) != 1:
+        failures.append(f"CSpeciesRightsCountryConfiguration::CopySettingsFrom: {[hex(g) for g in pairs]}")
+    else:
+        for ptr_off, date_off in sorted(pairs.popitem()[1].items()):
+            if ptr_off in names:
+                result["fields"][f"CSpeciesRightsCountryConfiguration_changed_{names[ptr_off]}"] = date_off
+        print("species rights change dates:", {k: hex(v) for k, v in result["fields"].items() if "_changed_" in k})
+        # the serializer writes these dates in another order than the categories, so pairing by
+        # position put the wrong names on them: drop every last_changed_<category> the code contradicts
+        bad = []
+        for fld in conf.get("fields", []):
+            if not fld["name"].startswith("last_changed_"):
+                continue
+            category = fld["name"][len("last_changed_"):].removesuffix("_type")
+            real = result["fields"].get(f"CSpeciesRightsCountryConfiguration_changed_{category}")
+            if real is None or real != fld.get("win_off"):
+                bad.append(fld["name"])
+        if bad:
+            result.setdefault("rejected_fields", {})["CSpeciesRightsCountryConfiguration"] = bad
+            print("rejected serializer fields:", bad)
+    # the right types the configuration points to are written as their key
+    key = {fld.get("indirect_off") for fld in conf.get("fields", []) if fld.get("kind") == "string" and fld.get("found")}
+    key.discard(None)
+    if len(key) != 1:
+        failures.append(f"species right type key: {key}")
+    else:
+        result["fields"]["CSpeciesRightType_key"] = key.pop()
+    # every engine call of CSpeciesRightBase::IsAllowed passes the right type's CSpeciesRightBase
+    # part: `lea rcx, [type + B]` right before the call
+    allowed = funcs.get("CSpeciesRightBase_IsAllowed", {}).get("rva")
+    votes = collections.Counter()
+    if allowed:
+        for site in find_calls_to(im, allowed):
+            for i in list(im.md.disasm(im.img[site - 0x30:site + 5], im.ib + site - 0x30)):
+                m = re.match(r"^rcx, \[r\w+ \+ (0x[0-9a-f]+)\]$", i.op_str)
+                if i.mnemonic == "lea" and m:
+                    votes[int(m.group(1), 16)] += 1
+    if not votes or (len(votes) > 1 and votes.most_common(2)[1][1] * 4 > votes.most_common(1)[0][1]):
+        failures.append(f"CSpeciesRightType right base: {votes}")
+    else:
+        result["fields"]["CSpeciesRightType_right_base"] = votes.most_common(1)[0][0]
+        print(f"species right type: key +0x{result['fields']['CSpeciesRightType_key']:X}, "
+              f"CSpeciesRightBase +0x{result['fields']['CSpeciesRightType_right_base']:X}")
+
+    # CTraitSet::WriteMembers: `movsxd R, dword ptr [rcx + N]` count, `mov rax, [set + D]` data,
+    # and each trait written as its key `lea rdx, [trait + K]`
+    ts = layouts.get("CTraitSet::WriteMembers", {})
+    tfn = ts.get("win_fn")
+    got = {}
+    if tfn:
+        for i in im.disasm_fn(tfn, 0x400)[:80]:
+            o = f"{i.mnemonic} {i.op_str}"
+            m = re.match(r"^movsxd r\w+, dword ptr \[rcx \+ (0x[0-9a-f]+)\]$", o)
+            if m and "count" not in got:
+                got["count"] = int(m.group(1), 16)
+            m = re.match(r"^mov rax, qword ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
+            if m and "count" in got and "data" not in got:
+                got["data"] = int(m.group(1), 16)
+            m = re.match(r"^lea rdx, \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
+            if m and "data" in got and "key" not in got:
+                got["key"] = int(m.group(1), 16)
+    if len(got) != 3:
+        failures.append(f"CTraitSet layout: {got}")
+    else:
+        result["fields"]["CTraitSet_traits_data"] = got["data"]
+        result["fields"]["CTraitSet_traits_count"] = got["count"]
+        result["fields"]["CTrait_key"] = got["key"]
+        print(f"CTraitSet traits data +0x{got['data']:X} count +0x{got['count']:X}; CTrait key +0x{got['key']:X}")
+
+    # CTraitDatabase::_pInstance: the trait array {data, capacity, size} its readers walk
+    tdb = result["globals"].get("CTraitDatabase::_pInstance") or globs.get("CTraitDatabase::_pInstance")
+    arr = collections.Counter()
+    if tdb:
+        text = im.img[im.text0:im.text1]
+        for m in re.finditer(rb"[\x48\x4C]\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+            at = im.text0 + m.start()
+            if at + 7 + struct.unpack_from("<i", im.img, at + 3)[0] != tdb:
+                continue
+            ins = list(im.md.disasm(im.img[at:at + 0x30], im.ib + at))
+            reg = ins[0].op_str.split(",")[0]
+            loads = [re.match(r"^(\w+), (q|d)word ptr \[" + reg + r" \+ (0x[0-9a-f]+)\]$", i.op_str) for i in ins[1:6]
+                     if i.mnemonic in ("mov", "movsxd")]
+            q = {int(x.group(3), 16) for x in loads if x and x.group(2) == "q"}
+            d = {int(x.group(3), 16) for x in loads if x and x.group(2) == "d"}
+            for off in q:
+                if off + 0xC in d:
+                    arr[off] += 1
+    if not arr:
+        failures.append("CTraitDatabase trait array: no reader")
+    else:
+        result["fields"]["CTraitDatabase_traits"] = arr.most_common(1)[0][0]
+        print(f"CTraitDatabase traits at +0x{arr.most_common(1)[0][0]:X} (votes {dict(arr)})")
+
+    # NSpeciesModification::SSpeciesColonyPair: the element vtable the special project's colony list
+    # is built of
+    pair = layouts.get("NSpeciesModification::SSpeciesColonyPair::WriteMembers", {})
+    pvt = (pair.get("vtables") or [[None]])[0][0]
+    if pvt is None:
+        failures.append("SSpeciesColonyPair vtable")
+    else:
+        result["vtables"]["NSpeciesModification_SSpeciesColonyPair"] = pvt
+        print(f"SSpeciesColonyPair vtable 0x{pvt:X}")
+
     have = set(result["globals"]) | set(globs)
     failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]
     for sym in REQUIRED:

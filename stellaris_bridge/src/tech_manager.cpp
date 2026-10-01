@@ -64,25 +64,6 @@ static bool SafeCopyChars(char* dest, const char* src, size_t count) {
     }
 }
 
-static bool SafeLocalizeCall(TechManager::FnLocalize fn, TechManager::FnFreePdxStr fn_free,
-                             const RawPdxString* in_key, RawPdxString* out_str) {
-    __try {
-        fn(out_str, in_key);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeFreePdxStr(TechManager::FnFreePdxStr fn, RawPdxString* str) {
-    __try {
-        fn(str);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 TechManager& TechManager::Get() {
     static TechManager instance;
     return instance;
@@ -92,8 +73,6 @@ bool TechManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
     // RVAs discovered from binary reverse engineering
-    fn_localize_     = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
 
     LOGF("[TECH_MGR] Initialized: Base=0x%llX", (unsigned long long)base_address_);
 

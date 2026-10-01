@@ -67,8 +67,6 @@ struct FullGovernmentState {
 
 class GovernmentManager {
 public:
-    using FnLocalize = void* (*)(void* out_str, const void* in_key);
-    using FnFreePdxStr = void (*)(void* str);
 
     static GovernmentManager& Get();
 
@@ -100,8 +98,6 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnLocalize fn_localize_{ nullptr };
-    FnFreePdxStr fn_free_pdx_str_{ nullptr };
 
 
     void* GetPlayerCountry();

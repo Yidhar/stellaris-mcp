@@ -43,10 +43,6 @@ public:
 
     using FnFindChild = void*(*)(void* container, void* pdx_string);
     using FnSelectOption = void(*)(void* event_window, int option_index);
-    using FnStartScreenDismiss = void(*)(void* start_screen);
-    using FnAnomalyDismiss = void(*)(void* anomaly_view);
-    using FnAnomalyResearch = void(*)(void* anomaly_view);
-    using FnFirstContactDismiss = void(*)(void* fc_view);
 
 private:
     EventManager() = default;
@@ -56,11 +52,9 @@ private:
 
     FnFindChild fn_find_child_{ nullptr };
     FnSelectOption fn_select_option_{ nullptr };
-    FnStartScreenDismiss fn_start_screen_dismiss_{ nullptr };
-    FnAnomalyDismiss fn_anomaly_dismiss_{ nullptr };
-    FnAnomalyResearch fn_anomaly_research_{ nullptr };
-    FnFirstContactDismiss fn_first_contact_dismiss_{ nullptr };
 
+    void* ShownView(void* idler, std::ptrdiff_t member, uintptr_t vtable_rva);
+    bool HideView(void* view);
     void* FindChildByName(void* container, const char* name);
     std::string ExtractPdxString(void* ptr);
 };

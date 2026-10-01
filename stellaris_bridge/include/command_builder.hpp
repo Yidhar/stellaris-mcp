@@ -56,6 +56,13 @@ public:
     };
     bool Post(Check check = Check::IsValid);
 
+    // Gives the object up without destroying it, for when something it embeds is no longer in a
+    // destructible state (a rebuild of an embedded engine object faulted). Leaks the allocation.
+    void Abandon(const std::string& why) {
+        obj_ = nullptr;
+        error_ = why;
+    }
+
 private:
     friend class CommandBuilder;
     NativeCommand(const sdk::CmdSpec* spec, void* obj, std::string error);

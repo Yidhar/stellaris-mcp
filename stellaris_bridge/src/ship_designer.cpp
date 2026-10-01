@@ -149,24 +149,6 @@ struct PdxCString {
     uint64_t capacity{ 15 };
 };
 
-static bool SafeLocalizeCall(ShipDesigner::FnLocalize fn_localize,
-                             const StringView* in_sv,
-                             PdxCString* out_str) {
-    __try {
-        fn_localize(out_str, in_sv);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static void SafeFreePdxStr(ShipDesigner::FnFreePdxStr fn_free_pdx, PdxCString* str) {
-    __try {
-        fn_free_pdx(str);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 namespace designs {
 namespace rt = sdk::rt;
 // CShipSize::ReadMember stores the script flag is_designable (token 0x31fe) as bit 1 of the flags
@@ -350,9 +332,7 @@ bool ShipDesigner::Init(uintptr_t base_address) {
     base_address_ = base_address;
     if (!base_address_) return false;
 
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + kRvaEngineAlloc);
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
+    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + sdk::kRvaEngineAlloc);
 
     LOGF("[SHIP_DESIGNER] Initialized with Base=0x%llX", (unsigned long long)base_address_);
     return true;

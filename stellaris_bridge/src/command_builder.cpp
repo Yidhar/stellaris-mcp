@@ -370,7 +370,7 @@ static void TakeReasonText(RawCString& text, std::string* reason, uint64_t max_s
         }
     }
     if (text.str.capacity > 15) {
-        CallFreePdxString(CommandBuilder::Get().Base() + kRvaFreePdxString, &text);
+        CallFreePdxString(CommandBuilder::Get().Base() + sdk::fn::CString_Free, &text);
     }
 }
 
@@ -435,7 +435,7 @@ bool CommandBuilder::RunConsoleCommand(const std::string& line, std::string* err
         ((void (*)(void*, const void*))p->fn)(p->console, p->cmd);
     }, &ctx, nullptr);
     if (cmd.str.capacity > 15) {
-        CallFreePdxString(base_ + kRvaFreePdxString, &cmd);
+        CallFreePdxString(base_ + sdk::fn::CString_Free, &cmd);
     }
     if (!ok) {
         if (error) *error = "engine raised: " + LastExceptionText();

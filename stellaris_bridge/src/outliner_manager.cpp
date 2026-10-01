@@ -255,13 +255,8 @@ bool OutlinerManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
     if (!base_address_) return false;
 
-    fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
-    fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + kRvaEngineAlloc);
-    fn_post_command_ = Commands::Get().GetPostCommand();
-    if (!fn_post_command_) {
-        fn_post_command_ = (FnPostCommand)(base_address_ + kRvaPostCommand);
-    }
+    fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + sdk::kRvaEngineAlloc);
+    fn_post_command_ = Commands::Get().GetPostCommand();  // null when the SDK does not match the exe
     fn_construct_cmd_ = nullptr;
     fn_construct_bldg_ = nullptr;
     fn_enqueue_cmd_ = nullptr;
@@ -2225,8 +2220,8 @@ std::string OutlinerManager::LocalizeModifierType(uint32_t mod_type_id) {
     if (!base_address_) return "";
     void* defs_arr = nullptr;
     uint32_t defs_cnt = 0;
-    SafeReadPtr((const void*)(base_address_ + 0x2813390), &defs_arr);
-    SafeReadU32((const void*)(base_address_ + 0x281339C), &defs_cnt);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::CModifier_Definitions), &defs_arr);
+    SafeReadU32((const void*)(base_address_ + sdk::glob::CModifier_Definitions + 0xC), &defs_cnt);
     if (!defs_arr || mod_type_id >= defs_cnt) return "";
 
     void* entry = (void*)((uintptr_t)defs_arr + mod_type_id * 0xB0);
@@ -2264,8 +2259,8 @@ static nlohmann::json ReadDepositModifiers(uintptr_t base_address, void* tptr, O
                 std::string mod_key;
                 void* defs_arr = nullptr;
                 uint32_t defs_cnt = 0;
-                SafeReadPtr((const void*)(base_address + 0x2813390), &defs_arr);
-                SafeReadU32((const void*)(base_address + 0x281339C), &defs_cnt);
+                SafeReadPtr((const void*)(base_address + sdk::glob::CModifier_Definitions), &defs_arr);
+                SafeReadU32((const void*)(base_address + sdk::glob::CModifier_Definitions + 0xC), &defs_cnt);
                 if (defs_arr && mtype < defs_cnt) {
                     void* entry = (void*)((uintptr_t)defs_arr + mtype * 0xB0);
                     SafeReadPdxString((const void*)((uintptr_t)entry + 0x10), mod_key);

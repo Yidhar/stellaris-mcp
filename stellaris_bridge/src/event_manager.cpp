@@ -85,36 +85,10 @@ static bool SafeSelectOption(EventManager::FnSelectOption fn, void* win, int opt
     }
 }
 
-static bool SafeStartScreenDismiss(EventManager::FnStartScreenDismiss fn, void* start_screen) {
+using FnViewCall = void (*)(void* view);
+static bool SafeViewCall(FnViewCall fn, void* view) {
     __try {
-        fn(start_screen);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeAnomalyDismiss(EventManager::FnAnomalyDismiss fn, void* anomaly_view) {
-    __try {
-        fn(anomaly_view);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeAnomalyResearch(EventManager::FnAnomalyResearch fn, void* anomaly_view) {
-    __try {
-        fn(anomaly_view);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeFirstContactDismiss(EventManager::FnFirstContactDismiss fn, void* fc_view) {
-    __try {
-        fn(fc_view);
+        fn(view);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -129,19 +103,9 @@ EventManager& EventManager::Get() {
 bool EventManager::Init(uintptr_t base_address) {
     base_address_ = base_address;
 
-    // Updated RVAs for Stellaris 4.5.0 Cygnus
     fn_find_child_ = nullptr;
-    fn_select_option_ = (FnSelectOption)(base_address_ + sdk::fn::CEventWindow_PostEventOptionSelection);
-    fn_start_screen_dismiss_ = (FnStartScreenDismiss)(base_address_ + 0x12D1FA0);
-    fn_anomaly_dismiss_ = (FnAnomalyDismiss)(base_address_ + 0x11AFA90);
-    fn_anomaly_research_ = nullptr;
-    fn_first_contact_dismiss_ = (FnFirstContactDismiss)(base_address_ + 0x1139FD0);
-
-    LOGF("[EVENT_MGR] Initialized: Base=0x%llX, SelectOption=0x%llX, StartScreenDismiss=0x%llX, FirstContactDismiss=0x%llX",
-        (unsigned long long)base_address_,
-        (unsigned long long)fn_select_option_,
-        (unsigned long long)fn_start_screen_dismiss_,
-        (unsigned long long)fn_first_contact_dismiss_);
+    fn_select_option_ = SdkMatchesImage(base_address_)
+        ? (FnSelectOption)(base_address_ + sdk::fn::CEventWindow_PostEventOptionSelection) : nullptr;
 
     return true;
 }
@@ -327,6 +291,29 @@ void EventManager::ReadEventData(void* win, EventInfo& info) {
     }
 }
 
+// A CInGameIdler window view (start screen / anomaly / first contact) when it is the class the SDK
+// names and its gui window is shown.
+void* EventManager::ShownView(void* idler, std::ptrdiff_t member, uintptr_t vtable_rva) {
+    void* view = nullptr;
+    void* vt = nullptr;
+    void* ui_window = nullptr;
+    uint8_t shown = 0;
+    if (!SafeReadPtr((const void*)((uintptr_t)idler + member), &view) || !view) return nullptr;
+    if (!SafeReadPtr(view, &vt) || (uintptr_t)vt != base_address_ + vtable_rva) return nullptr;
+    if (!SafeReadPtr((const void*)((uintptr_t)view + 0x78), &ui_window) || !ui_window) return nullptr;
+    if (!SafeReadU8((const void*)((uintptr_t)ui_window + 0x41), &shown) || !shown) return nullptr;
+    return view;
+}
+
+// The view's CGuiView::Hide override (slot from the SDK, read from its own vtable)
+bool EventManager::HideView(void* view) {
+    void* vt = nullptr;
+    void* fn = nullptr;
+    if (!SafeReadPtr(view, &vt) || !vt) return false;
+    if (!SafeReadPtr((const void*)((uintptr_t)vt + sdk::vt::CGuiView_Hide * sizeof(void*)), &fn) || !fn) return false;
+    return SafeViewCall((FnViewCall)fn, view);
+}
+
 std::vector<EventInfo> EventManager::GetActiveEvents() {
     std::vector<EventInfo> events;
 
@@ -336,12 +323,11 @@ std::vector<EventInfo> EventManager::GetActiveEvents() {
     }
 
     // 1. Check Opening Start Screen ("开局背景特殊事件") at [idler + 0xBE8]
-    void* start_screen = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)idler + 0xBE8), &start_screen) && start_screen) {
+    void* start_screen = ShownView(idler, sdk::rt::CInGameIdler_CStartScreenWindow, sdk::vt::CStartScreenWindow);
+    if (start_screen) {
         void* ui_window = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)start_screen + 0x78), &ui_window) && ui_window) {
-            uint8_t is_vis = 0;
-            if (SafeReadU8((const void*)((uintptr_t)ui_window + 0x41), &is_vis) && is_vis != 0) {
+            {
                 EventInfo start_ev;
                 start_ev.window_id = START_SCREEN_EVENT_ID;
 
@@ -380,12 +366,11 @@ std::vector<EventInfo> EventManager::GetActiveEvents() {
     }
 
     // 2. Check Anomaly Window ("异常现象发现窗口") at [idler + 0xB08]
-    void* anomaly_view = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)idler + 0xB08), &anomaly_view) && anomaly_view) {
+    void* anomaly_view = ShownView(idler, sdk::rt::CInGameIdler_CAnomalyWindow, sdk::vt::CAnomalyWindow);
+    if (anomaly_view) {
         void* ui_window = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)anomaly_view + 0x78), &ui_window) && ui_window) {
-            uint8_t is_vis = 0;
-            if (SafeReadU8((const void*)((uintptr_t)ui_window + 0x41), &is_vis) && is_vis != 0) {
+            {
                 EventInfo anom_ev;
                 anom_ev.window_id = ANOMALY_EVENT_ID;
 
@@ -436,12 +421,11 @@ std::vector<EventInfo> EventManager::GetActiveEvents() {
     }
 
     // 3. Check First Contact View ("第一次接触事件/阶段窗口") at [idler + 0xC90]
-    void* fc_view = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)idler + 0xC90), &fc_view) && fc_view) {
+    void* fc_view = ShownView(idler, sdk::rt::CInGameIdler_CFirstContactView, sdk::vt::CFirstContactView);
+    if (fc_view) {
         void* ui_window = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)fc_view + 0x78), &ui_window) && ui_window) {
-            uint8_t is_vis = 0;
-            if (SafeReadU8((const void*)((uintptr_t)ui_window + 0x41), &is_vis) && is_vis != 0) {
+            {
                 EventInfo fc_ev;
                 fc_ev.window_id = FIRST_CONTACT_EVENT_ID;
 
@@ -642,179 +626,56 @@ nlohmann::json EventManager::ResolveEvent(uint32_t window_id, int option_index) 
         };
     }
 
-    // Handle Start Screen dismissal
+    auto fail = [](int code, const std::string& message) {
+        return nlohmann::json{ {"error", { {"code", code}, {"message", message} }} };
+    };
+    auto done = [&](const char* message) {
+        return nlohmann::json{
+            {"success", true},
+            {"resolved_window_id", window_id},
+            {"selected_option", option_index},
+            {"message", message}
+        };
+    };
+    bool pseudo = window_id == START_SCREEN_EVENT_ID || window_id == ANOMALY_EVENT_ID ||
+                  window_id == FIRST_CONTACT_EVENT_ID;
+    if (pseudo && !CommandBuilder::Get().SdkMatchesExe()) {
+        return fail(-32003, "SDK does not match this stellaris.exe; regenerate it with tools/sdk_dumper/dump.py");
+    }
+
+    // Start screen: CStartScreenWindow::Close, what its button runs (hide, focus the capital,
+    // fire on_press_begin)
     if (window_id == START_SCREEN_EVENT_ID) {
-        void* start_screen = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)idler + 0xBE8), &start_screen) || !start_screen) {
-            return {
-                {"error", {
-                    {"code", -32002},
-                    {"message", "Start screen is not active"}
-                }}
-            };
+        void* view = ShownView(idler, sdk::rt::CInGameIdler_CStartScreenWindow, sdk::vt::CStartScreenWindow);
+        if (!view) return fail(-32002, "Start screen is not shown");
+        LOG("[EVENT_MGR] Resolving start screen: CStartScreenWindow::Close");
+        if (!SafeViewCall((FnViewCall)(base_address_ + sdk::fn::CStartScreenWindow_Close), view)) {
+            return fail(-32004, "CStartScreenWindow::Close raised an exception");
         }
-
-        if (!fn_start_screen_dismiss_) {
-            return {
-                {"error", {
-                    {"code", -32003},
-                    {"message", "fn_start_screen_dismiss_ not initialized"}
-                }}
-            };
-        }
-
-        LOG("[EVENT_MGR] Resolving Start Screen: invoking native CStartScreenView::Dismiss...");
-        if (!SafeStartScreenDismiss(fn_start_screen_dismiss_, start_screen)) {
-            LOG("[EVENT_MGR] CStartScreenView::Dismiss threw exception.");
-            return {
-                {"error", {
-                    {"code", -32004},
-                    {"message", "Failed to dismiss start screen due to exception"}
-                }}
-            };
-        }
-
-        LOG("[EVENT_MGR] Start screen dismissed successfully.");
-        return {
-            {"success", true},
-            {"resolved_window_id", window_id},
-            {"selected_option", option_index},
-            {"message", "Start screen dismissed successfully"}
-        };
+        return done("Start screen closed");
     }
 
-    // Handle Anomaly Window resolution
+    // Anomaly window: "leave be" hides it (the window's CGuiView::Hide override is OnLeaveBe);
+    // research is a fleet order, stellaris_research_anomalies
     if (window_id == ANOMALY_EVENT_ID) {
-        void* anomaly_view = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)idler + 0xB08), &anomaly_view) || !anomaly_view) {
-            return {
-                {"error", {
-                    {"code", -32010},
-                    {"message", "Anomaly view is not active"}
-                }}
-            };
+        void* view = ShownView(idler, sdk::rt::CInGameIdler_CAnomalyWindow, sdk::vt::CAnomalyWindow);
+        if (!view) return fail(-32010, "Anomaly window is not shown");
+        if (option_index == 1) {
+            return fail(-32013, "Research the anomaly with stellaris_research_anomalies (fleet_id of the science ship)");
         }
-
-        if (option_index == 0) {
-            // Dismiss (暂时离开)
-            if (!fn_anomaly_dismiss_) {
-                return {
-                    {"error", {
-                        {"code", -32011},
-                        {"message", "fn_anomaly_dismiss_ is null"}
-                    }}
-                };
-            }
-            LOG("[EVENT_MGR] Resolving Anomaly: invoking native CAnomalyView::Dismiss...");
-            if (!SafeAnomalyDismiss(fn_anomaly_dismiss_, anomaly_view)) {
-                return {
-                    {"error", {
-                        {"code", -32012},
-                        {"message", "Exception occurred executing CAnomalyView::Dismiss"}
-                    }}
-                };
-            }
-            LOG("[EVENT_MGR] Anomaly window dismissed successfully.");
-            return {
-                {"success", true},
-                {"resolved_window_id", window_id},
-                {"selected_option", option_index},
-                {"message", "Anomaly dismissed (暂时离开)"}
-            };
-        } else if (option_index == 1) {
-            // Research (调查)
-            if (!fn_anomaly_research_) {
-                return {
-                    {"error", {
-                        {"code", -32013},
-                        {"message", "fn_anomaly_research_ is null"}
-                    }}
-                };
-            }
-            LOG("[EVENT_MGR] Resolving Anomaly: invoking native CAnomalyView::OnResearchClicked...");
-            if (!SafeAnomalyResearch(fn_anomaly_research_, anomaly_view)) {
-                return {
-                    {"error", {
-                        {"code", -32014},
-                        {"message", "Exception occurred executing CAnomalyView::OnResearchClicked"}
-                    }}
-                };
-            }
-            LOG("[EVENT_MGR] Anomaly research command dispatched successfully.");
-            return {
-                {"success", true},
-                {"resolved_window_id", window_id},
-                {"selected_option", option_index},
-                {"message", "Anomaly research dispatched (调查)"}
-            };
-        } else {
-            return {
-                {"error", {
-                    {"code", -32015},
-                    {"message", "Invalid option_index for anomaly view. Legal options: 0 (暂时离开), 1 (调查)"}
-                }}
-            };
+        if (option_index != 0) {
+            return fail(-32015, "Invalid option_index for the anomaly window. Legal options: 0 (暂时离开), 1 (调查)");
         }
+        if (!HideView(view)) return fail(-32012, "CAnomalyWindow::OnLeaveBe raised an exception");
+        return done("Anomaly left be (暂时离开)");
     }
 
-    // Handle First Contact View resolution
+    // First contact view: closing it (CFirstContactView::Hide); the contact itself goes on
     if (window_id == FIRST_CONTACT_EVENT_ID) {
-        void* fc_view = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)idler + 0xC90), &fc_view) || !fc_view) {
-            return {
-                {"error", {
-                    {"code", -32016},
-                    {"message", "First contact view is not active"}
-                }}
-            };
-        }
-
-        void* ui_window = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)fc_view + 0x78), &ui_window) || !ui_window) {
-            return {
-                {"error", {
-                    {"code", -32017},
-                    {"message", "First contact UI window is null"}
-                }}
-            };
-        }
-
-        uint8_t is_vis = 0;
-        if (!SafeReadU8((const void*)((uintptr_t)ui_window + 0x41), &is_vis) || is_vis == 0) {
-            return {
-                {"error", {
-                    {"code", -32018},
-                    {"message", "First contact view is not visible"}
-                }}
-            };
-        }
-
-        if (!fn_first_contact_dismiss_) {
-            return {
-                {"error", {
-                    {"code", -32019},
-                    {"message", "fn_first_contact_dismiss_ is null"}
-                }}
-            };
-        }
-
-        LOGF("[EVENT_MGR] Resolving First Contact View with option %d...", option_index);
-        if (!SafeFirstContactDismiss(fn_first_contact_dismiss_, fc_view)) {
-            return {
-                {"error", {
-                    {"code", -32020},
-                    {"message", "Exception occurred executing CFirstContactView::Dismiss"}
-                }}
-            };
-        }
-
-        LOG("[EVENT_MGR] First contact view dismissed successfully.");
-        return {
-            {"success", true},
-            {"resolved_window_id", window_id},
-            {"selected_option", option_index},
-            {"message", "First contact view dismissed successfully"}
-        };
+        void* view = ShownView(idler, sdk::rt::CInGameIdler_CFirstContactView, sdk::vt::CFirstContactView);
+        if (!view) return fail(-32016, "First contact view is not shown");
+        if (!HideView(view)) return fail(-32020, "CFirstContactView::Hide raised an exception");
+        return done("First contact view closed");
     }
 
     // Handle Standard Modal Event Window
@@ -856,7 +717,7 @@ nlohmann::json EventManager::ResolveEvent(uint32_t window_id, int option_index) 
         return {
             {"error", {
                 {"code", -32007},
-                {"message", "fn_select_option_ is null"}
+                {"message", "SDK does not match this stellaris.exe; regenerate it with tools/sdk_dumper/dump.py"}
             }}
         };
     }

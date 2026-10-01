@@ -135,7 +135,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 5: stellaris_resolve_event
   server.tool(
     "stellaris_resolve_event",
-    "Resolves an active event choice natively on the main game thread by window ID and option index, applying the decision and closing the event dialog.",
+    "Resolves an active event choice natively on the main game thread by window ID and option index, applying the decision and closing the event dialog. The start screen closes as its button does (fires on_press_begin). The anomaly window's option 0 leaves it be; to research it use stellaris_research_anomalies with the science ship's fleet. Option 0 of the first contact view closes the view.",
     {
       window_id: z.number().int().describe("The unique window ID of the event window (from stellaris_get_active_events)."),
       option_index: z.number().int().describe("The `index` of one of the options listed for this window by stellaris_get_active_events (indexes are not contiguous when some options are hidden; others are refused)."),
