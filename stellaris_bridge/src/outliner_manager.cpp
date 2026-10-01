@@ -30,6 +30,8 @@ constexpr uintptr_t kBuildableBuildingVt = sdk::vt::CBuildableBuilding;
 constexpr uintptr_t kBuildableUpgradeBuildingVt = sdk::vt::CBuildableUpgradeBuilding;
 constexpr uintptr_t kBuildableClearDepositBlockerVt = sdk::vt::CBuildableClearDepositBlocker;
 constexpr uintptr_t kBuildableArmyVt = sdk::vt::CBuildableArmy;
+constexpr uintptr_t kBuildableDistrictVt = sdk::vt::CBuildableDistrict;
+constexpr uintptr_t kDistrictTypeDb = sdk::glob::TGameDatabase_CDistrictTypeDatabase_pInstance;  // +0x50 items, +0x5C count
 constexpr uintptr_t kBuildingTypeDb = sdk::glob::TGameDatabase_CBuildingTypeDatabase_pInstance;  // +0x50 items, +0x5C count
 
 // Raw Clausewitz String Layout
@@ -1434,13 +1436,14 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
                 if (col_ptr != colony_obj) continue;
 
                 void* d_def = nullptr;
-                SafeReadPtr((const void*)((uintptr_t)d_obj + 0x20), &d_def);
+                SafeReadPtr((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::type), &d_def);
                 std::string d_key;
                 if (d_def) SafeReadPdxString((const void*)((uintptr_t)d_def + 0x20), d_key);
+                // the district count (save token "level") and its zone slots (CDistrict::zones size)
                 uint32_t d_built = 0;
-                uint32_t d_max = 0;
-                SafeReadU32((const void*)((uintptr_t)d_obj + 0x38), &d_built);
-                SafeReadU32((const void*)((uintptr_t)d_obj + 0x3C), &d_max);
+                uint32_t d_zone_slots = 0;
+                SafeReadU32((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::level), &d_built);
+                SafeReadU32((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::zones), &d_zone_slots);
 
                 nlohmann::json zones = nlohmann::json::array();
                 for (uint32_t zs = 0; zs < z_cap; ++zs) {
@@ -1498,7 +1501,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
                     {"type", d_key},
                     {"name", LocalizeKey(d_key)},
                     {"built", d_built},
-                    {"max_capacity", d_max},
+                    {"zone_slots", d_zone_slots},
                     {"zones", zones}
                 });
             }
@@ -1998,6 +2001,160 @@ nlohmann::json OutlinerManager::GetBuildableBuildingsJson(uint32_t planet_id, co
                                {"max_buildings", z.max_buildings}, {"buildable", buildable} });
     }
     return { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"zones", zones_json} };
+}
+
+// CBuildableDistrict {vtable, CDistrictType* +0x08, colony +0x10}: one more district of the type
+// (what the colony automation builds; CBuildableDistrict::CSerializer writes type and colony)
+void OutlinerManager::FillDistrictBuildable(uint8_t (&obj)[0x20], void* district_type, uint32_t colony_id) {
+    memset(obj, 0, sizeof(obj));
+    *(void**)(obj + 0x00) = (void*)(base_address_ + kBuildableDistrictVt);
+    *(void**)(obj + 0x08) = district_type;
+    *(uint32_t*)(obj + 0x10) = colony_id;
+}
+
+// The planet's colony and construction queue, or an error
+bool OutlinerManager::PlanetColonyQueue(uint32_t planet_id, uint32_t* cid, uint32_t* queue_id, std::string* error) {
+    void* p_obj = FindPlanet(planet_id);
+    if (!p_obj) {
+        *error = "Planet with ID " + std::to_string(planet_id) + " not found";
+        return false;
+    }
+    if (!SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::colony), cid) || *cid == 0xFFFFFFFF) {
+        *error = "Planet has no active colony";
+        return false;
+    }
+    if (!SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::build_queue), queue_id) || *queue_id == 0xFFFFFFFF) {
+        *error = "Planet has no active construction queue";
+        return false;
+    }
+    return true;
+}
+
+// District types the game would queue on the planet now (CAddBuildableToQueueCommand::IsValid),
+// with the colony's current count of each; one type with its reason when district_key is given.
+nlohmann::json OutlinerManager::GetBuildableDistrictsJson(uint32_t planet_id, const std::string& district_key) {
+    uint32_t cid = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    std::string error;
+    if (!PlanetColonyQueue(planet_id, &cid, &queue_id, &error)) return { {"success", false}, {"error", error} };
+    const uint32_t country_id = GetPlayerCountryId();
+
+    std::unordered_map<std::string, int> built;
+    for (const auto& d : ColonyDistrictCounts(FindColony(cid))) built[d.first] = d.second;
+
+    auto row = [&](void* type, const std::string& key, bool* ok) {
+        uint8_t obj[0x20];
+        FillDistrictBuildable(obj, type, cid);
+        std::string why;
+        *ok = QueueBuildable(obj, sizeof(obj), country_id, queue_id, false, &why);
+        nlohmann::json j = { {"key", key}, {"name", LocalizeKey(key)}, {"built", built.count(key) ? built[key] : 0},
+                             {"can_build", *ok} };
+        if (*ok) j.update(BuildableCostJson(obj));
+        else j["reason"] = why;
+        return j;
+    };
+
+    if (!district_key.empty()) {
+        void* type = FindDbElementByKey(base_address_, kDistrictTypeDb, district_key);
+        if (!type) return { {"success", false}, {"error", "District type '" + district_key + "' not found"} };
+        bool ok = false;
+        return { {"success", true}, {"planet_id", planet_id}, {"district", row(type, district_key, &ok)} };
+    }
+
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t n = 0;
+    if (!SafeReadPtr((const void*)(base_address_ + kDistrictTypeDb), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 2000) {
+        return { {"success", false}, {"error", "District database not readable"} };
+    }
+    nlohmann::json buildable = nlohmann::json::array();
+    for (uint32_t i = 0; i < n; ++i) {
+        void* type = nullptr;
+        std::string key;
+        if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &type) || !type ||
+            !SafeReadPdxString((const void*)((uintptr_t)type + 0x20), key) || key.empty()) {
+            continue;
+        }
+        bool ok = false;
+        nlohmann::json j = row(type, key, &ok);
+        if (ok) buildable.push_back(j);
+    }
+    nlohmann::json current = nlohmann::json::array();
+    for (const auto& [key, count] : built) current.push_back({ {"key", key}, {"name", LocalizeKey(key)}, {"built", count} });
+    return { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"current", current},
+             {"buildable", buildable} };
+}
+
+nlohmann::json OutlinerManager::BuildDistrictJson(uint32_t planet_id, const std::string& district_key) {
+    if (!base_address_ || !fn_post_command_) return { {"success", false}, {"error", "Engine functions not initialized"} };
+    void* type = FindDbElementByKey(base_address_, kDistrictTypeDb, district_key);
+    if (!type) return { {"success", false}, {"error", "District type '" + district_key + "' not found (see stellaris_get_buildable_districts)"} };
+    uint32_t cid = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    std::string error;
+    if (!PlanetColonyQueue(planet_id, &cid, &queue_id, &error)) return { {"success", false}, {"error", error} };
+
+    uint8_t obj[0x20];
+    FillDistrictBuildable(obj, type, cid);
+    nlohmann::json cost = BuildableCostJson(obj);
+    std::string why;
+    if (!QueueBuildable(obj, sizeof(obj), GetPlayerCountryId(), queue_id, true, &why)) {
+        return { {"success", false}, {"error", why.empty() ? "Cannot be queued" : "Cannot be queued: " + why},
+                 {"planet_id", planet_id}, {"district_key", district_key} };
+    }
+    nlohmann::json out = { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"queue_id", queue_id},
+                           {"district_key", district_key}, {"district_name", LocalizeKey(district_key)},
+                           {"message", "District queued"} };
+    out.update(cost);
+    return out;
+}
+
+// CDestroyDistrictCommand: removes one district of the type from the colony
+nlohmann::json OutlinerManager::DemolishDistrictJson(uint32_t planet_id, const std::string& district_key) {
+    void* type = FindDbElementByKey(base_address_, kDistrictTypeDb, district_key);
+    if (!type) return { {"success", false}, {"error", "District type '" + district_key + "' not found"} };
+    uint32_t cid = 0xFFFFFFFF, queue_id = 0xFFFFFFFF;
+    std::string error;
+    if (!PlanetColonyQueue(planet_id, &cid, &queue_id, &error)) return { {"success", false}, {"error", error} };
+    namespace dd = sdk::cmd::destroy_district_command;
+    auto cmd = CommandBuilder::Get().Create(dd::kSpec);
+    cmd.Set<uint32_t>(dd::colony, cid).Set<void*>(dd::district, type);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "The game refused to demolish it" : why},
+                 {"planet_id", planet_id}, {"district_key", district_key} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"planet_id", planet_id}, {"colony_id", cid}, {"district_key", district_key},
+             {"message", "District demolished"} };
+}
+
+// District type key -> count on the colony (one CDistrict per type; its count is the save's "level")
+std::vector<std::pair<std::string, int>> OutlinerManager::ColonyDistrictCounts(void* colony_obj) {
+    std::vector<std::pair<std::string, int>> out;
+    void* d_mgr = nullptr;
+    void* d_arr = nullptr;
+    uint32_t d_cap = 0;
+    if (!colony_obj || !SafeReadPtr((const void*)(base_address_ + sdk::db::CDistrict), &d_mgr) || !d_mgr ||
+        !SafeReadPtr((const void*)((uintptr_t)d_mgr + 0x18), &d_arr) || !d_arr ||
+        !SafeReadU32((const void*)((uintptr_t)d_mgr + 0x20), &d_cap)) {
+        return out;
+    }
+    for (uint32_t i = 0; i < d_cap && i < 100000; ++i) {
+        void* d = nullptr;
+        void* col = nullptr;
+        void* def = nullptr;
+        if (!SafeReadPtr((const void*)((uintptr_t)d_arr + i * 16 + 8), &d) || !d) continue;
+        if (!SafeReadPtr((const void*)((uintptr_t)d + 0x18), &col) || col != colony_obj) continue;
+        std::string key;
+        uint32_t count = 0;
+        if (SafeReadPtr((const void*)((uintptr_t)d + sdk::ent::CDistrict::type), &def) && def) {
+            SafeReadPdxString((const void*)((uintptr_t)def + 0x20), key);
+        }
+        SafeReadU32((const void*)((uintptr_t)d + sdk::ent::CDistrict::level), &count);
+        if (!key.empty()) out.push_back({ key, (int)count });
+    }
+    return out;
 }
 
 nlohmann::json OutlinerManager::BuildBuildingJson(uint32_t planet_id, const std::string& building_key, const std::string& district_type, int32_t slot_index) {

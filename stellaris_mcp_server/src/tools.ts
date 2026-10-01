@@ -2346,6 +2346,45 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   // Tool 48: stellaris_get_buildable_buildings
+  const districtTool = (name: string, method: string, description: string, keyRequired: boolean) =>
+    server.tool(
+      name,
+      description,
+      {
+        planet_id: z.number().int().describe("Planet ID (planet_id from the outliner or get_planet_details)."),
+        district_key: keyRequired
+          ? z.string().describe("District type key, e.g. 'district_generator' (see stellaris_get_buildable_districts).")
+          : z.string().optional().describe("Optional district type key to check one type (can_build, or the game's reason)."),
+      },
+      async ({ planet_id, district_key }) => {
+        try {
+          const result = await client.request(method, { planet_id, district_key: district_key || "" });
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        } catch (err: any) {
+          return { isError: true, content: [{ type: "text", text: `Error (${method}): ${err.message}` }] };
+        }
+      }
+    );
+
+  districtTool(
+    "stellaris_get_buildable_districts",
+    "get_buildable_districts",
+    "Districts the game accepts on a planet now (Layer 2), each checked with the engine's own construction validation (planet size, free district capacity, tech, resources). Returns current[] (district types on the colony with their count) and buildable[] (key, name, built, cost after the empire's modifiers, build_days). Pass district_key to check one type: can_build, or the game's reason.",
+    false
+  );
+  districtTool(
+    "stellaris_build_district",
+    "build_district",
+    "Queues one more district of a type on a planet (native CAddBuildableToQueueCommand with the engine's CBuildableDistrict, as the planet view builds it). Refused with the game's reason when it cannot be built.",
+    true
+  );
+  districtTool(
+    "stellaris_demolish_district",
+    "demolish_district",
+    "Demolishes one district of a type on a planet (native CDestroyDistrictCommand). Refused with the game's reason when the game does not allow it.",
+    true
+  );
+
   server.tool(
     "stellaris_get_buildable_buildings",
     "Buildings the game accepts in each building zone of a planet now (Layer 2), each checked with the engine's own construction validation. Per zone: zone_id, zone key/name, district, buildings/max_buildings, and buildable[] with cost (after the empire's cost modifiers) and build_days. Pass building_key to check one building in every zone (can_build, or the game's reason), and zone_id to limit to one zone.",

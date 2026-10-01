@@ -116,6 +116,9 @@ public:
     // time; with building_key, whether/where that building can be built and why not.
     nlohmann::json GetBuildableBuildingsJson(uint32_t planet_id, const std::string& building_key, int32_t zone_id = -1);
     nlohmann::json BuildBuildingJson(uint32_t planet_id, const std::string& building_key, const std::string& district_type = "", int32_t slot_index = -1);
+    nlohmann::json GetBuildableDistrictsJson(uint32_t planet_id, const std::string& district_key);
+    nlohmann::json BuildDistrictJson(uint32_t planet_id, const std::string& district_key);
+    nlohmann::json DemolishDistrictJson(uint32_t planet_id, const std::string& district_key);
     nlohmann::json UpgradeBuildingJson(uint32_t planet_id, uint32_t building_id, const std::string& upgrade_to_key = "");
 
     // Planetary Features & Subpage Operations
@@ -208,6 +211,9 @@ private:
     };
     std::vector<ZoneRef> ColonyZones(void* colony_obj);
     void FillBuildable(uint8_t (&obj)[0x20], void* building_type, uint32_t colony_id, uint32_t zone_id);
+    void FillDistrictBuildable(uint8_t (&obj)[0x20], void* district_type, uint32_t colony_id);
+    bool PlanetColonyQueue(uint32_t planet_id, uint32_t* cid, uint32_t* queue_id, std::string* error);
+    std::vector<std::pair<std::string, int>> ColonyDistrictCounts(void* colony_obj);
     nlohmann::json BuildableCostJson(uint8_t (&obj)[0x20]);
     // Armies stationed at a colony (its army list), read through bridge::armies.
     std::vector<armies::ArmyInfo> ReadColonyArmies(void* colony_obj);

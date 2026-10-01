@@ -554,6 +554,24 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([planet_id, building_key, zone_id]() {
             return OutlinerManager::Get().GetBuildableBuildingsJson(planet_id, building_key, zone_id);
         });
+    } else if (method == "get_buildable_districts") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string district_key = params.value("district_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, district_key]() {
+            return OutlinerManager::Get().GetBuildableDistrictsJson(planet_id, district_key);
+        });
+    } else if (method == "build_district") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string district_key = params.value("district_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, district_key]() {
+            return OutlinerManager::Get().BuildDistrictJson(planet_id, district_key);
+        });
+    } else if (method == "demolish_district") {
+        uint32_t planet_id = params.value("planet_id", 0);
+        std::string district_key = params.value("district_key", "");
+        fut = TaskQueue::Get().Enqueue([planet_id, district_key]() {
+            return OutlinerManager::Get().DemolishDistrictJson(planet_id, district_key);
+        });
     } else if (method == "build_building") {
         uint32_t planet_id = params.value("planet_id", 0);
         std::string building_key = params.value("building_key", "");

@@ -52,6 +52,7 @@ BUILDABLES = {
     "CBuildableClearDepositBlocker": "buildable_clear_deposit_blocker",
     "CBuildableArmy": "buildable_army",
     "CBuildableZone": "buildable_zone",
+    "CBuildableDistrict": "buildable_district",
 }
 
 

@@ -33,8 +33,8 @@ print('Checking Earth districts and buildings:')
 for d in districts:
     dtype = d['type']
     built = d['built']
-    cap = d['max_capacity']
-    print(f"[{dtype}] built={built}/{cap}")
+    slots = d['zone_slots']
+    print(f"[{dtype}] built={built}, zone slots={slots}")
     for z in d.get('zones', []):
         sid = z['slot_id']
         zkey = z['key']

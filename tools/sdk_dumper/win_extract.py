@@ -47,9 +47,11 @@ class Image:
         self.rdata0, self.rdata1 = r.VirtualAddress, r.VirtualAddress + r.Misc_VirtualSize
         p = secs[".pdata"]
         raw = self.img[p.VirtualAddress:p.VirtualAddress + p.Misc_VirtualSize]
-        rf = sorted({struct.unpack_from("<II", raw, i) for i in range(0, len(raw) - 11, 12)} - {(0, 0)})
+        entries = {struct.unpack_from("<III", raw, i) for i in range(0, len(raw) - 11, 12)}
+        rf = sorted({(a, b) for a, b, _ in entries} - {(0, 0)})
         self.fstarts = [a for a, _ in rf]
         self.fend = dict(rf)
+        self.unwind = {a: u for a, _, u in entries}
         self.md = Cs(CS_ARCH_X86, CS_MODE_64)
         self.md.detail = True
         self._lea = None
@@ -57,6 +59,22 @@ class Image:
     def fn_of(self, rva):
         i = bisect.bisect_right(self.fstarts, rva) - 1
         return self.fstarts[i] if i >= 0 else None
+
+    def primary(self, f):
+        """The function a .pdata fragment belongs to: MSVC splits a function into chained entries
+        (UNW_FLAG_CHAININFO), whose unwind info ends with the parent's RUNTIME_FUNCTION."""
+        for _ in range(8):
+            ui = self.unwind.get(f)
+            if not ui or ui + 4 > len(self.img):
+                return f
+            flags, count = self.img[ui] >> 3, self.img[ui + 2]
+            if not flags & 0x4:
+                return f
+            parent = struct.unpack_from("<I", self.img, ui + 4 + ((count + 1) & ~1) * 2)[0]
+            if not parent or parent == f:
+                return f
+            f = parent
+        return f
 
     def q(self, rva):
         return struct.unpack_from("<Q", self.img, rva)[0]
@@ -180,6 +198,8 @@ def serializer_candidates(im, tokens):
         v = struct.unpack_from("<I", text, i + 1)[0]
         if v in tokens and v > 0x10:
             f = im.fn_of(im.text0 + i)
+            if f is not None:
+                f = im.primary(f)  # a chained fragment counts for its function
             if f is not None:
                 fn_toks[f].append(v)
     return fn_toks

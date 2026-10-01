@@ -51,7 +51,7 @@ if __name__ == '__main__':
         districts = res_details.get('result', {}).get('districts', [])
         print(f"Total dynamic districts retrieved: {len(districts)}")
         for d in districts:
-            print(f"District [{d.get('type')}] built: {d.get('built')}/{d.get('max_capacity')}, zones: {len(d.get('zones', []))}")
+            print(f"District [{d.get('type')}] built: {d.get('built')}, zone slots: {d.get('zone_slots')}, zones: {len(d.get('zones', []))}")
             for z in d.get('zones', []):
                 print(f"  -> Zone [{z.get('slot_id')} / {z.get('key')}]: {len(z.get('buildings', []))} buildings built")
                 for b in z.get('buildings', []):
