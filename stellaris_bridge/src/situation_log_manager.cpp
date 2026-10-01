@@ -137,7 +137,6 @@ constexpr std::ptrdiff_t kRefArraySize = 0x14;
 constexpr std::ptrdiff_t kProjectTypeKey = 0x18;
 constexpr std::ptrdiff_t kAnomalyKey = 0x20;
 // CDebris compares its own id at +0x20 in TPdxRef lookups (CSpecialProjectInstance::ShouldAbort).
-constexpr std::ptrdiff_t kDebrisId = 0x20;
 constexpr uint32_t kInvalidId = 0xFFFFFFFF;
 
 // TPdxRefDatabase<T>: arr at +0x18 (16-byte slots, object at +8), capacity at +0x20.
@@ -209,6 +208,9 @@ std::vector<SpecialProjectItem> SituationLogManager::ReadSpecialProjects(void* c
         SafeReadU32((const void*)((uintptr_t)p + sp::convert_to), &convert_to);
         uint32_t debris_id = kInvalidId;
         SafeReadU32((const void*)((uintptr_t)p + sp::debris), &debris_id);
+        // CSpecialProjectInstance::coordinate is a spatial reference {vtable, type +8, id +0xC}
+        SafeReadU32((const void*)((uintptr_t)p + sp::coordinate + 0x8), &item.location_type);
+        SafeReadU32((const void*)((uintptr_t)p + sp::coordinate + 0xC), &item.location_id);
         const bool species_mod = EnginePredicate(base_address_ + sdk::fn::CSpecialProjectInstance_IsSpeciesModification, p);
         const bool uplift = !species_mod && EnginePredicate(base_address_ + sdk::fn::CSpecialProjectInstance_IsUplift, p);
         if (species_mod || uplift) {
@@ -220,8 +222,9 @@ std::vector<SpecialProjectItem> SituationLogManager::ReadSpecialProjects(void* c
             }
             item.key = species_mod ? "MOD_TRAIT_PROJECT" : "UPLIFT_PROJECT";
             item.name = LocalizeWithParam(base_address_, item.key, species_mod ? "TEMPLATE" : "SPECIES", species);
-        } else if (void* debris = RefLookup(base_address_, sdk::db::CDebris, debris_id, kDebrisId)) {
+        } else if (void* debris = RefLookup(base_address_, sdk::db::CDebris, debris_id, sdk::rt::CDebris_id)) {
             item.kind = "debris";
+            item.debris_id = debris_id;
             uint32_t system_id = kInvalidId;
             SafeReadU32((const void*)((uintptr_t)debris + sdk::ent::CDebris::coordinate +
                                       sdk::ent::CCelestialCoordinate::origin), &system_id);

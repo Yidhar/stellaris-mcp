@@ -167,25 +167,179 @@ static void SafeFreePdxStr(ShipDesigner::FnFreePdxStr fn_free_pdx, PdxCString* s
     }
 }
 
-static bool SafeSetComponentOnSlot(ShipDesigner::FnSetComponentOnSlot fn, void* p_sec, void* p_tmpl, void* p_slot_def) {
-    if (!fn || !p_sec || !p_tmpl || !p_slot_def) return false;
+namespace designs {
+namespace rt = sdk::rt;
+// CShipSize::ReadMember stores the script flag is_designable (token 0x31fe) as bit 1 of the flags
+constexpr uint64_t kShipSizeDesignable = 1ull << 1;
+// script keys: a ship size's at +0x20, a component template's at +0x1B0 (as the catalog reads them)
+constexpr std::ptrdiff_t kShipSizeKey = 0x20;
+constexpr std::ptrdiff_t kComponentKey = 0x1B0;
+constexpr uint32_t kOwnerCountry = 0;  // EDesignOwner
+
+template <typename T>
+T Rd(uintptr_t addr, T fallback) {
+    T v{};
     __try {
-        fn(p_sec, p_tmpl, p_slot_def);
-        return true;
+        v = *(const T*)addr;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+        return fallback;
     }
+    return v;
 }
 
-static bool SafeStageUpdateResources(ShipDesigner::FnStageUpdateResources fn, void* p_stage) {
-    if (!fn || !p_stage) return false;
-    __try {
-        fn(p_stage);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+void* Stage0(void* design) { return design ? Rd<void*>((uintptr_t)design + rt::CShipDesign_stages, nullptr) : nullptr; }
+void* SizeOf(void* stage) { return stage ? Rd<void*>((uintptr_t)stage + rt::CShipGrowthStage_ship_size, nullptr) : nullptr; }
+bool Designable(void* size) { return size && (Rd<uint64_t>((uintptr_t)size + rt::CShipSize_flags, 0) & kShipSizeDesignable); }
+
+std::vector<void*> Ptrs(uintptr_t data_field, uintptr_t count_field) {
+    std::vector<void*> out;
+    void* data = Rd<void*>(data_field, nullptr);
+    int32_t n = Rd<int32_t>(count_field, 0);
+    if (!data || n <= 0 || n > 256) return out;
+    for (int32_t i = 0; i < n; ++i) out.push_back(Rd<void*>((uintptr_t)data + i * sizeof(void*), nullptr));
+    return out;
+}
+
+std::vector<void*> Sections(void* stage) {
+    return stage ? Ptrs((uintptr_t)stage + rt::CShipGrowthStage_sections, (uintptr_t)stage + rt::CShipGrowthStage_section_count)
+                 : std::vector<void*>{};
+}
+std::vector<void*> Cores(void* stage) {
+    return stage ? Ptrs((uintptr_t)stage + rt::CShipGrowthStage_components, (uintptr_t)stage + rt::CShipGrowthStage_component_count)
+                 : std::vector<void*>{};
+}
+
+// the section template's component slots (CComponentSlot, inline)
+std::vector<void*> SlotsOf(void* section) {
+    std::vector<void*> out;
+    void* tmpl = section ? Rd<void*>((uintptr_t)section + rt::CShipDesignSection_template, nullptr) : nullptr;
+    if (!tmpl) return out;
+    void* data = Rd<void*>((uintptr_t)tmpl + rt::CSectionTemplate_slots, nullptr);
+    int32_t n = Rd<int32_t>((uintptr_t)tmpl + rt::CSectionTemplate_slot_count, 0);
+    if (!data || n <= 0 || n > 128) return out;
+    for (int32_t i = 0; i < n; ++i) out.push_back((void*)((uintptr_t)data + i * rt::CComponentSlot_size));
+    return out;
+}
+
+// the component template installed in a slot of the section (nullptr: empty)
+void* Installed(void* section, void* slot) {
+    void* data = Rd<void*>((uintptr_t)section + rt::CShipDesignSection_components, nullptr);
+    int32_t n = Rd<int32_t>((uintptr_t)section + rt::CShipDesignSection_component_count, 0);
+    if (!data || n <= 0 || n > 128) return nullptr;
+    for (int32_t i = 0; i < n; ++i) {
+        uintptr_t c = (uintptr_t)data + i * rt::CShipDesignComponent_size;
+        if (Rd<void*>(c + rt::CShipDesignComponent_slot, nullptr) == slot) return Rd<void*>(c + rt::CShipDesignComponent_template, nullptr);
+    }
+    return nullptr;
+}
+
+struct Call {
+    uintptr_t fn;
+    void* a;
+    void* b;
+    void* c;
+    bool result;
+};
+
+bool Guarded(void (*call)(void*, void*), Call* ctx) { return CommandBuilder::Get().CallGuarded(call, ctx); }
+
+// CShipDesignSection::SetComponentOnSlot(section, component, slot)
+bool SetComponent(void* section, void* component, void* slot) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::CShipDesignSection_SetComponentOnSlot, section, component, slot, false };
+    return Guarded([](void* x, void*) {
+        auto* k = (Call*)x;
+        ((void (*)(void*, void*, void*))k->fn)(k->a, k->b, k->c);
+    }, &c);
+}
+
+bool UpdateResources(void* stage) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::CShipGrowthStage_UpdateResources, stage, nullptr, nullptr, false };
+    return Guarded([](void* x, void*) {
+        auto* k = (Call*)x;
+        ((void (*)(void*))k->fn)(k->a);
+    }, &c);
+}
+
+bool CalcLongName(void* design) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::CShipDesign_CalcLongName, design, nullptr, nullptr, false };
+    return Guarded([](void* x, void*) {
+        auto* k = (Call*)x;
+        ((void (*)(void*))k->fn)(k->a);
+    }, &c);
+}
+
+bool CanBeBuiltBy(void* component, void* country) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::CComponentTemplate_CanBeBuiltBy, component, country, nullptr, false };
+    if (!Guarded([](void* x, void*) {
+            auto* k = (Call*)x;
+            k->result = ((bool (*)(void*, void*, uint32_t))k->fn)(k->a, k->b, kOwnerCountry);
+        }, &c)) {
         return false;
     }
+    return c.result;
 }
+
+// CShipGrowthStage::IsValidToSaveForCountry: the designer's save check, with its reason
+bool ValidToSave(void* stage, void* country, std::string* why) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::CShipGrowthStage_IsValidToSaveForCountry, stage, country, nullptr, false };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText([](void* x, void* out) {
+            auto* k = (Call*)x;
+            k->result = ((bool (*)(void*, uint32_t, void*, void*))k->fn)(k->a, kOwnerCountry, k->b, out);
+        }, &c, &text)) {
+        if (why) *why = "the engine's design check failed";
+        return false;
+    }
+    if (!c.result && why) *why = text.empty() ? "The game refused the design" : text;
+    return c.result;
+}
+
+// CShipDesignerBase::ComponentIsAllowedOnSlot's first test: slot size and slot type match the
+// component's (or the slot takes any)
+bool SlotAccepts(void* slot, void* component) {
+    uint8_t ss = Rd<uint8_t>((uintptr_t)slot + rt::CComponentSlot_size_kind, 0xFF);
+    uint8_t st = Rd<uint8_t>((uintptr_t)slot + rt::CComponentSlot_type_kind, 0xFF);
+    uint8_t cs = Rd<uint8_t>((uintptr_t)component + rt::CComponentTemplate_size_kind, 0xFE);
+    uint8_t ct = Rd<uint8_t>((uintptr_t)component + rt::CComponentTemplate_type_kind, 0xFE);
+    return (ss == cs || ss == (uint8_t)rt::kComponentSizeAny) && (st == ct || st == (uint8_t)rt::kComponentTypeAny);
+}
+
+// NShipDesignUtil::CanBuildComponent(component, owner, stage, slot or nullptr, reason): allowed on
+// this hull, valid for the country, technology researched (missing techs in the reason)
+bool CanBuildComponent(void* component, void* stage, void* slot, std::string* why) {
+    Call c{ CommandBuilder::Get().Base() + sdk::fn::NShipDesignUtil_CanBuildComponent, component, stage, slot, false };
+    std::string text;
+    if (!CommandBuilder::Get().CallForText([](void* x, void* out) {
+            auto* k = (Call*)x;
+            k->result = ((bool (*)(void*, uint32_t, void*, void*, void*))k->fn)(k->a, kOwnerCountry, k->b, k->c, out);
+        }, &c, &text)) {
+        if (why) *why = "the engine's component check failed";
+        return false;
+    }
+    if (!c.result && why) *why = text;
+    return c.result;
+}
+
+// same hull and the same component in every slot and required slot
+bool SameComponents(void* a, void* b) {
+    void* sa = Stage0(a);
+    void* sb = Stage0(b);
+    if (!sa || !sb || SizeOf(sa) != SizeOf(sb)) return false;
+    auto ca = Cores(sa), cb = Cores(sb);
+    if (ca != cb) return false;
+    auto xa = Sections(sa), xb = Sections(sb);
+    if (xa.size() != xb.size()) return false;
+    for (size_t i = 0; i < xa.size(); ++i) {
+        void* ta = Rd<void*>((uintptr_t)xa[i] + rt::CShipDesignSection_template, nullptr);
+        void* tb = Rd<void*>((uintptr_t)xb[i] + rt::CShipDesignSection_template, nullptr);
+        if (ta != tb) return false;
+        for (void* slot : SlotsOf(xa[i])) {
+            if (Installed(xa[i], slot) != Installed(xb[i], slot)) return false;
+        }
+    }
+    return true;
+}
+}  // namespace designs
 
 ShipDesigner& ShipDesigner::Get() {
     static ShipDesigner instance;
@@ -197,24 +351,10 @@ bool ShipDesigner::Init(uintptr_t base_address) {
     if (!base_address_) return false;
 
     fn_engine_alloc_ = (FnEngineAlloc)(base_address_ + kRvaEngineAlloc);
-    fn_register_design_ = (FnRegisterDesign)(base_address_ + 0x266670);
-    fn_country_add_design_ = (FnCountryAddDesign)(base_address_ + 0x689FE0);
-    fn_calc_long_name_ = (FnCalcLongName)(base_address_ + 0xE0FEE0);
-    fn_can_be_built_by_ = (FnCanBeBuiltBy)(base_address_ + 0x3B9A10);
     fn_localize_ = (FnLocalize)(base_address_ + 0x16D2D0);
     fn_free_pdx_str_ = (FnFreePdxStr)(base_address_ + 0x15BBE0);
-    fn_set_component_on_slot_ = (FnSetComponentOnSlot)(base_address_ + 0xD6E290);
-    fn_stage_update_resources_ = (FnStageUpdateResources)(base_address_ + 0xD6C420);
 
-    LOGF("[SHIP_DESIGNER] Initialized with Base=0x%llX, Alloc=0x%llX, RegDes=0x%llX, AddDes=0x%llX, CalcLongName=0x%llX, CanBeBuiltBy=0x%llX, SetComp=0x%llX, UpdRes=0x%llX",
-         (unsigned long long)base_address_,
-         (unsigned long long)fn_engine_alloc_,
-         (unsigned long long)fn_register_design_,
-         (unsigned long long)fn_country_add_design_,
-         (unsigned long long)fn_calc_long_name_,
-         (unsigned long long)fn_can_be_built_by_,
-         (unsigned long long)fn_set_component_on_slot_,
-         (unsigned long long)fn_stage_update_resources_);
+    LOGF("[SHIP_DESIGNER] Initialized with Base=0x%llX", (unsigned long long)base_address_);
     return true;
 }
 
@@ -223,12 +363,7 @@ std::string ShipDesigner::LocalizeKey(const std::string& key) {
 }
 
 bool ShipDesigner::CanCountryUseComponent(void* p_tmpl, void* p_country) {
-    if (!p_tmpl || !p_country || !fn_can_be_built_by_) return false;
-    __try {
-        return fn_can_be_built_by_(p_tmpl, p_country, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    return p_tmpl && p_country && designs::CanBeBuiltBy(p_tmpl, p_country);
 }
 
 void* ShipDesigner::GetPlayerCountry() {
@@ -317,145 +452,60 @@ void* ShipDesigner::FindComponentTemplate(const std::string& component_key) {
     return nullptr;
 }
 
-std::vector<ShipDesignInfo> ShipDesigner::GetShipDesigns(uint32_t specific_design_id) {
-    std::vector<ShipDesignInfo> results;
+std::vector<void*> ShipDesigner::PlayerDesigns() {
+    std::vector<void*> out;
     void* country = GetPlayerCountry();
-    if (!country) return results;
-
-    void* arr_ptr = nullptr;
-    uint32_t count = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)country + 0x1AD0), &arr_ptr) || !arr_ptr ||
-        !SafeReadU32((const void*)((uintptr_t)country + 0x1ADC), &count)) {
-        return results;
+    if (!country) return out;
+    uintptr_t arr = (uintptr_t)country + sdk::ent::CCountry::ship_design_collection + sdk::ent::CShipDesignCollection::ship_design;
+    void* data = designs::Rd<void*>(arr + 0x8, nullptr);       // CPdxArray: data +8, size +0x14
+    int32_t n = designs::Rd<int32_t>(arr + 0x14, 0);
+    if (!data || n <= 0 || n > 4096) return out;
+    for (int32_t i = 0; i < n; ++i) {
+        if (void* d = FindShipDesign(designs::Rd<uint32_t>((uintptr_t)data + i * 4, 0xFFFFFFFF))) out.push_back(d);
     }
+    return out;
+}
 
-    for (uint32_t i = 0; i < count; ++i) {
-        uint32_t did = 0;
-        if (!SafeReadU32((const void*)((uintptr_t)arr_ptr + i * 4), &did)) continue;
+std::vector<ShipDesignInfo> ShipDesigner::GetShipDesigns(uint32_t specific_design_id) {
+    namespace rt = sdk::rt;
+    std::vector<ShipDesignInfo> results;
+    for (void* design : PlayerDesigns()) {
+        uint32_t did = designs::Rd<uint32_t>((uintptr_t)design + rt::CShipDesign_id, 0xFFFFFFFF);
         if (specific_design_id != 0xFFFFFFFF && did != specific_design_id) continue;
-
-        void* design = FindShipDesign(did);
-        if (!design) continue;
-
-        void* p_sub = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)design + 0x20), &p_sub) || !p_sub) continue;
-
-        void* p_size = nullptr;
-        if (!SafeReadPtr((const void*)((uintptr_t)p_sub + 0x08), &p_size) || !p_size) continue;
-
-        uint32_t sec_templates_cnt = 0;
-        if (!SafeReadU32((const void*)((uintptr_t)p_size + 0x848), &sec_templates_cnt) || sec_templates_cnt == 0) {
-            // Ship Designer interface is strictly for designable ships (excludes fixed civilian/station templates)
-            continue;
-        }
+        void* stage = designs::Stage0(design);
+        void* size = designs::SizeOf(stage);
+        if (!designs::Designable(size)) continue;  // the ship designer lists designable hulls only
 
         ShipDesignInfo d_info{};
         d_info.design_id = did;
-
-        SafeReadPdxString((const void*)((uintptr_t)design + 0x50), d_info.name);
-        SafeReadPdxString((const void*)((uintptr_t)design + 0xA8), d_info.class_prefix);
-        SafeReadPdxString((const void*)((uintptr_t)p_size + 0x20), d_info.ship_size);
-
-        // Sections
-        void* sec_arr = nullptr;
-        uint32_t sec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)p_sub + 0x18), &sec_arr) && sec_arr &&
-            SafeReadU32((const void*)((uintptr_t)p_sub + 0x20), &sec_cnt) && sec_cnt <= 16) {
-            for (uint32_t s = 0; s < sec_cnt; ++s) {
-                void* p_sec = nullptr;
-                if (!SafeReadPtr((const void*)((uintptr_t)sec_arr + s * sizeof(void*)), &p_sec) || !p_sec) continue;
-
-                SectionInfo s_info{};
-                SafeReadPdxString((const void*)((uintptr_t)p_sec + 0x18), s_info.name);
-
-                void* p_sec_tmpl = nullptr;
-                SafeReadPtr((const void*)((uintptr_t)p_sec + 0x40), &p_sec_tmpl);
-
-                void* tmpl_slots_arr = nullptr;
-                uint32_t tmpl_slots_cnt = 0;
-                if (p_sec_tmpl) {
-                    SafeReadPtr((const void*)((uintptr_t)p_sec_tmpl + 0x178), &tmpl_slots_arr);
-                    SafeReadU32((const void*)((uintptr_t)p_sec_tmpl + 0x184), &tmpl_slots_cnt);
+        SafeReadPdxString((const void*)((uintptr_t)design + sdk::ent::CShipDesign::name + sdk::ent::CPersistentName::key), d_info.name);
+        SafeReadPdxString((const void*)((uintptr_t)size + designs::kShipSizeKey), d_info.ship_size);
+        for (void* sec : designs::Sections(stage)) {
+            SectionInfo s_info{};
+            SafeReadPdxString((const void*)((uintptr_t)sec + sdk::ent::CShipDesignSection::slot), s_info.name);
+            uint32_t k = 0;
+            for (void* slot : designs::SlotsOf(sec)) {
+                SlotInfo sl{};
+                sl.slot_index = k++;
+                SafeReadPdxString((const void*)((uintptr_t)slot + rt::CComponentSlot_name), sl.slot_name);
+                if (void* comp = designs::Installed(sec, slot)) {
+                    SafeReadPdxString((const void*)((uintptr_t)comp + designs::kComponentKey), sl.component_key);
+                    sl.component_name = LocalizeKey(sl.component_key);
                 }
-
-                void* inst_arr = nullptr;
-                uint32_t inst_cnt = 0;
-                SafeReadPtr((const void*)((uintptr_t)p_sec + 0x50), &inst_arr);
-                SafeReadU32((const void*)((uintptr_t)p_sec + 0x58), &inst_cnt);
-
-                if (tmpl_slots_arr && tmpl_slots_cnt > 0 && tmpl_slots_cnt <= 128) {
-                    for (uint32_t k = 0; k < tmpl_slots_cnt; ++k) {
-                        uintptr_t slot_def = (uintptr_t)tmpl_slots_arr + k * 0x98;
-                        SlotInfo sl_info{};
-                        sl_info.slot_index = k;
-                        SafeReadPdxString((const void*)(slot_def + 0x18), sl_info.slot_name);
-
-                        // Find corresponding installed component in inst_arr
-                        if (inst_arr && inst_cnt <= 128) {
-                            for (uint32_t i = 0; i < inst_cnt; ++i) {
-                                uintptr_t item_p = (uintptr_t)inst_arr + i * 0x20;
-                                void* item_slot_def = nullptr;
-                                SafeReadPtr((const void*)(item_p + 8), &item_slot_def);
-                                std::string item_slot_name;
-                                if (item_slot_def) {
-                                    SafeReadPdxString((const void*)((uintptr_t)item_slot_def + 0x18), item_slot_name);
-                                }
-                                if (item_slot_def == (void*)slot_def || (!item_slot_name.empty() && item_slot_name == sl_info.slot_name)) {
-                                    void* slot_comp = nullptr;
-                                    SafeReadPtr((const void*)(item_p + 0x10), &slot_comp);
-                                    if (slot_comp) {
-                                        SafeReadPdxString((const void*)((uintptr_t)slot_comp + 0x1B0), sl_info.component_key);
-                                        sl_info.component_name = LocalizeKey(sl_info.component_key);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        s_info.slots.push_back(sl_info);
-                    }
-                } else if (inst_arr && inst_cnt > 0 && inst_cnt <= 128) {
-                    for (uint32_t k = 0; k < inst_cnt; ++k) {
-                        uintptr_t slot_p = (uintptr_t)inst_arr + k * 0x20;
-                        void* slot_def = nullptr;
-                        void* slot_comp = nullptr;
-                        SafeReadPtr((const void*)(slot_p + 8), &slot_def);
-                        SafeReadPtr((const void*)(slot_p + 0x10), &slot_comp);
-
-                        SlotInfo sl_info{};
-                        sl_info.slot_index = k;
-                        if (slot_def) {
-                            SafeReadPdxString((const void*)((uintptr_t)slot_def + 0x18), sl_info.slot_name);
-                        }
-                        if (slot_comp) {
-                            SafeReadPdxString((const void*)((uintptr_t)slot_comp + 0x1B0), sl_info.component_key);
-                            sl_info.component_name = LocalizeKey(sl_info.component_key);
-                        }
-                        s_info.slots.push_back(sl_info);
-                    }
-                }
-                d_info.sections.push_back(s_info);
+                s_info.slots.push_back(sl);
             }
+            d_info.sections.push_back(s_info);
         }
-
-            // Core components
-            void* comp_arr = nullptr;
-            uint32_t comp_cnt = 0;
-            if (SafeReadPtr((const void*)((uintptr_t)p_sub + 0x30), &comp_arr) && comp_arr &&
-                SafeReadU32((const void*)((uintptr_t)p_sub + 0x38), &comp_cnt)) {
-                for (uint32_t c = 0; c < comp_cnt; ++c) {
-                    void* p_comp = nullptr;
-                    if (!SafeReadPtr((const void*)((uintptr_t)comp_arr + c * 8), &p_comp) || !p_comp) continue;
-                    std::string c_key;
-                    SafeReadPdxString((const void*)((uintptr_t)p_comp + 0x1B0), c_key);
-                    if (c == 0) d_info.core_components.reactor = c_key;
-                    else if (c == 1) d_info.core_components.ftl = c_key;
-                    else if (c == 2) d_info.core_components.thruster = c_key;
-                    else if (c == 3) d_info.core_components.sensor = c_key;
-                    else if (c == 4) d_info.core_components.combat_computer = c_key;
-                    else if (c == 5) d_info.core_components.aura = c_key;
-                }
+        uint32_t i = 0;
+        for (void* core : designs::Cores(stage)) {
+            CoreComponentInfo c{};
+            c.index = i++;
+            if (core) {
+                SafeReadPdxString((const void*)((uintptr_t)core + designs::kComponentKey), c.component_key);
+                c.component_name = LocalizeKey(c.component_key);
             }
-
+            d_info.core_components.push_back(c);
+        }
         results.push_back(d_info);
     }
     return results;
@@ -474,7 +524,6 @@ nlohmann::json ShipDesigner::GetShipDesignsJson(const nlohmann::json& params) {
         dj["design_id"] = d.design_id;
         dj["name"] = d.name;
         dj["ship_size"] = d.ship_size;
-        dj["class_prefix"] = d.class_prefix;
 
         nlohmann::json sec_arr = nlohmann::json::array();
         for (const auto& s : d.sections) {
@@ -494,14 +543,11 @@ nlohmann::json ShipDesigner::GetShipDesignsJson(const nlohmann::json& params) {
         }
         dj["sections"] = sec_arr;
 
-        dj["core_components"] = {
-            {"reactor", d.core_components.reactor},
-            {"ftl", d.core_components.ftl},
-            {"thruster", d.core_components.thruster},
-            {"sensor", d.core_components.sensor},
-            {"combat_computer", d.core_components.combat_computer},
-            {"aura", d.core_components.aura}
-        };
+        nlohmann::json cores = nlohmann::json::array();
+        for (const auto& c : d.core_components) {
+            cores.push_back({ {"index", c.index}, {"component_key", c.component_key}, {"component_name", c.component_name} });
+        }
+        dj["core_components"] = cores;
 
         arr.push_back(dj);
     }
@@ -926,377 +972,273 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
 
 bool ShipDesigner::SetShipDesignName(void* design, const std::string& name) {
     if (!design || name.empty()) return false;
-
-    void* str_addr = (void*)((uintptr_t)design + 0x50);
-    if (!SafeWritePdxString(str_addr, name)) {
+    uintptr_t pname = (uintptr_t)design + sdk::ent::CShipDesign::name;
+    void* key = (void*)(pname + sdk::ent::CPersistentName::key);
+    if (!SafeWritePdxString(key, name)) {
         RawPdxString raw{};
-        if (SafeCopyChars((char*)&raw, (const char*)str_addr, sizeof(RawPdxString))) {
-            size_t new_cap = name.size() + 16;
-            void* new_buf = fn_engine_alloc_ ? fn_engine_alloc_(new_cap) : nullptr;
-            if (new_buf) {
-                memcpy(new_buf, name.data(), name.size());
-                ((char*)new_buf)[name.size()] = '\0';
-                raw.heap_ptr = (char*)new_buf;
-                raw.size = name.size();
-                raw.capacity = new_cap - 1;
-                SafeCopyChars((char*)str_addr, (const char*)&raw, sizeof(RawPdxString));
-            }
-        }
+        if (!SafeCopyChars((char*)&raw, (const char*)key, sizeof(RawPdxString))) return false;
+        void* buf = fn_engine_alloc_ ? fn_engine_alloc_(name.size() + 16) : nullptr;
+        if (!buf) return false;
+        memcpy(buf, name.data(), name.size());
+        ((char*)buf)[name.size()] = '\0';
+        raw.heap_ptr = (char*)buf;
+        raw.size = name.size();
+        raw.capacity = name.size() + 15;
+        SafeCopyChars((char*)key, (const char*)&raw, sizeof(RawPdxString));
     }
-
-    // Determine literal flag:
-    // If name contains "_SHIP_", it is a localization namelist key (literal = 0).
-    // Otherwise, it is a custom literal string (e.g. "幽灵", "先锋", "Spectre"), so literal = 1.
-    bool is_namelist_key = (name.find("_SHIP_") != std::string::npos);
-    uint8_t lit_val = is_namelist_key ? 0 : 1;
-    *(uint8_t*)((uintptr_t)design + 0x70) = lit_val;
-    *(uint8_t*)((uintptr_t)design + 0x30) &= ~0x08; // Clear m_auto_gen: design is now user-saved
-
-    // Call engine CalcLongName to recalculate m_longName and both variables (NAME and SIZE)
-    if (fn_calc_long_name_) {
-        __try {
-            fn_calc_long_name_(design);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            LOGF("[SHIP_DESIGNER] Exception in CalcLongName for design at 0x%p", design);
-        }
-    }
-
-    LOGF("[SHIP_DESIGNER] SetShipDesignName: design=0x%p, name='%s', literal=%u",
-         design, name.c_str(), (unsigned int)lit_val);
+    // a name list key (e.g. HUMAN1_SHIP_Cobra) is localized, anything else is shown as typed
+    *(uint8_t*)(pname + sdk::ent::CPersistentName::literal) = name.find("_SHIP_") == std::string::npos ? 1 : 0;
+    designs::CalcLongName(design);
     return true;
 }
 
-bool ShipDesigner::CreateShipDesign(const std::string& ship_size, std::string& name,
-                                    const nlohmann::json& slots_json, const nlohmann::json& cores_json,
-                                    uint32_t& out_design_id, std::string& out_message) {
-    if (!fn_register_design_ || !fn_country_add_design_) {
-        out_message = "Engine register/add design functions not initialized";
+bool ShipDesigner::ApplyDesignEdits(void* design, void* country, const nlohmann::json& slots_json,
+                                    const nlohmann::json& cores_json, int* changes, std::string* why) {
+    namespace rt = sdk::rt;
+    void* stage = designs::Stage0(design);
+    if (!stage) {
+        *why = "The design has no growth stage";
         return false;
     }
-
-    void* country = GetPlayerCountry();
-    if (!country) {
-        out_message = "Player country not available";
-        return false;
-    }
-
-    std::string target_size = ship_size.empty() ? "corvette" : ship_size;
-
-    // Find prototype template design with matching ship_size from player's country
-    void* proto_design = nullptr;
-    void* arr_ptr = nullptr;
-    uint32_t count = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x1AD0), &arr_ptr) && arr_ptr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x1ADC), &count)) {
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t did = 0;
-            if (!SafeReadU32((const void*)((uintptr_t)arr_ptr + i * 4), &did)) continue;
-            void* d = FindShipDesign(did);
-            if (!d) continue;
-
-            void* p_sub = nullptr;
-            if (!SafeReadPtr((const void*)((uintptr_t)d + 0x20), &p_sub) || !p_sub) continue;
-
-            void* p_size = nullptr;
-            if (!SafeReadPtr((const void*)((uintptr_t)p_sub + 0x08), &p_size) || !p_size) continue;
-
-            uint32_t sec_templates_cnt = 0;
-            if (!SafeReadU32((const void*)((uintptr_t)p_size + 0x848), &sec_templates_cnt) || sec_templates_cnt == 0) {
-                continue;
-            }
-
-            std::string d_size;
-            SafeReadPdxString((const void*)((uintptr_t)p_size + 0x20), d_size);
-            if (d_size == target_size) {
-                proto_design = d;
-                break;
-            }
+    auto sections = designs::Sections(stage);
+    auto component_of = [&](const std::string& key, void** out) -> bool {
+        *out = FindComponentTemplate(key);
+        if (!*out) {
+            *why = "Component key '" + key + "' not found (see stellaris_get_ship_design_catalog)";
+            return false;
         }
-    }
-
-    if (!proto_design) {
-        out_message = "No existing design prototype found for customizable ship size: " + target_size;
-        return false;
-    }
-
-    void* manager_ctx = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &manager_ctx) || !manager_ctx || (uintptr_t)manager_ctx < 0x10000) {
-        out_message = "CShipDesignManager context not found";
-        return false;
-    }
-
-    // Register design in CShipDesignManager: clones proto_design and assigns new unique design_id
-    void* new_design = fn_register_design_(manager_ctx, proto_design);
-    if (!new_design) {
-        out_message = "Failed to register new ship design in manager";
-        return false;
-    }
-
-    uint32_t new_id = 0;
-    if (!SafeReadU32((const void*)((uintptr_t)new_design + 0x10), &new_id) || new_id == 0 || new_id == 0xFFFFFFFF) {
-        out_message = "Failed to retrieve valid design ID for newly created design";
-        return false;
-    }
-    out_design_id = new_id;
-
-    // Add new design to player country design array (country + 0x1AC8)
-    uint32_t cur_cnt = 0;
-    SafeReadU32((const void*)((uintptr_t)country + 0x1ADC), &cur_cnt);
-    void* p_new = new_design;
-    fn_country_add_design_((void*)((uintptr_t)country + 0x1AC8), cur_cnt, &p_new);
-
-    // Apply custom name if provided, or generate a sensible default name
-    if (!name.empty()) {
-        SetShipDesignName(new_design, name);
-    } else {
-        name = target_size + " " + std::to_string(new_id);
-        SetShipDesignName(new_design, name);
-    }
-
-    // Apply custom slots or core components if provided
-    if ((slots_json.is_array() && !slots_json.empty()) || (cores_json.is_object() && !cores_json.empty())) {
-        std::string upd_msg;
-        UpdateShipDesign(new_id, "", slots_json, cores_json, upd_msg);
-    }
-
-    out_message = "New ship design ID " + std::to_string(new_id) + " ('" + name + "') successfully created";
-    return true;
-}
-
-nlohmann::json ShipDesigner::CreateShipDesignJson(const nlohmann::json& params) {
-    std::string ship_size = params.value("ship_size", "corvette");
-    std::string name = params.value("name", "");
-    nlohmann::json slots = params.contains("slots") ? params["slots"] : nlohmann::json::array();
-    nlohmann::json cores = params.contains("core_components") ? params["core_components"] : nlohmann::json::object();
-
-    uint32_t design_id = 0;
-    std::string msg;
-    bool ok = CreateShipDesign(ship_size, name, slots, cores, design_id, msg);
-
-    if (!ok) {
-        return {
-            {"success", false},
-            {"error", msg}
-        };
-    }
-
-    return {
-        {"success", true},
-        {"design_id", design_id},
-        {"ship_size", ship_size},
-        {"name", name},
-        {"message", msg}
+        return true;
     };
-}
+    // the designer's own check for a component in a slot (nullptr: a required component)
+    auto allowed = [&](void* comp, void* slot, const std::string& key) -> bool {
+        std::string reason;
+        if (slot && !designs::SlotAccepts(slot, comp)) {
+            std::string sl;
+            SafeReadPdxString((const void*)((uintptr_t)slot + rt::CComponentSlot_name), sl);
+            *why = "'" + LocalizeKey(key) + "' (" + key + ") does not fit slot " + sl + " (wrong size or type)";
+            return false;
+        }
+        if (!designs::CanBuildComponent(comp, stage, slot, &reason)) {
+            *why = "'" + LocalizeKey(key) + "' (" + key + ") cannot be used here" + (reason.empty() ? "" : ": " + reason);
+            return false;
+        }
+        return true;
+    };
 
-bool ShipDesigner::UpdateShipDesign(uint32_t design_id, const std::string& new_name,
-                                    const nlohmann::json& slots_json, const nlohmann::json& cores_json,
-                                    std::string& out_message) {
-    void* design = FindShipDesign(design_id);
-    if (!design) {
-        out_message = "Ship design ID " + std::to_string(design_id) + " not found";
-        return false;
-    }
-
-    void* p_sub = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)design + 0x20), &p_sub) || !p_sub) {
-        out_message = "Failed to access ship design sub-structure";
-        return false;
-    }
-
-    void* p_size = nullptr;
-    uint32_t sec_templates_cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)p_sub + 0x08), &p_size) || !p_size ||
-        !SafeReadU32((const void*)((uintptr_t)p_size + 0x848), &sec_templates_cnt) || sec_templates_cnt == 0) {
-        out_message = "Ship design ID " + std::to_string(design_id) + " is not a customizable ship design";
-        return false;
-    }
-
-    if (!new_name.empty()) {
-        SetShipDesignName(design, new_name);
-    }
-
-    uint32_t replaced_slots = 0;
-
-    // Update Section slots
     if (slots_json.is_array()) {
-        void* sec_arr = nullptr;
-        uint32_t sec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)p_sub + 0x18), &sec_arr) && sec_arr &&
-            SafeReadU32((const void*)((uintptr_t)p_sub + 0x20), &sec_cnt) && sec_cnt <= 16) {
-
-            for (const auto& item : slots_json) {
-                if (!item.contains("component_key")) continue;
-                std::string comp_key = item["component_key"].get<std::string>();
-                void* p_tmpl = FindComponentTemplate(comp_key);
-                if (!p_tmpl) {
-                    out_message = "Component key '" + comp_key + "' not found in catalog";
-                    return false;
-                }
-
-                void* country = GetPlayerCountry();
-                if (!CanCountryUseComponent(p_tmpl, country)) {
-                    std::string loc_name = LocalizeKey(comp_key);
-                    out_message = "Cannot equip '" + loc_name + "' (" + comp_key + "): technology not unlocked by your empire";
-                    return false;
-                }
-
-                int target_slot_idx = item.value("slot_index", -1);
-                std::string target_slot_name = item.value("slot_name", "");
-                int target_sec_idx = item.value("section_index", -1);
-                std::string target_sec_name = item.value("section_name", "");
-
-                // Traverse sections to find matching slot
-                for (uint32_t s = 0; s < sec_cnt; ++s) {
-                    if (target_sec_idx != -1 && (int)s != target_sec_idx) continue;
-
-                    void* p_sec = nullptr;
-                    if (!SafeReadPtr((const void*)((uintptr_t)sec_arr + s * sizeof(void*)), &p_sec) || !p_sec) continue;
-
-                    std::string cur_sec_name;
-                    SafeReadPdxString((const void*)((uintptr_t)p_sec + 0x18), cur_sec_name);
-                    if (!target_sec_name.empty() && cur_sec_name != target_sec_name) continue;
-
-                    void* p_sec_tmpl = nullptr;
-                    SafeReadPtr((const void*)((uintptr_t)p_sec + 0x40), &p_sec_tmpl);
-
-                    void* tmpl_slots_arr = nullptr;
-                    uint32_t tmpl_slots_cnt = 0;
-                    if (p_sec_tmpl) {
-                        SafeReadPtr((const void*)((uintptr_t)p_sec_tmpl + 0x178), &tmpl_slots_arr);
-                        SafeReadU32((const void*)((uintptr_t)p_sec_tmpl + 0x184), &tmpl_slots_cnt);
-                    }
-
-                    bool matched_in_sec = false;
-                    if (tmpl_slots_arr && tmpl_slots_cnt > 0 && tmpl_slots_cnt <= 128) {
-                        for (uint32_t k = 0; k < tmpl_slots_cnt; ++k) {
-                            uintptr_t slot_p = (uintptr_t)tmpl_slots_arr + k * 0x98;
-                            std::string sl_name;
-                            SafeReadPdxString((const void*)(slot_p + 0x18), sl_name);
-
-                            if ((target_slot_idx != -1 && (int)k == target_slot_idx) ||
-                                (!target_slot_name.empty() && sl_name == target_slot_name)) {
-                                if (SafeSetComponentOnSlot(fn_set_component_on_slot_, p_sec, p_tmpl, (void*)slot_p)) {
-                                    replaced_slots++;
-                                    matched_in_sec = true;
-                                }
-                                break;
-                            }
-                        }
-                    } else {
-                        void* slots_arr = nullptr;
-                        uint32_t slots_cnt = 0;
-                        if (SafeReadPtr((const void*)((uintptr_t)p_sec + 0x50), &slots_arr) && slots_arr &&
-                            SafeReadU32((const void*)((uintptr_t)p_sec + 0x58), &slots_cnt) && slots_cnt <= 128) {
-                            for (uint32_t k = 0; k < slots_cnt; ++k) {
-                                uintptr_t slot_p = (uintptr_t)slots_arr + k * 0x20;
-                                void* slot_def = nullptr;
-                                SafeReadPtr((const void*)(slot_p + 8), &slot_def);
-                                std::string sl_name;
-                                if (slot_def) {
-                                    SafeReadPdxString((const void*)((uintptr_t)slot_def + 0x18), sl_name);
-                                }
-
-                                if ((target_slot_idx != -1 && (int)k == target_slot_idx) ||
-                                    (!target_slot_name.empty() && sl_name == target_slot_name)) {
-                                    SafeWritePtr((void*)(slot_p + 0x10), p_tmpl);
-                                    replaced_slots++;
-                                    matched_in_sec = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if (matched_in_sec && (!target_sec_name.empty() || target_sec_idx != -1)) {
+        for (const auto& item : slots_json) {
+            std::string key = item.value("component_key", "");
+            void* comp = nullptr;
+            if (!component_of(key, &comp)) return false;
+            int want_sec = item.value("section_index", -1);
+            std::string sec_name = item.value("section_name", "");
+            int want_slot = item.value("slot_index", -1);
+            std::string slot_name = item.value("slot_name", "");
+            void* sec_hit = nullptr;
+            void* slot_hit = nullptr;
+            for (size_t si = 0; si < sections.size() && !slot_hit; ++si) {
+                if (want_sec >= 0 && (int)si != want_sec) continue;
+                std::string name;
+                SafeReadPdxString((const void*)((uintptr_t)sections[si] + sdk::ent::CShipDesignSection::slot), name);
+                if (!sec_name.empty() && name != sec_name) continue;
+                auto slots = designs::SlotsOf(sections[si]);
+                for (size_t k = 0; k < slots.size(); ++k) {
+                    std::string sl;
+                    SafeReadPdxString((const void*)((uintptr_t)slots[k] + rt::CComponentSlot_name), sl);
+                    if ((want_slot >= 0 && (int)k == want_slot && slot_name.empty()) || (!slot_name.empty() && sl == slot_name)) {
+                        sec_hit = sections[si];
+                        slot_hit = slots[k];
                         break;
                     }
                 }
             }
+            if (!slot_hit) {
+                *why = "No such slot (give section_index or section_name, and slot_index or slot_name from stellaris_get_ship_designs)";
+                return false;
+            }
+            if (!allowed(comp, slot_hit, key)) return false;
+            void* before = designs::Installed(sec_hit, slot_hit);
+            if (!designs::SetComponent(sec_hit, comp, slot_hit) || designs::Installed(sec_hit, slot_hit) != comp) {
+                std::string sl;
+                SafeReadPdxString((const void*)((uintptr_t)slot_hit + rt::CComponentSlot_name), sl);
+                *why = "'" + LocalizeKey(key) + "' (" + key + ") does not fit slot " + sl;
+                return false;
+            }
+            if (before != comp) ++*changes;
         }
     }
 
-    // Update Core components
-    if (cores_json.is_object()) {
-        void* comp_arr = nullptr;
-        uint32_t comp_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)p_sub + 0x30), &comp_arr) && comp_arr &&
-            SafeReadU32((const void*)((uintptr_t)p_sub + 0x38), &comp_cnt)) {
+    // required components: the engine keeps one per component set (reactor, FTL, thrusters ...)
+    std::vector<std::string> core_keys;
+    if (cores_json.is_array()) {
+        for (const auto& k : cores_json) if (k.is_string()) core_keys.push_back(k.get<std::string>());
+    } else if (cores_json.is_object()) {
+        for (const auto& [field, k] : cores_json.items()) if (k.is_string() && !k.get<std::string>().empty()) core_keys.push_back(k.get<std::string>());
+    }
+    for (const auto& key : core_keys) {
+        void* comp = nullptr;
+        if (!component_of(key, &comp)) return false;
+        if (!allowed(comp, nullptr, key)) return false;
+        void* set = designs::Rd<void*>((uintptr_t)comp + rt::CComponentTemplate_component_set, nullptr);
+        void* data = designs::Rd<void*>((uintptr_t)stage + rt::CShipGrowthStage_components, nullptr);
+        auto cores = designs::Cores(stage);
+        int hit = -1;
+        for (size_t i = 0; i < cores.size(); ++i) {
+            if (cores[i] && designs::Rd<void*>((uintptr_t)cores[i] + rt::CComponentTemplate_component_set, nullptr) == set) {
+                hit = (int)i;
+                break;
+            }
+        }
+        if (hit < 0 || !data) {
+            *why = "This hull has no required slot for '" + LocalizeKey(key) + "' (" + key + ")";
+            return false;
+        }
+        if (cores[hit] != comp) {
+            // what CShipDesignerBase::SetRequiredComponent does: overwrite the entry
+            *(void**)((uintptr_t)data + hit * sizeof(void*)) = comp;
+            ++*changes;
+        }
+    }
+    designs::UpdateResources(stage);
+    return true;
+}
 
-            auto update_core = [&](const std::string& field, uint32_t core_idx) -> bool {
-                if (cores_json.contains(field) && core_idx < comp_cnt) {
-                    std::string key = cores_json[field].get<std::string>();
-                    void* p_tmpl = FindComponentTemplate(key);
-                    if (!p_tmpl) {
-                        out_message = "Core component key '" + key + "' not found in catalog";
-                        return false;
-                    }
-                    void* country = GetPlayerCountry();
-                    if (!CanCountryUseComponent(p_tmpl, country)) {
-                        std::string loc_name = LocalizeKey(key);
-                        out_message = "Cannot equip core '" + loc_name + "' (" + key + "): technology not unlocked by your empire";
-                        return false;
-                    }
-                    SafeWritePtr((void*)((uintptr_t)comp_arr + core_idx * 8), p_tmpl);
-                    replaced_slots++;
-                }
-                return true;
-            };
+bool ShipDesigner::PostDesign(void* source, const std::string& name, const nlohmann::json& slots_json,
+                              const nlohmann::json& cores_json, bool is_new, std::string* message) {
+    void* country = GetPlayerCountry();
+    if (!country) {
+        *message = "Player country not available";
+        return false;
+    }
+    // CCreateOrUpdateShipDesignCommand(design, country): the engine copy-constructs `source`
+    // into the command; with id -1, Execute's CShipDesignCollection::AddShipDesign creates a new
+    // design. RemoveShipDesign first drops the player's design with the same name (or identical
+    // components in the same design slot): that is how the designer's save replaces a design.
+    namespace cu = sdk::cmd::create_or_update_ship_design;
+    void* obj = CommandBuilder::Get().EngineAlloc(cu::kSize);
+    if (!obj) {
+        *message = "Engine allocation for the design command failed";
+        return false;
+    }
+    struct CtorCtx {
+        uintptr_t fn;
+        void* obj;
+        const void* src;
+        uint32_t country;
+    } ctx{ base_address_ + sdk::fn::CCreateOrUpdateShipDesignCommand_CtorCountry, obj, source,
+           GameState::Get().GetPlayerCountryId() };
+    if (!CommandBuilder::Get().CallGuarded([](void* c, void*) {
+            auto* x = (CtorCtx*)c;
+            ((void* (*)(void*, const void*, uint32_t))x->fn)(x->obj, x->src, x->country);
+        }, &ctx)) {
+        *message = "The engine failed to copy the design";
+        return false;
+    }
+    auto cmd = CommandBuilder::Get().Adopt(cu::kSpec, obj);
+    if (!cmd) {
+        *message = cmd.error();
+        return false;
+    }
+    void* copy = (void*)((uintptr_t)obj + cu::design);
+    *(uint32_t*)((uintptr_t)copy + sdk::rt::CShipDesign_id) = 0xFFFFFFFF;
+    if (!name.empty()) SetShipDesignName(copy, name);
 
-            if (!update_core("reactor", 0) ||
-                !update_core("ftl", 1) ||
-                !update_core("thruster", 2) ||
-                !update_core("sensor", 3) ||
-                !update_core("combat_computer", 4) ||
-                !update_core("aura", 5)) {
+    int changes = 0;
+    std::string why;
+    if (!ApplyDesignEdits(copy, country, slots_json, cores_json, &changes, &why)) {
+        *message = why;
+        return false;  // `cmd` destroys the unposted command and its design copy
+    }
+    designs::CalcLongName(copy);
+    if (!designs::ValidToSave(designs::Stage0(copy), country, &why)) {
+        *message = why;
+        return false;
+    }
+    if (is_new) {
+        // a new design identical to one the player has would replace it instead
+        for (void* d : PlayerDesigns()) {
+            if (designs::SameComponents(copy, d)) {
+                std::string other;
+                SafeReadPdxString((const void*)((uintptr_t)d + sdk::ent::CShipDesign::name + sdk::ent::CPersistentName::key), other);
+                *message = "Identical to your design '" + other + "' (" +
+                           std::to_string(designs::Rd<uint32_t>((uintptr_t)d + sdk::rt::CShipDesign_id, 0)) +
+                           "); the game would replace it. Change at least one component.";
                 return false;
             }
         }
     }
-
-    // Recalculate stage resources / stats
-    SafeStageUpdateResources(fn_stage_update_resources_, p_sub);
-
-    // Mark design as user-saved: clear m_auto_gen (bit 0x08 at design + 0x30)
-    *(uint8_t*)((uintptr_t)design + 0x30) &= ~0x08;
-
-    out_message = "Ship design " + std::to_string(design_id) + " successfully updated with " +
-                  std::to_string(replaced_slots) + " component changes";
-    LOGF("[SHIP_DESIGNER] %s", out_message.c_str());
+    if (!cmd.Post(NativeCommand::Check::IsValid)) {
+        *message = cmd.error();
+        return false;
+    }
+    *message = std::to_string(changes) + " component change(s)";
     return true;
+}
+
+nlohmann::json ShipDesigner::CreateShipDesignJson(const nlohmann::json& params) {
+    std::string size = params.value("ship_size", "");
+    std::string name = params.value("name", "");
+    if (size.empty()) return { {"success", false}, {"error", "ship_size is required (a designable hull, e.g. corvette)"} };
+    // start from the player's own design of that hull (its sections and required components)
+    void* proto = nullptr;
+    auto own = PlayerDesigns();
+    for (void* d : own) {
+        void* sz = designs::SizeOf(designs::Stage0(d));
+        std::string key;
+        SafeReadPdxString((const void*)((uintptr_t)sz + designs::kShipSizeKey), key);
+        if (key == size && designs::Designable(sz)) {
+            proto = d;
+            break;
+        }
+    }
+    if (!proto) {
+        return { {"success", false}, {"error", "You have no design of hull '" + size + "' to start from (the empire cannot build it yet, "
+                                               "or it is not designable)"} };
+    }
+    if (name.empty()) return { {"success", false}, {"error", "name is required (a new, unique design name)"} };
+    for (void* d : own) {
+        std::string other;
+        SafeReadPdxString((const void*)((uintptr_t)d + sdk::ent::CShipDesign::name + sdk::ent::CPersistentName::key), other);
+        if (other == name) {
+            return { {"success", false}, {"error", "You already have a design named '" + name +
+                                                   "' (saving would replace it; use stellaris_update_ship_design)"} };
+        }
+    }
+    nlohmann::json slots = params.value("slots", nlohmann::json::array());
+    nlohmann::json cores = params.value("core_components", nlohmann::json::array());
+    std::string msg;
+    if (!PostDesign(proto, name, slots, cores, true, &msg)) return { {"success", false}, {"error", msg} };
+    return { {"success", true}, {"ship_size", size}, {"name", name},
+             {"message", "Design posted (" + msg + "); it appears in stellaris_get_ship_designs with its id on the next call"} };
 }
 
 nlohmann::json ShipDesigner::UpdateShipDesignJson(const nlohmann::json& params) {
     if (!params.contains("design_id") || !params["design_id"].is_number()) {
-        return {
-            {"error", {
-                {"code", -32602},
-                {"message", "Missing required parameter: design_id"}
-            }}
-        };
+        return { {"success", false}, {"error", "design_id is required"} };
     }
-
     uint32_t did = params["design_id"].get<uint32_t>();
-    std::string new_name = params.value("name", "");
-    nlohmann::json slots = params.value("slots", nlohmann::json::array());
-    nlohmann::json cores = params.value("core_components", nlohmann::json::object());
-
-    std::string msg;
-    bool ok = UpdateShipDesign(did, new_name, slots, cores, msg);
-    if (!ok) {
-        return {
-            {"error", {
-                {"code", -32001},
-                {"message", msg}
-            }}
-        };
+    void* design = nullptr;
+    for (void* d : PlayerDesigns()) {
+        if (designs::Rd<uint32_t>((uintptr_t)d + sdk::rt::CShipDesign_id, 0xFFFFFFFF) == did) design = d;
     }
-
-    return {
-        {"success", true},
-        {"design_id", did},
-        {"message", msg}
-    };
+    if (!design) return { {"success", false}, {"error", "Design " + std::to_string(did) + " is not one of your designs"} };
+    if (!designs::Designable(designs::SizeOf(designs::Stage0(design)))) {
+        return { {"success", false}, {"error", "Design " + std::to_string(did) + " is not a customizable ship design"} };
+    }
+    std::string current;
+    SafeReadPdxString((const void*)((uintptr_t)design + sdk::ent::CShipDesign::name + sdk::ent::CPersistentName::key), current);
+    std::string name = params.value("name", "");
+    if (!name.empty() && name != current) {
+        return { {"success", false}, {"error", "Renaming is not supported: the game matches the design it replaces by name. "
+                                               "Create a new design with stellaris_create_ship_design instead."} };
+    }
+    nlohmann::json slots = params.value("slots", nlohmann::json::array());
+    nlohmann::json cores = params.value("core_components", nlohmann::json::array());
+    std::string msg;
+    if (!PostDesign(design, "", slots, cores, false, &msg)) return { {"success", false}, {"error", msg} };
+    return { {"success", true}, {"replaced_design_id", did}, {"name", current},
+             {"message", "Design update posted (" + msg + "); the game saves it as a new design with a new id that replaces "
+                         "this one and refits fleet templates using it"} };
 }
 
 bool ShipDesigner::UpgradeFleet(uint32_t fleet_id, uint32_t starbase_id, uint32_t target_design_id,

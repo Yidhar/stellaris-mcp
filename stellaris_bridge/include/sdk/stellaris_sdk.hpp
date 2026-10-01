@@ -343,17 +343,31 @@ namespace db {
 // ============================ runtime fields ============================
 // Offsets of runtime (not serialized) members, read from located engine code by anchors.py.
 namespace rt {
+    inline constexpr std::ptrdiff_t CAmbientObject_id = 0x8;
     inline constexpr std::ptrdiff_t CArchaeologicalSite_id = 0x8;
     inline constexpr std::ptrdiff_t CArmy_id = 0x10;
     inline constexpr std::ptrdiff_t CAstralRift_id = 0x8;
     inline constexpr std::ptrdiff_t CBuilding_id = 0x8;
+    inline constexpr std::ptrdiff_t CBypass_id = 0x8;
     inline constexpr std::ptrdiff_t CColony_id = 0x10;
+    inline constexpr std::ptrdiff_t CComponentSlot_name = 0x18;
+    inline constexpr std::ptrdiff_t CComponentSlot_size = 0x98;
+    inline constexpr std::ptrdiff_t CComponentSlot_size_kind = 0x94;
+    inline constexpr std::ptrdiff_t CComponentSlot_type_kind = 0x95;
+    inline constexpr std::ptrdiff_t CComponentTemplate_component_set = 0x848;
+    inline constexpr std::ptrdiff_t CComponentTemplate_size_kind = 0x1E0;
+    inline constexpr std::ptrdiff_t CComponentTemplate_type_kind = 0x1E1;
     inline constexpr std::ptrdiff_t CConstructionQueueItem_id = 0x8;
     inline constexpr std::ptrdiff_t CConstructionQueue_id = 0x8;
+    inline constexpr std::ptrdiff_t CCosmicStormInfluenceField_id = 0x10;
     inline constexpr std::ptrdiff_t CCosmicStorm_id = 0x20;
     inline constexpr std::ptrdiff_t CCouncilPosition_id = 0x8;
     inline constexpr std::ptrdiff_t CCountryFocusCard_id = 0x10;
     inline constexpr std::ptrdiff_t CCountry_id = 0x20;
+    inline constexpr std::ptrdiff_t CDebris_id = 0x20;
+    inline constexpr std::ptrdiff_t CDeposit_id = 0x10;
+    inline constexpr std::ptrdiff_t CDistrict_id = 0x8;
+    inline constexpr std::ptrdiff_t CEspionageAsset_id = 0x8;
     inline constexpr std::ptrdiff_t CEspionageOperation_id = 0x8;
     inline constexpr std::ptrdiff_t CEventScope_event_targets = 0x48;
     inline constexpr std::ptrdiff_t CEventScope_from = 0x38;
@@ -375,6 +389,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
     inline constexpr std::ptrdiff_t CGameState_date_hours = 0xC0;
     inline constexpr std::ptrdiff_t CGoMIACommand_mia_type = 0x38;
+    inline constexpr std::ptrdiff_t CGroundCombat_id = 0x10;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_dynamic_size = 0x248;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_flag = 0x220;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_vt_GetFlags = 0xF0;
@@ -382,6 +397,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CInGameIdler_speed = 0x590;
     inline constexpr std::ptrdiff_t CLeader_id = 0x20;
     inline constexpr std::ptrdiff_t CMegaStructure_id = 0x8;
+    inline constexpr std::ptrdiff_t CMissile_id = 0x8;
     inline constexpr std::ptrdiff_t CMission_id = 0x8;
     inline constexpr std::ptrdiff_t CModifierNodeManager_batch = 0x989;
     inline constexpr std::ptrdiff_t CModifierNodeManager_busy = 0x940;
@@ -396,6 +412,8 @@ namespace rt {
     inline constexpr std::ptrdiff_t CModifier_entry_count = 0x44;
     inline constexpr std::ptrdiff_t CModifier_parent_count = 0x9C;
     inline constexpr std::ptrdiff_t CModifier_parents = 0x90;
+    inline constexpr std::ptrdiff_t CNaturalWormhole_id = 0x8;
+    inline constexpr std::ptrdiff_t COrbitalLine_id = 0x8;
     inline constexpr std::ptrdiff_t CPatronRelation_id = 0x10;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_count = 0x1C;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_days = 0x40;
@@ -406,16 +424,37 @@ namespace rt {
     inline constexpr std::ptrdiff_t CPopJob_id = 0x10;
     inline constexpr std::ptrdiff_t CRandomLog_config = 0x38;
     inline constexpr std::ptrdiff_t CResolution_id = 0x8;
+    inline constexpr std::ptrdiff_t CSectionTemplate_slot_count = 0x184;
+    inline constexpr std::ptrdiff_t CSectionTemplate_slots = 0x178;
     inline constexpr std::ptrdiff_t CSector_id = 0x8;
+    inline constexpr std::ptrdiff_t CShipDesignComponent_size = 0x20;
+    inline constexpr std::ptrdiff_t CShipDesignComponent_slot = 0x8;
+    inline constexpr std::ptrdiff_t CShipDesignComponent_template = 0x10;
+    inline constexpr std::ptrdiff_t CShipDesignSection_component_count = 0x5C;
+    inline constexpr std::ptrdiff_t CShipDesignSection_components = 0x50;
+    inline constexpr std::ptrdiff_t CShipDesignSection_template = 0x40;
     inline constexpr std::ptrdiff_t CShipDesign_id = 0x10;
+    inline constexpr std::ptrdiff_t CShipDesign_stages = 0x20;
+    inline constexpr std::ptrdiff_t CShipGrowthStage_component_count = 0x3C;
+    inline constexpr std::ptrdiff_t CShipGrowthStage_components = 0x30;
+    inline constexpr std::ptrdiff_t CShipGrowthStage_section_count = 0x24;
+    inline constexpr std::ptrdiff_t CShipGrowthStage_sections = 0x18;
+    inline constexpr std::ptrdiff_t CShipGrowthStage_ship_size = 0x8;
+    inline constexpr std::ptrdiff_t CShipSize_flags = 0xC8;
     inline constexpr std::ptrdiff_t CShip_id = 0x18;
     inline constexpr std::ptrdiff_t CSituation_id = 0x8;
     inline constexpr std::ptrdiff_t CSpecies_id = 0x10;
     inline constexpr std::ptrdiff_t CSpyNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CStarbase_id = 0x8;
+    inline constexpr std::ptrdiff_t CStrikeCraft_id = 0x8;
+    inline constexpr std::ptrdiff_t CTradeDeal_id = 0x10;
+    inline constexpr std::ptrdiff_t CTruce_id = 0x10;
     inline constexpr std::ptrdiff_t CVivariumCritter_id = 0x10;
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
     inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
+    inline constexpr std::ptrdiff_t CZone_id = 0x8;
+    inline constexpr std::ptrdiff_t kComponentSizeAny = 0xB;
+    inline constexpr std::ptrdiff_t kComponentTypeAny = 0x4;
 }  // namespace rt
 
 // ============================== vtables ===============================
@@ -447,6 +486,8 @@ namespace fn {
     inline constexpr uintptr_t CColony_CalcColonizationProgressPerc = 0xDBCCF0;
     // CColony::CalcMaxBuildings(CZone const&, EPlanetBuildingOwnerType, CCountry const&) const  --  int (*)(const void* colony, const void* zone, int owner_type, const void* country)
     inline constexpr uintptr_t CColony_CalcMaxBuildings = 0xDAAE20;
+    // CComponentTemplate::CanBeBuiltBy(CCountry const&, EDesignOwner) const  --  bool (*)(const void* component, const void* country, uint32_t owner)
+    inline constexpr uintptr_t CComponentTemplate_CanBeBuiltBy = 0x3B9A10;
     // CConsole::RunCommandNow(CString const&)  --  void (*)(void* console, const void* command_cstring)
     inline constexpr uintptr_t CConsole_RunCommandNow = 0x1B12C50;
     // CCouncilAgenda::GetCost(CCountry const*, CString*) const  --  int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason)
@@ -467,6 +508,8 @@ namespace fn {
     inline constexpr uintptr_t CCountry_HasAutoSurveyedSystem = 0x7184F0;
     // CCountry::_HasSurveyedDepositHolder(CDepositHolder const*) const  --  bool (*)(const void* country, const void* deposit_holder)
     inline constexpr uintptr_t CCountry_HasSurveyedDepositHolder = 0x71C090;
+    // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
+    inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1D06DA0;
     // CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)  --  void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)
     inline constexpr uintptr_t CEventOption_GetDescForOptionAtIndex = 0xA22E00;
     // CEventScope::Copy(CEventScope const&)  --  void (*)(void* dst, const void* src)
@@ -529,6 +572,18 @@ namespace fn {
     inline constexpr uintptr_t CRandomLog_Get = 0x1B47DE0;
     // CScriptedRule::Evaluate(CEventScope&, CString*, CScriptedRule::EShowTooltip, bool) const  --  bool (*)(const void* rule, void* scope, void* reason, uint8_t show_tooltip, bool flag)
     inline constexpr uintptr_t CScriptedRule_Evaluate = 0x5B71D0;
+    // CShipDesignSection::SetComponentOnSlot(CComponentTemplate const*, CComponentSlot const*)  --  void (*)(void* section, const void* component, const void* slot)
+    inline constexpr uintptr_t CShipDesignSection_SetComponentOnSlot = 0xD6F040;
+    // CShipDesign::CalcLongName()  --  void (*)(void* design)
+    inline constexpr uintptr_t CShipDesign_CalcLongName = 0xE10C30;
+    // CShipDesignerBase::ComponentIsAllowedOnSlot(CComponentTemplate const*, CComponentSlot const*, CString*) const  --  bool (*)(const void* designer, const void* component, const void* slot, void* reason)
+    inline constexpr uintptr_t CShipDesignerBase_ComponentIsAllowedOnSlot = 0x1095D00;
+    // CShipDesignerBase::SetComponentOnSlot(int, CComponentTemplate const*, CComponentSlot const*, int)  --  void (*)(void* designer, int stage, const void* component, const void* slot, int section_slot)
+    inline constexpr uintptr_t CShipDesignerBase_SetComponentOnSlot = 0x1095E20;
+    // CShipGrowthStage::IsValidToSaveForCountry(EDesignOwner, CCountry const&, CString*) const  --  bool (*)(const void* stage, uint32_t owner, const void* country, void* reason)
+    inline constexpr uintptr_t CShipGrowthStage_IsValidToSaveForCountry = 0xD6C420;
+    // CShipGrowthStage::UpdateResources()  --  void (*)(void* stage)
+    inline constexpr uintptr_t CShipGrowthStage_UpdateResources = 0xD6D1C0;
     // CSpecialProjectInstance::IsSpeciesModification() const  --  bool (*)(const void* project)
     inline constexpr uintptr_t CSpecialProjectInstance_IsSpeciesModification = 0x82A070;
     // CSpecialProjectInstance::IsUplift() const  --  bool (*)(const void* project)
@@ -547,6 +602,8 @@ namespace fn {
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077830;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
     inline constexpr uintptr_t NHabitability_CalcHabitability = 0xA21D60;
+    // NShipDesignUtil::CanBuildComponent(CComponentTemplate const*, EDesignOwner, CShipGrowthStage const&, CComponentSlot const*, CString*)  --  bool (*)(const void* component, uint32_t owner, const void* stage, const void* slot, void* reason)
+    inline constexpr uintptr_t NShipDesignUtil_CanBuildComponent = 0xE7CB20;
     // PdxLocalize<char const(&)[N], CString const&>(key, param_name, value)  --  void* (*)(void* out_cstring, const void* key_view, const char* param, const void* value_cstring)
     inline constexpr uintptr_t PdxLocalize_OneParam = 0x326F30;
     // SEthicGovernmentConfiguration::SEthicGovernmentConfiguration(CCountry const*)  --  void* (*)(void* config, const void* country)

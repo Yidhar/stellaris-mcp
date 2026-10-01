@@ -495,6 +495,35 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   server.tool(
+    "stellaris_land_armies",
+    "Invades a planet: orders a player army fleet (transports with armies, see stellaris_get_armies / stellaris_embark_all_armies) to land on the planet's colony (native CFleetLandArmiesCommand). On an own or friendly planet the armies disembark there instead. Refused with the game's reason (not at war, no armies aboard, planetary shields up ...).",
+    {
+      fleet_id: z.number().int().describe("The army fleet's id"),
+      planet_id: z.number().int().describe("Target planet (must have a colony)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, planet_id, queue }) => galaxyCall("land_armies", { fleet_id, planet_id, queue: queue ?? false })
+  );
+
+  server.tool(
+    "stellaris_collect_data",
+    "Orders a player science ship to research a located special project (native CCollectDataFleetOrderCommand): debris analysis (project_id from stellaris_get_system debris / special_projects, or stellaris_get_situation_log) or an event project that must be researched at a place. With system_id instead, every such project of the player in that system. Refused when there is none the fleet can research.",
+    {
+      fleet_id: z.number().int().describe("The science ship's fleet id"),
+      project_id: z.number().int().optional().describe("Special project id"),
+      system_id: z.number().int().optional().describe("System whose located projects to research (when no project_id)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, project_id, system_id, queue }) =>
+      galaxyCall("collect_data", {
+        fleet_id,
+        ...(project_id !== undefined ? { project_id } : {}),
+        ...(system_id !== undefined ? { system_id } : {}),
+        queue: queue ?? false,
+      })
+  );
+
+  server.tool(
     "stellaris_orbit_planet",
     "Orders a player fleet to fly to a planet and orbit it (native CFleetOrbitPlanetCommand).",
     {
@@ -1567,7 +1596,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 30: stellaris_get_ship_designs
   server.tool(
     "stellaris_get_ship_designs",
-    "Queries ship designs owned by the player empire (country + 0x1AD0 and CShipDesignManager at base + 0x3112980). Returns full section hierarchy, weapon/defense/aux slot definitions, equipped component templates, and core component loadout (reactor, FTL drive, thrusters, sensors, combat computer).",
+    "Your designable ship designs (the hulls the ship designer offers): for each, the hull, sections with every slot (slot_index, slot_name, equipped component or empty), and the required components (reactor, FTL drive, thrusters, sensor, combat computer, aura ... as the hull defines them) as an indexed list. Use the slot and component keys with stellaris_create_ship_design / stellaris_update_ship_design.",
     {
       design_id: z
         .number()
@@ -1676,15 +1705,14 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 33: stellaris_create_ship_design
   server.tool(
     "stellaris_create_ship_design",
-    "Creates and registers a brand-new independent ship design in the empire's roster via native engine registration (RegisterDesign at base + 0x266670). Allocates a new unique design_id, adds it to the player country, and optionally initializes customized weapon/defense slots and core components.",
+    "Creates a new ship design the way the game's ship designer saves one (native CCreateOrUpdateShipDesignCommand): it starts from your existing design of the hull, applies the slot and required-component changes, and is checked by the game's own rules (component fits the slot, allowed on this hull, technology researched, required components, power). Refused with the reason otherwise. The name must be new, and the result must differ from every design you have (an identical design would replace it). The new design and its id appear in stellaris_get_ship_designs on the next call.",
     {
       ship_size: z
         .string()
         .describe("The customizable hull size for the new ship design (e.g. 'corvette', 'military_station_small', 'destroyer', 'cruiser')."),
       name: z
         .string()
-        .optional()
-        .describe("Optional custom name for the new ship design (e.g. 'HUMAN1_SHIP_Cobra')."),
+        .describe("Name of the new design (unique among your designs; a name list key such as 'HUMAN1_SHIP_Cobra' is localized, anything else shown as typed)."),
       slots: z
         .array(
           z.object({
@@ -1698,16 +1726,9 @@ export function registerTools(server: McpServer, client: PipeClient) {
         .optional()
         .describe("Optional initial list of slot modifications to equip on the newly created design."),
       core_components: z
-        .object({
-          reactor: z.string().optional().describe("Component key for reactor (e.g. 'CORVETTE_FISSION_REACTOR')."),
-          ftl: z.string().optional().describe("Component key for FTL drive (e.g. 'HYPER_DRIVE_1')."),
-          thruster: z.string().optional().describe("Component key for thrusters (e.g. 'SHIP_THRUSTER_1')."),
-          sensor: z.string().optional().describe("Component key for sensors (e.g. 'SENSOR_1')."),
-          combat_computer: z.string().optional().describe("Component key for combat computer (e.g. 'COMBAT_COMPUTER_DEFAULT')."),
-          aura: z.string().optional().describe("Component key for titan/station aura (e.g. 'SHIP_AURA_QUANTUM_DESTABILIZER')."),
-        })
+        .array(z.string())
         .optional()
-        .describe("Optional initial core system component replacements."),
+        .describe("Required components to put in (reactor, FTL drive, thrusters, sensor, combat computer, aura ...), as component keys; each replaces the design's required component of the same kind (e.g. ['SENSOR_3', 'CORVETTE_FUSION_REACTOR'])."),
     },
     async ({ ship_size, name, slots, core_components }) => {
       try {
@@ -1742,7 +1763,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 33: stellaris_update_ship_design
   server.tool(
     "stellaris_update_ship_design",
-    "Customizes an existing ship design in the empire's roster by updating weapon, defense, and auxiliary slots, modifying core components (reactor/FTL/thrusters/sensors/combat computer/aura), or renaming the design.",
+    "Changes components of one of your ship designs the way the game's ship designer re-saves it (native CCreateOrUpdateShipDesignCommand, with the same checks as stellaris_create_ship_design). The game stores the result as a new design with a new id that replaces this one (same name) and refits fleet templates that used it. Renaming is not supported.",
     {
       design_id: z
         .number()
@@ -1751,7 +1772,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
       name: z
         .string()
         .optional()
-        .describe("Optional new custom name for this ship design."),
+        .describe("The design's current name (renaming is not supported)."),
       slots: z
         .array(
           z.object({
@@ -1765,16 +1786,9 @@ export function registerTools(server: McpServer, client: PipeClient) {
         .optional()
         .describe("List of slot modifications to apply."),
       core_components: z
-        .object({
-          reactor: z.string().optional().describe("Component key for reactor (e.g. 'CORVETTE_FISSION_REACTOR')."),
-          ftl: z.string().optional().describe("Component key for FTL drive (e.g. 'HYPER_DRIVE_1')."),
-          thruster: z.string().optional().describe("Component key for thrusters (e.g. 'SHIP_THRUSTER_1')."),
-          sensor: z.string().optional().describe("Component key for sensors (e.g. 'SENSOR_1')."),
-          combat_computer: z.string().optional().describe("Component key for combat computer (e.g. 'COMBAT_COMPUTER_DEFAULT')."),
-          aura: z.string().optional().describe("Component key for titan/station aura (e.g. 'SHIP_AURA_QUANTUM_DESTABILIZER')."),
-        })
+        .array(z.string())
         .optional()
-        .describe("Core system component replacements."),
+        .describe("Required components to put in (reactor, FTL drive, thrusters, sensor, combat computer, aura ...), as component keys; each replaces the design's required component of the same kind (e.g. ['SENSOR_3', 'CORVETTE_FUSION_REACTOR'])."),
     },
     async ({ design_id, name, slots, core_components }) => {
       try {

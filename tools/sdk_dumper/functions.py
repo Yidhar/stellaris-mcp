@@ -496,6 +496,85 @@ FUNCTIONS = {
         # CRemoveSystemClaimCommand::IsValid compares the claims it removes with this first
         "vtable_call": {"command": "remove_system_claim_command", "slot": 8, "call_index": 0},
     },
+    # --- ship designs: the designer's own edit path (CShipDesignerBase::SetComponentOnSlot: find
+    # the stage's section for the slot, CShipDesignSection::SetComponentOnSlot, then
+    # CShipGrowthStage::UpdateResources)
+    "CShipDesignerBase_SetComponentOnSlot": {
+        "linux": "CShipDesignerBase::SetComponentOnSlot(int, CComponentTemplate const*, CComponentSlot const*, int)",
+        # UI only; anchors.py reads the design layout out of it
+        "signature": "void (*)(void* designer, int stage, const void* component, const void* slot, int section_slot)",
+        "strings": ["designer_add_utility", "designer_add_weapon"],
+    },
+    "CShipDesignSection_SetComponentOnSlot": {
+        "linux": "CShipDesignSection::SetComponentOnSlot(CComponentTemplate const*, CComponentSlot const*)",
+        # rcx = section, rdx = component template, r8 = the section template's slot; replaces the
+        # component in that slot or inserts one (only if the template's own check passes)
+        "signature": "void (*)(void* section, const void* component, const void* slot)",
+        # the first call once the section index is found (`cmp r8d, -1`)
+        "call_near": {"strings": ["designer_add_utility", "designer_add_weapon"], "anchor": r"^cmp r\w+d, -1$",
+                      "pick": "first_call_after"},
+    },
+    "CShipGrowthStage_UpdateResources": {
+        "linux": "CShipGrowthStage::UpdateResources()",
+        # rcx = stage; recomputes the stage's cost / upkeep from its hull, sections and components
+        "signature": "void (*)(void* stage)",
+        "call_near": {"strings": ["designer_add_utility", "designer_add_weapon"], "anchor": r"^cmp r\w+d, -1$",
+                      "pick": "first_call_after", "skip": 1},
+    },
+    "CShipDesign_CalcLongName": {
+        "linux": "CShipDesign::CalcLongName()",
+        # rcx = design; rebuilds the long name ("<NAME> <ship class>") from the name and hull
+        "signature": "void (*)(void* design)",
+        "strings": ["LONG_SHIPCLASS_NAME"],
+    },
+    "CShipGrowthStage_IsValidToSaveForCountry": {
+        "linux": "CShipGrowthStage::IsValidToSaveForCountry(EDesignOwner, CCountry const&, CString*) const",
+        # rcx = stage, edx = EDesignOwner (0 country), r8 = country, r9 = CString* reason; the ship
+        # designer's save check (hull allowed, required components, valid sections and components)
+        "signature": "bool (*)(const void* stage, uint32_t owner, const void* country, void* reason)",
+        "strings": ["SHIPDESIGNER_SAVEFAIL_INVALID_SHIP_SIZE", "SHIPDESIGNER_SAVEFAIL_WRONG_REQUIRED_COMPONENTS"],
+    },
+    "NShipDesignUtil_CanBuildComponent": {
+        "linux": "NShipDesignUtil::CanBuildComponent(CComponentTemplate const*, EDesignOwner, CShipGrowthStage const&, CComponentSlot const*, CString*)",
+        # rcx = component, edx = EDesignOwner (0 country), r8 = stage, r9 = slot (nullptr for a required
+        # component), [rsp+0x28] = CString* reason: the designer's check (allowed on this hull, valid
+        # for the country, technology, with the missing techs in the reason)
+        "signature": "bool (*)(const void* component, uint32_t owner, const void* stage, const void* slot, void* reason)",
+        "strings": ["COMPONENT_CANT_BUILD_MISSING_TECH"],
+    },
+    "CShipDesignerBase_ComponentIsAllowedOnSlot": {
+        "linux": "CShipDesignerBase::ComponentIsAllowedOnSlot(CComponentTemplate const*, CComponentSlot const*, CString*) const",
+        # UI only: slot size / slot type against the component's, then CanBuildComponent; anchors.py
+        # reads those fields and the "any" values out of it
+        "signature": "bool (*)(const void* designer, const void* component, const void* slot, void* reason)",
+        "pattern": [(r"^movzx eax, byte ptr \[r8 \+ 0x[0-9a-f]+\]$", ""), (r"^cmp al, byte ptr \[rdx \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^cmp al, 0xb$", ""), (r"^movzx eax, byte ptr \[r8 \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^cmp al, byte ptr \[rdx \+ 0x[0-9a-f]+\]$", ""), (r"^cmp al, 4$", "")],
+        "prefilter_bytes": [b"\x3C\x0B", b"\x3C\x04", b"\x41\x0F\xB6\x80"],  # cmp al, 0xb; cmp al, 4; movzx eax, [r8+d32]
+        "window": 24,
+    },
+    "CComponentTemplate_CanBeBuiltBy": {
+        "linux": "CComponentTemplate::CanBeBuiltBy(CCountry const&, EDesignOwner) const",
+        # rcx = component template, rdx = country, r8d = EDesignOwner (0 country); technology and
+        # owner restrictions (what the designer lists as available)
+        "signature": "bool (*)(const void* component, const void* country, uint32_t owner)",
+        "pattern": [(r"^mov edi, r8d$", ""), (r"^mov rbx, rdx$", ""), (r"^mov r15, rcx$", ""),
+                    (r"^test byte ptr \[rcx \+ 0x10\], 1$", ""), (r"^lea rcx, \[rdx \+ 0x18\]$", "")],
+        "prefilter_bytes": [b"\xF6\x41\x10\x01"],  # test byte ptr [rcx + 0x10], 1
+        "window": 20,
+    },
+    "CCreateOrUpdateShipDesignCommand_CtorCountry": {
+        "linux": "CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)",
+        # rcx = command memory (create_or_update_ship_design::kSize), rdx = source design (copy-
+        # constructed into +0x20), r8d = country; owner type 0 (country), no federation. The
+        # federation / galactic community variants store 1 / 2 as the owner type
+        "signature": "void* (*)(void* command, const void* design, uint32_t country)",
+        "pattern": [(r"^lea rax, \[rip \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", ""),
+                    (r"^mov dword ptr \[rdi \+ 0x228\], ebx$", ""), (r"^mov dword ptr \[rdi \+ 0x22c\], 0xffffffff$", ""),
+                    (r"^mov dword ptr \[rdi \+ 0x230\], esi$", "")],
+        "prefilter_bytes": [b"\xC7\x87\x2C\x02\x00\x00\xFF\xFF\xFF\xFF"],  # mov dword ptr [rdi+0x22c], -1
+        "window": 30,
+    },
     "DrawMovementDebugLines": {
         "linux": "DrawMovementDebugLines()",
         # not called by the bridge; anchors.py reads the CFleetPath / coordinate vtables out of it

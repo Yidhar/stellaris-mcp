@@ -20,22 +20,20 @@ struct SectionInfo {
     std::vector<SlotInfo> slots;
 };
 
-struct CoreComponentsInfo {
-    std::string reactor;
-    std::string ftl;
-    std::string thruster;
-    std::string sensor;
-    std::string combat_computer;
-    std::string aura;
+// a required ("core") component: reactor, FTL drive, thrusters, sensor, combat computer, aura ...
+// The hull defines which; the engine replaces one by its component set.
+struct CoreComponentInfo {
+    uint32_t index{ 0 };
+    std::string component_key;
+    std::string component_name;
 };
 
 struct ShipDesignInfo {
     uint32_t design_id{ 0 };
     std::string name;
     std::string ship_size;
-    std::string class_prefix;
     std::vector<SectionInfo> sections;
-    CoreComponentsInfo core_components;
+    std::vector<CoreComponentInfo> core_components;
 };
 
 struct ComponentVariantInfo {
@@ -64,14 +62,10 @@ public:
     nlohmann::json GetComponentDetailsJson(const nlohmann::json& params);
 
     // Actions
-    bool CreateShipDesign(const std::string& ship_size, std::string& name,
-                          const nlohmann::json& slots_json, const nlohmann::json& cores_json,
-                          uint32_t& out_design_id, std::string& out_message);
+    // Both go through the native CCreateOrUpdateShipDesignCommand, as the ship designer's save:
+    // create starts from an existing design of the hull; update replaces a design (the engine
+    // matches it by name, gives the result a new id and retrofits fleet templates).
     nlohmann::json CreateShipDesignJson(const nlohmann::json& params);
-
-    bool UpdateShipDesign(uint32_t design_id, const std::string& new_name,
-                          const nlohmann::json& slots_json, const nlohmann::json& cores_json,
-                          std::string& out_message);
     nlohmann::json UpdateShipDesignJson(const nlohmann::json& params);
 
     bool UpgradeFleet(uint32_t fleet_id, uint32_t starbase_id, uint32_t target_design_id,
@@ -81,14 +75,7 @@ public:
     bool DeleteShipDesign(uint32_t design_id, std::string& out_message);
     nlohmann::json DeleteShipDesignJson(const nlohmann::json& params);
 
-    using FnSetComponentOnSlot = void (*)(void* pSection, void* pComponentTemplate, void* pSlotDef);
-    using FnStageUpdateResources = void (*)(void* pStage);
-
     using FnEngineAlloc = void* (*)(size_t size);
-    using FnRegisterDesign = void* (*)(void* manager_ctx, void* source_design);
-    using FnCountryAddDesign = void (*)(void* country_designs_vec, uint32_t index, void** pp_new_design);
-    using FnCalcLongName = void (*)(void* pDesign);
-    using FnCanBeBuiltBy = bool (*)(void* pComponentTemplate, void* pCountry, int designOwnerType);
     using FnLocalize = void* (*)(void* out_str, const void* in_key);
     using FnFreePdxStr = void (*)(void* str);
 
@@ -105,19 +92,21 @@ private:
 
     uintptr_t base_address_{ 0 };
 
-    FnSetComponentOnSlot fn_set_component_on_slot_{ nullptr };
-    FnStageUpdateResources fn_stage_update_resources_{ nullptr };
     FnEngineAlloc fn_engine_alloc_{ nullptr };
-    FnRegisterDesign fn_register_design_{ nullptr };
-    FnCountryAddDesign fn_country_add_design_{ nullptr };
-    FnCalcLongName fn_calc_long_name_{ nullptr };
-    FnCanBeBuiltBy fn_can_be_built_by_{ nullptr };
     FnLocalize fn_localize_{ nullptr };
     FnFreePdxStr fn_free_pdx_str_{ nullptr };
 
     bool CanCountryUseComponent(void* p_tmpl, void* p_country);
     std::string LocalizeKey(const std::string& key);
     bool SetShipDesignName(void* design, const std::string& name);
+    std::vector<void*> PlayerDesigns();  // the player's design collection
+    // edits a design object (component slots and required components); counts real changes
+    bool ApplyDesignEdits(void* design, void* country, const nlohmann::json& slots_json,
+                          const nlohmann::json& cores_json, int* changes, std::string* why);
+    // copies `source` into a create_or_update_ship_design command, applies name and edits,
+    // validates like the designer's save and posts it
+    bool PostDesign(void* source, const std::string& name, const nlohmann::json& slots_json,
+                    const nlohmann::json& cores_json, bool is_new, std::string* message);
 
     std::unordered_map<std::string, void*> component_cache_;
     bool component_cache_built_{ false };

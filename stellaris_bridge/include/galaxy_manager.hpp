@@ -45,6 +45,16 @@ public:
     // add (count claims, default 1) or remove (count, default all) the player's claims on a system
     nlohmann::json ClaimSystem(uint32_t system_id, bool remove, int count);
 
+    // the system an ESpatialObjectType reference (planet, system, debris, megastructure, natural
+    // wormhole, astral rift, fleet) is in; 0xFFFFFFFF when unknown
+    uint32_t SpatialSystem(uint32_t type, uint32_t id);
+    // a science ship collects data for a special project (debris analysis and other located
+    // projects): by project id, or every such project of the player in system_id
+    nlohmann::json CollectData(uint32_t fleet_id, uint32_t project_id, uint32_t system_id, bool queue);
+
+    // invade: an army fleet lands its armies on the planet's colony
+    nlohmann::json LandArmies(uint32_t fleet_id, uint32_t planet_id, bool queue);
+
     // in-system orders
     nlohmann::json OrbitPlanet(uint32_t fleet_id, uint32_t planet_id, bool queue);
     nlohmann::json ResearchAnomalies(uint32_t fleet_id, uint32_t system_id, bool queue);

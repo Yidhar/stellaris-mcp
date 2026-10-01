@@ -168,4 +168,13 @@ flowchart TD
 - 考古遗址只在 `visible_to` 含玩家时显示；可发掘 = `CArchaeologicalSite::IsPotentialExcavator`（章节未完 + 类型的 potential 触发器，无原因文本）。
 - 对象 id 偏移随类不同（`CPlanet` +0x18、`CFleet` +0x30、`CCountry` +0x20、`CDebris` +0x20 …），由 anchors.py 从指令 `IsValid` 的引用解析读出为 `sdk::rt::<Class>_id`；`TPdxRef<CAstralRift>` / `CCosmicStorm` / `CFirstContact` 数据库也由同一规则定位。
 - 环绕：`fleet_orbit_planet::orbitable`（+0x28）是 `CRefObjectOrbitableRef {id +0, kind byte +4（1 = 行星）}`，queue +0x40。研究异常点 `research_anomalies {fleet, system, queue}`；发掘 `{fleet, archaeological_site, queue}`；使用捷径 `use_bypass_command {fleet, bypass, destination（目标星系里的那座捷径）, queue}`；探索捷径 `explore_bypass_command {fleet, bypass, queue}`。
+- 残骸没有专门指令：分析残骸是特殊项目（`CSpecialProjectInstance::debris`），用 `collect_data_fleet_order_command {fleet, galactic_object, id, queue}` 研究——`galactic_object = 星系` 时研究该国在此星系的全部有地点项目，`galactic_object = -1, id = 项目 id` 时研究单个项目。项目地点 `CSpecialProjectInstance::coordinate` 实为空间引用 `{vtable, type +8, id +0xC}`（行星 2、残骸 5 …）。
+- 入侵 `fleet_land_armies_command {fleet, colony, queue, queue_to_front}`，`IsValid` = `CLandArmiesFleetOrder::IsPossible`（带原因，如未宣战）；对己方星球即卸下陆军。
+- 各类对象 id 偏移由 anchors.py 对全镜像里每个已知 `TPdxRef` 数据库的内联查找投票得出（`sdk::rt::<Class>_id`，含 `CDebris` +0x20）。
 
+## 12. 舰船设计 (verified 4.5.1)
+
+- 新建 / 修改设计都走 `create_or_update_ship_design`（`CCreateOrUpdateShipDesignCommand`，0x238 字节，设计副本在 +0x20）。命令对象用引擎构造器 `sdk::fn::CCreateOrUpdateShipDesignCommand_CtorCountry(cmd, 源设计, 国家)` 复制源设计，再 `Adopt`。副本 id（`sdk::rt::CShipDesign_id`）置 -1，Execute 里 `CShipDesignCollection::AddShipDesign` 会新建设计。**`RemoveShipDesign` 先删掉同名、或同设计槽且组件完全相同的设计**——同名即"更新"（新 id + `RetrofitAll` 改装舰队模板），未改动的副本会顶掉原设计；引擎 `IsValid` 自身也拒绝已存在的相同设计（"该设计已存在"）。
+- 布局全部来自 SDK（anchors.py 从设计器自己的代码读出）：设计 `stages`（+0x20，内联 `CShipGrowthStage`）；阶段 `ship_size` +8、`sections` +0x18/+0x24、必需组件 `components` +0x30/+0x3C；分段 `template` +0x40、组件 `CPdxArray<CShipDesignComponent>` +0x50/+0x5C（0x20：槽 +8、组件模板 +0x10）；分段模板槽 +0x178/+0x184（`CComponentSlot` 0x98，名称 +0x18，尺寸 +0x94，类型 +0x95）；组件模板 尺寸 +0x1E0、类型 +0x1E1、组件集 +0x848；船体 flags +0xC8（bit 1 = `is_designable`）。
+- 编辑走设计器路径：`CShipDesignSection::SetComponentOnSlot(section, 组件, 槽)`（替换或插入），必需组件按组件集替换阶段数组里的那一项（同 `CShipDesignerBase::SetRequiredComponent`），然后 `CShipGrowthStage::UpdateResources`、`CShipDesign::CalcLongName`。检查顺序同设计器：槽尺寸/类型（`ComponentIsAllowedOnSlot`，0xB / 4 = 任意）→ `NShipDesignUtil::CanBuildComponent(组件, 0, 阶段, 槽或空, 原因)` → 保存检查 `CShipGrowthStage::IsValidToSaveForCountry(阶段, 0, 国家, 原因)`。
+- 旧代码的手写地址全部失效：0xD6E290 不是 `SetComponentOnSlot`（真正的是 0xD6F040），0xD6C420 其实是 `IsValidToSaveForCountry`（被当成 UpdateResources 单参数调用），0xE0FEE0 不是 `CalcLongName`（0xE10C30），0x689FE0（"国家加入设计"）直接访问违例崩溃。

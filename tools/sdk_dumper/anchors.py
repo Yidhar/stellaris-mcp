@@ -32,6 +32,7 @@ Every lookup in REQUIRED must produce exactly one answer or the stage fails.
 
 Usage: python tools/sdk_dumper/anchors.py   -> out/anchors.json
 """
+import collections
 import json
 import re
 import runpy
@@ -766,6 +767,130 @@ def main():
     else:
         failures.append("fleet path: DrawMovementDebugLines / CFleetPath_Create missing")
 
+    # Ship design layout, read from the designer's own edit path:
+    #   CShipDesign::CalcLongName: `mov rax, [design + S]; ... mov rcx, [rax + Z]` (stage 0, its hull)
+    #   CShipGrowthStage::UpdateResources: core components `mov rax, [stage + CD]` / `movsxd r, [stage + CC]`,
+    #     sections `mov rax, [stage + SD]` / `movsxd r, [stage + SC]`, section template `mov rdx, [sec + T]`
+    #   CShipDesignSection::SetComponentOnSlot: components `mov rsi, [sec + D]` / `movsxd r13, [sec + C]`,
+    #     element `shl rbx, 5`, `mov [rbx + TT], rax` (template), `mov [rbx + SL], rax` (slot, after the
+    #     CSectionTemplate::GetComponentSlot call on `[sec + T]`)
+    #   CSectionTemplate::GetComponentSlot: slots `mov r15, [tmpl + SD]` / `mov ebp, [tmpl + SC]`, `imul r, r, STRIDE`,
+    #     name `lea rcx, [slot + N]`
+    #   CShipDesignerBase::SetComponentOnSlot: `mov rax, [component + SET]; mov rcx, [rax + 0xc8]` (component set)
+    fn_names = ["CShipDesign_CalcLongName", "CShipGrowthStage_UpdateResources", "CShipDesignSection_SetComponentOnSlot",
+                "CShipDesignerBase_SetComponentOnSlot"]
+    if all(funcs.get(n) for n in fn_names):
+        def ops_of(rva_, n=120):
+            return [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(rva_, 0x1000)[:n]]
+
+        def hexs(m):
+            return int(m.group(1), 16)
+
+        sd = {}
+        cl = ops_of(funcs["CShipDesign_CalcLongName"]["rva"], 40)
+        for k, a in enumerate(cl):
+            m1 = re.search(r"^mov rax, qword ptr \[rcx \+ (0x[0-9a-f]+)\]$", a)
+            if m1:
+                for b in cl[k + 1:k + 4]:
+                    m2 = re.search(r"^mov rcx, qword ptr \[rax \+ (0x[0-9a-f]+|\d+)\]$", b)
+                    if m2:
+                        sd["CShipDesign_stages"] = hexs(m1)
+                        sd["CShipGrowthStage_ship_size"] = int(m2.group(1), 0)
+                        break
+                if "CShipDesign_stages" in sd:
+                    break
+        ur = ops_of(funcs["CShipGrowthStage_UpdateResources"]["rva"], 80)
+        loads = [(o, re.search(r"^(mov|movsxd) \w+, (qword|dword) ptr \[(r\w+) \+ (0x[0-9a-f]+)\]$", o)) for o in ur]
+        pairs = [(m.group(1), m.group(3), int(m.group(4), 16)) for o, m in loads if m]
+        # the stage register is the base of both `movsxd` counts
+        counts = [(base, off) for kind, base, off in pairs if kind == "movsxd"]
+        if len(counts) >= 2 and counts[0][0] == counts[1][0]:
+            stage_reg = counts[0][0]
+            datas = [off for kind, base, off in pairs if kind == "mov" and base == stage_reg]
+            if len(datas) >= 2:
+                sd["CShipGrowthStage_component_count"], sd["CShipGrowthStage_components"] = counts[0][1], datas[0]
+                sd["CShipGrowthStage_section_count"], sd["CShipGrowthStage_sections"] = counts[1][1], datas[1]
+        sc = ops_of(funcs["CShipDesignSection_SetComponentOnSlot"]["rva"], 90)
+        get_slot = None
+        for k, o in enumerate(sc):
+            m = re.search(r"^movsxd r13, dword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)
+            if m:
+                sd["CShipDesignSection_component_count"] = hexs(m)
+            m = re.search(r"^mov rsi, qword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)
+            if m and "CShipDesignSection_components" not in sd:
+                sd["CShipDesignSection_components"] = hexs(m)
+            m = re.search(r"^shl rbx, (\d+)$", o)
+            if m:
+                sd["CShipDesignComponent_size"] = 1 << int(m.group(1))
+            m = re.search(r"^mov qword ptr \[rbx \+ (0x[0-9a-f]+|\d+)\], rax$", o)
+            if m and "CShipDesignComponent_template" not in sd:
+                sd["CShipDesignComponent_template"] = int(m.group(1), 0)
+            m = re.search(r"^mov rcx, qword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)
+            if m and k + 1 < len(sc) and sc[k + 1].startswith("call 0x"):
+                sd["CShipDesignSection_template"] = hexs(m)
+                get_slot = int(sc[k + 1].split()[1], 16) - im.ib
+            m = re.search(r"^mov qword ptr \[rbx \+ (0x[0-9a-f]+|\d+)\], rax$", o)
+            if m and get_slot and "CShipDesignComponent_slot" not in sd:
+                sd["CShipDesignComponent_slot"] = int(m.group(1), 0)
+        if get_slot:
+            gs = ops_of(get_slot, 40)
+            for o in gs:
+                m = re.search(r"^mov e\w+, dword ptr \[rcx \+ (0x[0-9a-f]+)\]$", o)
+                if m and "CSectionTemplate_slot_count" not in sd:
+                    sd["CSectionTemplate_slot_count"] = hexs(m)
+                m = re.search(r"^mov r\w+, qword ptr \[rcx \+ (0x[0-9a-f]+)\]$", o)
+                if m and "CSectionTemplate_slots" not in sd:
+                    sd["CSectionTemplate_slots"] = hexs(m)
+                m = re.search(r"^imul \w+, \w+, (0x[0-9a-f]+)$", o)
+                if m:
+                    sd["CComponentSlot_size"] = hexs(m)
+                m = re.search(r"^lea rcx, \[rdi \+ (0x[0-9a-f]+)\]$", o)
+                if m and "CComponentSlot_name" not in sd:
+                    sd["CComponentSlot_name"] = hexs(m)
+        ui = ops_of(funcs["CShipDesignerBase_SetComponentOnSlot"]["rva"], 80)
+        for a, b in zip(ui, ui[1:]):
+            m1 = re.search(r"^mov rax, qword ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", a)
+            if m1 and b == "mov rcx, qword ptr [rax + 0xc8]":
+                sd["CComponentTemplate_component_set"] = hexs(m1)
+                break
+        # hull flags (is_designable is bit 1, CShipSize::ReadMember token 0x31fe): the save check
+        # starts with `mov rcx, [stage + 8]; mov eax, dword ptr [rcx + F]; and eax, 0xc0000`
+        vs = funcs.get("CShipGrowthStage_IsValidToSaveForCountry", {}).get("rva")
+        if vs:
+            vo = ops_of(vs, 40)
+            for a, b in zip(vo, vo[1:]):
+                m = re.search(r"^mov eax, dword ptr \[rcx \+ (0x[0-9a-f]+)\]$", a)
+                if m and b == "and eax, 0xc0000":
+                    sd["CShipSize_flags"] = hexs(m)
+                    break
+        # slot compatibility (CShipDesignerBase::ComponentIsAllowedOnSlot): `movzx eax, [slot + SS];
+        # cmp al, [component + CS]; ... cmp al, ANY_SIZE` then the same for the slot type
+        ca = funcs.get("CShipDesignerBase_ComponentIsAllowedOnSlot", {}).get("rva")
+        if ca:
+            co = ops_of(ca, 30)
+            slot_b = [int(m.group(1), 16) for o in co for m in [re.search(r"^movzx eax, byte ptr \[r8 \+ (0x[0-9a-f]+)\]$", o)] if m]
+            comp_b = [int(m.group(1), 16) for o in co for m in [re.search(r"^cmp al, byte ptr \[rdx \+ (0x[0-9a-f]+)\]$", o)] if m]
+            anys = [int(m.group(1), 0) for o in co for m in [re.search(r"^cmp al, (0x[0-9a-f]+|\d+)$", o)] if m]
+            if len(slot_b) >= 2 and len(comp_b) >= 2 and len(anys) >= 2:
+                sd.update({"CComponentSlot_size_kind": slot_b[0], "CComponentSlot_type_kind": slot_b[1],
+                           "CComponentTemplate_size_kind": comp_b[0], "CComponentTemplate_type_kind": comp_b[1],
+                           "kComponentSizeAny": anys[0], "kComponentTypeAny": anys[1]})
+        need = ["CComponentSlot_size_kind", "CComponentSlot_type_kind", "CComponentTemplate_size_kind",
+                "CComponentTemplate_type_kind", "kComponentSizeAny", "kComponentTypeAny",
+                "CShipSize_flags", "CShipDesign_stages", "CShipGrowthStage_ship_size", "CShipGrowthStage_components",
+                "CShipGrowthStage_component_count", "CShipGrowthStage_sections", "CShipGrowthStage_section_count",
+                "CShipDesignSection_template", "CShipDesignSection_components", "CShipDesignSection_component_count",
+                "CShipDesignComponent_size", "CShipDesignComponent_template", "CShipDesignComponent_slot",
+                "CSectionTemplate_slots", "CSectionTemplate_slot_count", "CComponentSlot_size", "CComponentSlot_name",
+                "CComponentTemplate_component_set"]
+        if any(n not in sd for n in need) or sd["CShipDesignComponent_slot"] == sd["CShipDesignComponent_template"]:
+            failures.append(f"ship design layout: {sd}")
+        else:
+            result["fields"].update(sd)
+            print("ship design layout: " + ", ".join(f"{k}=0x{v:X}" for k, v in sd.items()))
+    else:
+        failures.append("ship design layout: designer functions missing")
+
     # CGoMIACommand's EMiaType: its serializer converts it with an out-of-line EnumToToken, which
     # win_extract cannot pair with the token; IsValid starts with `cmp dword ptr [rcx + X], 9`
     # (9 = no MIA type)
@@ -878,6 +1003,39 @@ def main():
             taken.add(next(iter(gs)))
             added += 1
     print(f"ref databases from command IsValid: {added} ({', '.join(sorted(t for t, g in votes.items() if len(g) == 1))})")
+    # every other inlined lookup of a known ref database in the image votes too: `mov rA, [rip + G];
+    # ... cmp eax, [rA + 0x20]; ... mov rB, [rA + 0x18]; mov rO, [rB + rI*8 + 8]; ... cmp dword ptr
+    # [rO + ID], rV` (classes no command references, such as CDebris via special projects)
+    text = im.img[im.text0:im.text1]
+    db_of = {v: k[len("TPdxRef<"):-len(">::_pDatabase")] for k, v in {**known, **result["globals"]}.items()
+             if k.startswith("TPdxRef<") and k.endswith(">::_pDatabase")}
+    site_votes = {}
+    for mt in re.finditer(rb"[\x48\x4C]\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+        at = mt.start()
+        g = im.text0 + at + 7 + struct.unpack_from("<i", text, at + 3)[0]
+        t = db_of.get(g)
+        if t is None:
+            continue
+        ins = list(im.md.disasm(im.img[im.text0 + at:im.text0 + at + 0x60], im.ib + im.text0 + at))[:18]
+        if not ins or ins[0].mnemonic != "mov":
+            continue
+        ra = ins[0].op_str.split(",")[0]
+        if not any(i.mnemonic == "cmp" and i.op_str.endswith(f"dword ptr [{ra} + 0x20]") for i in ins[1:8]):
+            continue
+        obj = None
+        for i in ins[1:14]:
+            mo = re.search(r"^(r\w+), qword ptr \[r\w+ \+ r\w+\*8 \+ 8\]$", i.op_str)
+            if i.mnemonic == "mov" and mo:
+                obj = mo.group(1)
+                continue
+            mi = re.search(r"^dword ptr \[" + (obj or "@") + r" \+ (0x[0-9a-f]+|\d+)\], \w+$", i.op_str)
+            if obj and i.mnemonic == "cmp" and mi:
+                site_votes.setdefault(t, collections.Counter())[int(mi.group(1), 0)] += 1
+                break
+    for t, cnt in site_votes.items():
+        off, n = cnt.most_common(1)[0]
+        if n >= 3 and n >= 0.9 * sum(cnt.values()):
+            id_votes.setdefault(t, set()).add(off)
     ids = {t: next(iter(o)) for t, o in id_votes.items() if len(o) == 1}
     for t, off in ids.items():
         result["fields"][f"{t}_id"] = off

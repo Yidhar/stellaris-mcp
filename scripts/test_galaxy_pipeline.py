@@ -180,6 +180,18 @@ def main():
             record("use_bypass refuses a system the bypass does not lead to",
                    "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
 
+    # located special projects, debris and invasion
+    if sci:
+        r = p.call("collect_data", {"fleet_id": sci[0]})
+        record("collect_data needs a project or a system", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    projects = p.call("get_situation_log").get("special_projects", [])
+    debris_projects = [x for x in projects if x.get("kind") == "debris"]
+    record("situation log lists debris projects", "PASS" if debris_projects else "SKIP", f"{len(debris_projects)}")
+    transports = [f["fleet_id"] for f in civ.get("transport_fleets", [])]
+    if transports:
+        r = p.call("land_armies", {"fleet_id": transports[0], "planet_id": 99999999})
+        record("land_armies refuses an unknown planet", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+
     # map flags M / G agree with the system detail's megastructures / bypasses
     mg = [r for r in p.call("get_galaxy_map", {"jumps": 4}).get("rows", []) if "M" in r[7] or "G" in r[7]][:5]
     ok = True

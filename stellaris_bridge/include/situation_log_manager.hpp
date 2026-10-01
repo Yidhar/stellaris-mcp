@@ -25,6 +25,10 @@ struct SpecialProjectItem {
     std::string kind;                   // project, species_modification, uplift, debris
     int32_t days_left{ -1 };            // -1: no deadline
     uint32_t species_id{ 0xFFFFFFFF };  // species modification / uplift: the resulting species
+    uint32_t debris_id{ 0xFFFFFFFF };   // debris projects: the debris
+    // where the project is researched: an ESpatialObjectType reference (0xFFFFFFFF: nowhere)
+    uint32_t location_type{ 0xFFFFFFFF };
+    uint32_t location_id{ 0xFFFFFFFF };
 };
 
 // A discovered anomaly the country has not researched yet (the planet still holds its category).

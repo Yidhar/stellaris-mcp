@@ -1,164 +1,137 @@
+"""Ship designer against the live game (save loaded, bridge injected).
+
+Reads: the player's designable designs (sections, slots, required components) and the catalog.
+Create / update go through CCreateOrUpdateShipDesignCommand, as the designer's save: a valid
+create must show up with its edits; identical copies, taken names, components that do not fit a
+slot or are not allowed on the hull must be refused; an update replaces the design (new id, same
+name). Every design this test creates is deleted again.
+"""
 import json
+import os
+import sys
 import time
-import win32file
-import win32pipe
 
-PIPE_NAME = r"\\.\pipe\stellaris_mcp_bridge"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_pipe  # noqa: E402
 
-def send_ipc(method, params=None):
-    if params is None:
-        params = {}
-    req = {
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-        "id": int(time.time() * 1000)
-    }
-    raw = (json.dumps(req) + "\n").encode('utf-8')
+RESULTS = []
 
-    handle = None
-    for attempt in range(10):
-        try:
-            handle = win32file.CreateFile(
-                PIPE_NAME,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                0, None,
-                win32file.OPEN_EXISTING,
-                0, None
-            )
-            break
-        except Exception as e:
-            time.sleep(0.05)
-    
-    if handle is None:
-        raise RuntimeError(f"Could not connect to named pipe {PIPE_NAME}")
 
-    win32pipe.SetNamedPipeHandleState(handle, win32pipe.PIPE_READMODE_BYTE, None, None)
-    win32file.WriteFile(handle, raw)
-    
-    # Read response
-    chunks = []
-    while True:
-        hr, data = win32file.ReadFile(handle, 65536)
-        chunks.append(data)
-        if b'\n' in data or len(data) == 0:
-            break
-    win32file.CloseHandle(handle)
-    resp_text = b"".join(chunks).decode('utf-8').strip()
-    return json.loads(resp_text)
+def record(name, status, detail=""):
+    RESULTS.append((name, status))
+    print(f"[{status}] {name}" + (f"  -- {detail}" if detail else ""))
 
-def test_pipeline():
-    print("=== Step 1: Query All Player Ship Designs ===")
-    res = send_ipc("get_ship_designs")
-    assert "result" in res, f"Query failed: {res}"
-    data = res["result"]
-    designs = data.get("designs", [])
-    count = data.get("count", 0)
-    print(f"[+] Found {count} player ship designs:")
-    for d in designs:
-        print(f"    - ID: {d['design_id']:3d} | Size: {d['ship_size']:15s} | Name: '{d['name']}'")
-    
-    assert count >= 2, f"Expected at least 2 customizable designs, got {count}"
-    design_sizes = {d["ship_size"] for d in designs}
-    assert "corvette" in design_sizes, "Corvette design not found!"
-    assert "military_station_small" in design_sizes, "Defense platform (military_station_small) design not found!"
-    corvette = next((d for d in designs if d.get("ship_size") == "corvette"), None)
-    assert corvette is not None, "Corvette design not found!"
-    corvette_id = corvette["design_id"]
-    print(f"\n[+] Detailed Inspection of Corvette Design {corvette_id}:")
-    print(f"    Name: {corvette['name']}")
-    print(f"    Size: {corvette['ship_size']}")
-    print(f"    Class Prefix: {corvette['class_prefix']}")
-    print(f"    Core Systems:")
-    for sys_name, comp in corvette["core_components"].items():
-        print(f"      * {sys_name:15s}: {comp}")
-    print(f"    Sections & Slots:")
-    for sec in corvette["sections"]:
-        print(f"      Section '{sec['name']}':")
-        for sl in sec["slots"]:
-            if sl["slot_name"]:
-                print(f"        [{sl['slot_index']}] {sl['slot_name']:18s} -> {sl['component_key']}")
 
-    print("\n=== Step 2: Query Global Component Catalog ===")
-    cat_res = send_ipc("get_ship_design_catalog")
-    assert "result" in cat_res, f"Catalog query failed: {cat_res}"
-    cat_data = cat_res["result"]
-    comp_sets = cat_data.get("components", [])
-    total_sets = cat_data.get("total_component_sets", 0)
-    print(f"[+] Total Component Sets in Database: {total_sets}")
-    
-    red_laser_set = next((s for s in comp_sets if s["set_key"] == "RED_LASER"), None)
-    assert red_laser_set is not None, "RED_LASER set not found in catalog!"
-    print(f"[+] Found RED_LASER Set:")
-    print(f"    Localized Name: '{red_laser_set['localized_name']}'")
-    print(f"    Icon: '{red_laser_set['icon']}'")
-    print(f"    Variants:")
-    for v in red_laser_set["variants"]:
-        print(f"      * {v['component_key']} ({v['size']})")
+class Pipe:
+    def call(self, method, params=None):
+        for _ in range(50):
+            try:
+                f = open(test_pipe.PIPE_PATH, "r+b", buffering=0)
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("bridge pipe not available")
+        f.write((json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}) + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            buf += f.read(65536)
+        f.close()
+        r = json.loads(buf)
+        return r.get("result", r)
 
-    print(f"\n=== Step 3: Custom Refit - Update Ship Design {corvette_id} ===")
-    orig_slot1_comp = corvette["sections"][0]["slots"][1]["component_key"]
-    target_comp = "SMALL_MASS_DRIVER_1" if orig_slot1_comp == "SMALL_RED_LASER" else "SMALL_RED_LASER"
-    print(f"[*] Changing Slot 1 ({corvette['sections'][0]['slots'][1]['slot_name']}) from {orig_slot1_comp} to {target_comp}...")
-    upd_res = send_ipc("update_ship_design", {
-        "design_id": corvette_id,
-        "slots": [
-            { "slot_index": 1, "component_key": target_comp }
-        ]
-    })
-    print(f"    Update Response: {json.dumps(upd_res, ensure_ascii=False)}")
-    assert upd_res.get("result", {}).get("success") is True, f"Update failed: {upd_res}"
 
-    # Verify slot was updated
-    verify_res = send_ipc("get_ship_designs", { "design_id": corvette_id })
-    v_corvette = verify_res["result"]["designs"][0]
-    slot1 = v_corvette["sections"][0]["slots"][1]
-    print(f"[+] Verified Slot 1 is now: {slot1['slot_name']} -> {slot1['component_key']}")
-    assert slot1["component_key"] == target_comp, f"Expected {target_comp}, got {slot1['component_key']}"
+def main():
+    p = Pipe()
 
-    print("\n=== Step 4: Dispatch Fleet Upgrade Order (Opcode 0x2F93) ===")
-    print("[*] Dispatching CFleetUpgradeDesignCommand for Fleet 3 (Military Fleet)...")
-    upg_res = send_ipc("upgrade_fleet", {
-        "fleet_id": 3
-    })
-    print(f"    Upgrade Response: {json.dumps(upg_res, ensure_ascii=False)}")
-    assert upg_res.get("result", {}).get("success") is True, f"Upgrade failed: {upg_res}"
+    def designs():
+        return {d["design_id"]: d for d in p.call("get_ship_designs").get("designs", [])}
 
-    print(f"\n=== Step 5: Restore Slot 1 to Original Equipment ({orig_slot1_comp}) ===")
-    print(f"[*] Restoring Slot 1 back to {orig_slot1_comp}...")
-    rest_res = send_ipc("update_ship_design", {
-        "design_id": corvette_id,
-        "slots": [
-            { "slot_index": 1, "component_key": orig_slot1_comp }
-        ]
-    })
-    assert rest_res.get("result", {}).get("success") is True, f"Restore failed: {rest_res}"
-    verify_rest = send_ipc("get_ship_designs", { "design_id": corvette_id })
-    rest_slot1 = verify_rest["result"]["designs"][0]["sections"][0]["slots"][1]
-    print(f"[+] Verified Slot 1 restored to: {rest_slot1['component_key']}")
-    assert rest_slot1["component_key"] == orig_slot1_comp, "Failed to restore slot!"
+    def settle():
+        # posted commands run on the next tick
+        p.call("set_speed", {"speed": 1})
+        p.call("set_paused", {"paused": False})
+        time.sleep(2)
+        p.call("set_paused", {"paused": True})
 
-    print("\n=== Step 6: Test Delete Ship Design (Opcode 0x31B2) ===")
-    # Test with invalid design ID first to verify error handling
-    del_invalid = send_ipc("delete_ship_design", { "design_id": 999999 })
-    print(f"[+] Handled invalid design delete safely: {json.dumps(del_invalid, ensure_ascii=False)}")
-    assert "error" in del_invalid, "Expected error for invalid design ID"
+    p.call("set_paused", {"paused": True})
+    before = designs()
+    ok = bool(before) and all(d["sections"] and d["core_components"] for d in before.values())
+    record("designable designs with sections and required components", "PASS" if ok else "FAIL", f"{len(before)} designs")
+    cat = p.call("get_ship_design_catalog")
+    record("component catalog", "PASS" if cat.get("components") else "FAIL", f"{cat.get('total_component_sets')} sets")
 
-    print("\n=== Step 7: Test Rejection of Fixed / Non-Customizable Ship Designs ===")
-    # ID 2 is the Constructor fixed template
-    upd_fixed = send_ipc("update_ship_design", { "design_id": 2, "name": "Illegal Name" })
-    print(f"[+] Safely rejected update on fixed design ID 2: {json.dumps(upd_fixed, ensure_ascii=False)}")
-    assert "error" in upd_fixed, "Expected error when updating non-customizable design"
-    assert "not a customizable ship design" in upd_fixed["error"]["message"]
+    proto = next((d for d in before.values() if d["sections"][0]["slots"]), None)
+    if not proto:
+        record("a design to start from", "SKIP")
+        return 0
+    size = proto["ship_size"]
+    slot = next(s for s in proto["sections"][0]["slots"] if s["component_key"])
+    # another component of the same family that the empire can use in that slot
+    family = slot["component_key"].rsplit("_", 1)[0]
+    variants = [v["component_key"] for st in cat.get("components", []) for v in st["variants"]]
+    alt = next((v for v in variants if v != slot["component_key"] and v.rsplit("_", 1)[0] == family), None)
 
-    del_fixed = send_ipc("delete_ship_design", { "design_id": 2 })
-    print(f"[+] Safely rejected delete on fixed design ID 2: {json.dumps(del_fixed, ensure_ascii=False)}")
-    assert "error" in del_fixed, "Expected error when deleting fixed core design"
-    assert "fixed core design and cannot be deleted" in del_fixed["error"]["message"]
+    name = f"MCP Test {int(time.time()) % 100000}"
+    created = []
+    if alt:
+        r = p.call("create_ship_design", {"ship_size": size, "name": name,
+                                          "slots": [{"section_index": 0, "slot_index": slot["slot_index"], "component_key": alt}]})
+        record("create a design with a slot change", "PASS" if r.get("success") else "FAIL", r.get("error", r.get("message", "")))
+        settle()
+        new = [d for i, d in designs().items() if i not in before and d["name"] == name]
+        got = new and new[0]["sections"][0]["slots"][slot["slot_index"]]["component_key"]
+        record("the new design reads back with the change", "PASS" if got == alt else "FAIL", f"{got} (wanted {alt})")
+        record("the prototype is untouched", "PASS" if proto["design_id"] in designs() else "FAIL")
+        created += [d["design_id"] for d in new]
+    else:
+        record("create a design with a slot change", "SKIP", f"no alternative to {slot['component_key']}")
 
-    print("\n=======================================================")
-    print("[SUCCESS] ALL 7 SHIP DESIGNER PIPELINE TESTS PASSED 100%!")
-    print("=======================================================")
+    r = p.call("create_ship_design", {"ship_size": size, "name": name + " copy"})
+    record("an identical copy is refused", "PASS" if r.get("success") is False and "Identical" in r.get("error", "") else "FAIL",
+           r.get("error", ""))
+    r = p.call("create_ship_design", {"ship_size": size, "name": proto["name"],
+                                      "slots": [{"section_index": 0, "slot_index": slot["slot_index"], "component_key": alt or slot["component_key"]}]})
+    record("a taken name is refused", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    r = p.call("create_ship_design", {"ship_size": size, "name": name + " bad",
+                                      "slots": [{"section_index": 0, "slot_index": slot["slot_index"], "component_key": "NO_SUCH_COMPONENT"}]})
+    record("an unknown component is refused", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    wrong = next((v for v in variants if v.startswith(("LARGE_", "TITAN_", "EXTRA_LARGE_")) and v.rsplit("_", 1)[0] != family), None)
+    if wrong and slot["slot_name"].startswith("SMALL_"):
+        r = p.call("create_ship_design", {"ship_size": size, "name": name + " fit",
+                                          "slots": [{"section_index": 0, "slot_index": slot["slot_index"], "component_key": wrong}]})
+        record("a component that does not fit the slot is refused", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+    other_hull = next((c["component_key"] for d in before.values() if d["ship_size"] != size
+                       for c in d["core_components"] if "REACTOR" in c["component_key"]), None)
+    if other_hull:
+        r = p.call("create_ship_design", {"ship_size": size, "name": name + " core", "core_components": [other_hull]})
+        record("another hull's reactor is refused", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+
+    # update: put the original component back
+    if created:
+        did = created[0]
+        r = p.call("update_ship_design", {"design_id": did,
+                                          "slots": [{"section_index": 0, "slot_index": slot["slot_index"], "component_key": slot["component_key"]}]})
+        record("update a design", "PASS" if r.get("success") else "FAIL", r.get("error", r.get("message", "")))
+        settle()
+        after = designs()
+        replaced = [d for d in after.values() if d["name"] == name]
+        record("the update replaced it under the same name with a new id",
+               "PASS" if did not in after and len(replaced) == 1 else "FAIL", f"{[d['design_id'] for d in replaced]}")
+        created = [d["design_id"] for d in replaced]
+        r = p.call("update_ship_design", {"design_id": created[0] if created else did, "name": "Other"})
+        record("renaming is refused", "PASS" if r.get("success") is False else "FAIL", r.get("error", ""))
+
+    for did in created:
+        p.call("delete_ship_design", {"design_id": did})
+    settle()
+    record("test designs deleted", "PASS" if not any(i in designs() for i in created) else "FAIL")
+    record("bridge alive", "PASS" if p.call("ping").get("status") == "pong" else "FAIL")
+
+    fails = [x for x in RESULTS if x[1] == "FAIL"]
+    print(f"\n{sum(x[1] == 'PASS' for x in RESULTS)} passed, {len(fails)} failed, {sum(x[1] == 'SKIP' for x in RESULTS)} skipped")
+    return 1 if fails else 0
+
 
 if __name__ == "__main__":
-    test_pipeline()
+    sys.exit(main())

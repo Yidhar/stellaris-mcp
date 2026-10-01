@@ -253,6 +253,19 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
             if (m == "use_bypass") return g.UseBypass(fleet_id, target, to_system, queue);
             return g.ExploreBypass(fleet_id, target, queue);
         });
+    } else if (method == "land_armies") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, planet_id, queue]() { return GalaxyManager::Get().LandArmies(fleet_id, planet_id, queue); });
+    } else if (method == "collect_data") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t project_id = params.value("project_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, project_id, system_id, queue]() {
+            return GalaxyManager::Get().CollectData(fleet_id, project_id, system_id, queue);
+        });
     } else if (method == "find_path") {
         uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
         uint32_t to = params.value("to_system_id", 0xFFFFFFFFu);

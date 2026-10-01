@@ -48,6 +48,10 @@ constexpr std::ptrdiff_t kBypassTypeKey = 0x28;
 constexpr uint32_t kSpatialPlanet = 2;
 constexpr uint32_t kSpatialSystem = 4;
 constexpr uint32_t kSpatialMegastructure = 6;
+constexpr uint32_t kSpatialFleet = 3;
+constexpr uint32_t kSpatialDebris = 5;
+constexpr uint32_t kSpatialNaturalWormhole = 7;
+constexpr uint32_t kSpatialAstralRift = 9;
 // CRefObjectOrbitableRef<CFleetOrbitableEnumType> (fleet_orbit_planet::orbitable): id +0, kind
 // byte +4 (1 = planet, as CFleetOrbitPlanetCommand(fleet, TPdxRef<CPlanet>, ...) builds it)
 constexpr std::ptrdiff_t kOrbitableId = 0x0;
@@ -346,14 +350,14 @@ bool GalaxyManager::Init(uintptr_t base_address) {
 GalaxyManager::Snapshot GalaxyManager::Take() {
     Snapshot s;
     s.player = GameState::Get().GetPlayerCountry();
-    if (s.player) s.player_id = ReadOr<uint32_t>((uintptr_t)s.player + 0x20, kInvalidId);
+    if (s.player) s.player_id = ReadOr<uint32_t>((uintptr_t)s.player + sdk::rt::CCountry_id, kInvalidId);
 
     namespace go = sdk::ent::CGalacticObject;
     namespace cc = sdk::ent::CCelestialCoordinate;
     namespace hl = sdk::ent::CHyperlane;
     ForEachRef(base_address_, sdk::db::CGalacticObject, [&](uint32_t, void* obj) {
         System sys{};
-        sys.id = ReadOr<uint32_t>((uintptr_t)obj + 8, kInvalidId);
+        sys.id = ReadOr<uint32_t>((uintptr_t)obj + sdk::rt::CGalacticObject_id, kInvalidId);
         if (sys.id == kInvalidId) return;
         sys.obj = obj;
         sys.x = Fixed((uintptr_t)obj + go::coordinate + cc::x);
@@ -374,7 +378,7 @@ GalaxyManager::Snapshot GalaxyManager::Take() {
 
     // planets by system (the planet's coordinate origin)
     ForEachRef(base_address_, sdk::db::CPlanet, [&](uint32_t, void* obj) {
-        uint32_t pid = ReadOr<uint32_t>((uintptr_t)obj + 0x18, kInvalidId);
+        uint32_t pid = ReadOr<uint32_t>((uintptr_t)obj + sdk::rt::CPlanet_id, kInvalidId);
         uint32_t sid = ReadOr<uint32_t>((uintptr_t)obj + sdk::ent::CPlanet::coordinate + cc::origin, kInvalidId);
         if (pid != kInvalidId && sid != kInvalidId) s.planets[sid].push_back({ pid, obj });
     });
@@ -822,10 +826,17 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
         }
 
         namespace db_ = sdk::ent::CDebris;
+        std::unordered_map<uint32_t, uint32_t> debris_project;
+        for (const auto& pr : SituationLogManager::Get().ReadSpecialProjects(s.player)) {
+            if (pr.debris_id != kInvalidId) debris_project[pr.debris_id] = pr.id;
+        }
         ForEachRef(base_address_, sdk::db::CDebris, [&](uint32_t, void* d) {
             if (ReadOr<uint32_t>((uintptr_t)d + db_::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId) != system_id) return;
             if (ReadOr<uint8_t>((uintptr_t)d + db_::killed, 0)) return;
-            nlohmann::json dj = nlohmann::json::object();
+            uint32_t did = ReadOr<uint32_t>((uintptr_t)d + sdk::rt::CDebris_id, kInvalidId);
+            nlohmann::json dj = { {"id", did} };
+            auto pr = debris_project.find(did);
+            if (pr != debris_project.end()) dj["project_id"] = pr->second;  // research it with collect_data
             uint32_t from = ReadOr<uint32_t>((uintptr_t)d + db_::from_country, kInvalidId);
             if (from != kInvalidId) dj["from_country_id"] = from;
             uint32_t cty = ReadOr<uint32_t>((uintptr_t)d + db_::country, kInvalidId);
@@ -839,17 +850,7 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
     ForEachRef(base_address_, sdk::db::CArchaeologicalSite, [&](uint32_t, void* a) {
         uintptr_t loc = (uintptr_t)a + as::location;
         uint32_t ltype = ReadOr<uint32_t>(loc + kMetaRefType, kInvalidId), lid = ReadOr<uint32_t>(loc + kMetaRefId, kInvalidId);
-        uint32_t at = kInvalidId;
-        if (ltype == kSpatialSystem) {
-            at = lid;
-        } else if (ltype == kSpatialPlanet) {
-            void* p = RefLookup(base_address_, sdk::db::CPlanet, lid);
-            if (p) at = ReadOr<uint32_t>((uintptr_t)p + sdk::ent::CPlanet::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
-        } else if (ltype == kSpatialMegastructure) {
-            void* m = RefLookup(base_address_, sdk::db::CMegaStructure, lid);
-            if (m) at = ReadOr<uint32_t>((uintptr_t)m + sdk::ent::CMegaStructure::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
-        }
-        if (at != system_id) return;
+        if (SpatialSystem(ltype, lid) != system_id) return;
         auto visible = RefArray((uintptr_t)a + as::visible_to);
         if (std::find(visible.begin(), visible.end(), s.player_id) == visible.end()) return;
         std::string type = KeyOf((uintptr_t)a + as::type, kTypeKey);
@@ -886,6 +887,15 @@ nlohmann::json GalaxyManager::GetSystemJson(uint32_t system_id) {
     if (!rifts.empty()) out["astral_rifts"] = rifts;
     if (!debris.empty()) out["debris"] = debris;
     if (!sites.empty()) out["archaeological_sites"] = sites;
+    // the player's special projects researched here (debris analysis, located event projects)
+    nlohmann::json projects = nlohmann::json::array();
+    for (const auto& pr : SituationLogManager::Get().ReadSpecialProjects(s.player)) {
+        if (pr.location_type == kInvalidId || SpatialSystem(pr.location_type, pr.location_id) != system_id) continue;
+        nlohmann::json pj = { {"id", pr.id}, {"name", pr.name}, {"kind", pr.kind} };
+        if (pr.days_left >= 0) pj["days_left"] = pr.days_left;
+        projects.push_back(pj);
+    }
+    if (!projects.empty()) out["special_projects"] = projects;
     if (hidden) out["unknown_planets"] = hidden;  // present but not known to the player
     return out;
 }
@@ -1184,6 +1194,83 @@ nlohmann::json GalaxyManager::ClaimSystem(uint32_t system_id, bool remove, int c
     return { {"success", true}, {"system_id", system_id}, {"system", SystemName(system_id, sys)},
              {"action", remove ? "remove" : "add"}, {"count", count}, {"player_claims_before", before},
              {"message", "Claim order posted; read player_claims from get_system on a later call"} };
+}
+
+uint32_t GalaxyManager::SpatialSystem(uint32_t type, uint32_t id) {
+    namespace cc = sdk::ent::CCelestialCoordinate;
+    auto origin = [](void* obj, std::ptrdiff_t coord) {
+        return obj ? ReadOr<uint32_t>((uintptr_t)obj + coord + cc::origin, kInvalidId) : kInvalidId;
+    };
+    switch (type) {
+    case kSpatialSystem:
+        return id;
+    case kSpatialPlanet:
+        return origin(RefLookup(base_address_, sdk::db::CPlanet, id), sdk::ent::CPlanet::coordinate);
+    case kSpatialDebris:
+        return origin(RefLookup(base_address_, sdk::db::CDebris, id), sdk::ent::CDebris::coordinate);
+    case kSpatialMegastructure:
+        return origin(RefLookup(base_address_, sdk::db::CMegaStructure, id), sdk::ent::CMegaStructure::coordinate);
+    case kSpatialNaturalWormhole:
+        return origin(RefLookup(base_address_, sdk::db::CNaturalWormhole, id), sdk::ent::CNaturalWormhole::coordinate);
+    case kSpatialAstralRift:
+        return origin(RefLookup(base_address_, sdk::db::CAstralRift, id), sdk::ent::CAstralRift::coordinate);
+    case kSpatialFleet:
+        if (void* f = fleets::Find(base_address_, id)) {
+            const void* c = FleetCoordinate(base_address_, f);
+            return c ? ReadOr<uint32_t>((uintptr_t)c + cc::origin, kInvalidId) : kInvalidId;
+        }
+        return kInvalidId;
+    default:
+        return kInvalidId;
+    }
+}
+
+nlohmann::json GalaxyManager::CollectData(uint32_t fleet_id, uint32_t project_id, uint32_t system_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    if (project_id == kInvalidId && !s.index.count(system_id)) {
+        return { {"success", false}, {"error", "Give project_id, or system_id of a system with a located special project"} };
+    }
+    // CCollectDataFleetOrderCommand: galactic_object set = every located project of the country in
+    // that system; galactic_object -1 = the project with this id (as the two engine ctors build it)
+    namespace cd = sdk::cmd::collect_data_fleet_order_command;
+    auto cmd = CommandBuilder::Get().Create(cd::kSpec);
+    cmd.Set<uint32_t>(cd::fleet, fleet_id)
+        .Set<uint32_t>(cd::galactic_object, project_id != kInvalidId ? kInvalidId : system_id)
+        .Set<uint32_t>(cd::id, project_id != kInvalidId ? project_id : 0)
+        .Set<uint8_t>(cd::queue, queue ? 1 : 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) {
+        return { {"success", false}, {"error", why.empty() ? "The game refused: no special project there that this fleet can research" : why} };
+    }
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    nlohmann::json out = { {"success", true}, {"fleet_id", fleet_id}, {"queued", queue}, {"message", "Research order posted"} };
+    if (project_id != kInvalidId) out["project_id"] = project_id;
+    else out["system_id"] = system_id;
+    return out;
+}
+
+nlohmann::json GalaxyManager::LandArmies(uint32_t fleet_id, uint32_t planet_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* planet = RefLookup(base_address_, sdk::db::CPlanet, planet_id);
+    if (!planet) return { {"success", false}, {"error", "Unknown planet id: " + std::to_string(planet_id)} };
+    uint32_t colony = ReadOr<uint32_t>((uintptr_t)planet + sdk::ent::CPlanet::colony, kInvalidId);
+    if (colony == kInvalidId) return { {"success", false}, {"error", "The planet has no colony to invade"} };
+    // CFleetLandArmiesCommand: IsValid is CLandArmiesFleetOrder::IsPossible (war, armies aboard,
+    // planetary shields and defences ...), with the game's reason
+    namespace la = sdk::cmd::fleet_land_armies_command;
+    auto cmd = CommandBuilder::Get().Create(la::kSpec);
+    cmd.Set<uint32_t>(la::fleet, fleet_id).Set<uint32_t>(la::colony, colony)
+        .Set<uint8_t>(la::queue, queue ? 1 : 0).Set<uint8_t>(la::queue_to_front, 0);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the landing" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"fleet_id", fleet_id}, {"planet_id", planet_id}, {"colony_id", colony},
+             {"planet", PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name))}, {"queued", queue},
+             {"message", "Landing order posted: the armies fly there and invade"} };
 }
 
 nlohmann::json GalaxyManager::OrbitPlanet(uint32_t fleet_id, uint32_t planet_id, bool queue) {
