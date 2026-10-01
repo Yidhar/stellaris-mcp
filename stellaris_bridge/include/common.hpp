@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <memory>
 #include <functional>
 #include <mutex>
@@ -128,30 +129,63 @@ static inline void RawFreeCall(void* fn_free, void* out_str) {
     }
 }
 
+inline std::string SafeLocalize(uintptr_t base_address, const std::string& key);
+
+// An icon as text: the pass / fail marks of requirement lists as "✓" / "✗", any other icon
+// (resources, research areas ...) as the localized name of its key.
+// Names are cached per thread (engine text is built on the main thread).
+inline std::string IconText(const std::string& name) {
+    if (name == "trigger_yes") return "\xE2\x9C\x93";  // ✓
+    if (name == "trigger_no") return "\xE2\x9C\x97";   // ✗
+    thread_local std::unordered_map<std::string, std::string> cache;
+    thread_local bool resolving = false;  // localized names that hold icons themselves
+    auto it = cache.find(name);
+    if (it != cache.end()) return it->second;
+    if (resolving) return "";
+    resolving = true;
+    // the key's own localization, else the upper-case UI key ("physics" -> PHYSICS), else the key
+    const uintptr_t base = (uintptr_t)GetModuleHandleA(nullptr);
+    std::string text = SafeLocalize(base, name);
+    if (text == name) {
+        std::string upper = name;
+        for (char& ch : upper) ch = (char)toupper((unsigned char)ch);
+        std::string up = SafeLocalize(base, upper);
+        if (up != upper) text = up;
+    }
+    resolving = false;
+    return cache.emplace(name, text).first->second;
+}
+
 // Renders the engine's rich-text markup (as returned by localization and text-building functions)
 // as plain text. 0x13 starts an icon name; a second 0x13 or, for framed icons ("energy|1 -500"),
-// the next space or control byte ends it. Icons become "[energy]" without the "|frame" suffix.
-// Other control bytes start a colour code whose one-letter key ('Y', 'R', ... or '!' to close)
-// follows and is dropped with it.
+// the next space or control byte ends it. Icons become their text (IconText) without the "|frame"
+// suffix. Other control bytes start a colour code whose one-letter key ('Y', 'R', ... or '!' to
+// close) follows and is dropped with it.
 inline std::string RenderPdxMarkup(const char* p, size_t n) {
     std::string out;
     out.reserve(n);
     bool in_icon = false, icon_frame = false;
+    std::string icon;
+    auto end_icon = [&](bool space_after) {
+        in_icon = false;
+        std::string text = IconText(icon);
+        out += text;
+        if (!text.empty() && space_after) out.push_back(' ');
+    };
     for (size_t i = 0; i < n; ++i) {
         unsigned char c = (unsigned char)p[i];
         if (in_icon) {
             if (c == 0x13 || c == ' ' || c < 0x20) {
-                in_icon = false;
-                out.push_back(']');
                 if (c == 0x13) {
                     unsigned char next = i + 1 < n ? (unsigned char)p[i + 1] : ' ';
-                    if (next != ' ' && next != 0x0A) out.push_back(' ');
+                    end_icon(next != ' ' && next != 0x0A);
                     continue;
                 }
+                end_icon(false);
                 // the terminating byte is ordinary text or markup: fall through
             } else {
                 if (c == '|') icon_frame = true;
-                if (!icon_frame) out.push_back((char)c);
+                if (!icon_frame) icon.push_back((char)c);
                 continue;
             }
         }
@@ -171,7 +205,7 @@ inline std::string RenderPdxMarkup(const char* p, size_t n) {
         if (c == 0x13) {
             in_icon = true;
             icon_frame = false;
-            out.push_back('[');
+            icon.clear();
         } else if (c >= 0x20 || c == 0x0A) {
             out.push_back((char)c);
         } else if (i + 1 < n) {
@@ -179,8 +213,19 @@ inline std::string RenderPdxMarkup(const char* p, size_t n) {
             if (k == '!' || (k >= 'A' && k <= 'Z') || (k >= 'a' && k <= 'z')) ++i;
         }
     }
-    if (in_icon) out.push_back(']');
-    return out;
+    if (in_icon) end_icon(false);
+    // an icon with no name leaves a doubled space behind; collapse those, but keep each line's
+    // indentation (nested requirement and cost lines)
+    std::string tidy;
+    tidy.reserve(out.size());
+    bool line_start = true;
+    for (char ch : out) {
+        if (ch == ' ' && !line_start && !tidy.empty() && tidy.back() == ' ') continue;
+        if (ch == '\n') line_start = true;
+        else if (ch != ' ') line_start = false;
+        tidy.push_back(ch);
+    }
+    return tidy;
 }
 
 inline std::string RenderPdxMarkup(const std::string& s) {

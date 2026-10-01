@@ -105,7 +105,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 4: stellaris_get_active_events
   server.tool(
     "stellaris_get_active_events",
-    "Retrieves all currently active pending event windows: window_id, event_key (script id), title, description, and the shown options. Each option carries `effects`, the effect tooltip the game shows on hover (icons rendered as [energy] etc.); options without immediate effects have none. Hidden options are not listed.",
+    "Retrieves all currently active pending event windows: window_id, event_key (script id), title, description, and the shown options. Each option carries `effects`, the effect tooltip the game shows on hover (icons rendered as their names, requirement marks as ✓ / ✗); options without immediate effects have none. Hidden options are not listed.",
     {},
     async () => {
       try {
