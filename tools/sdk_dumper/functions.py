@@ -31,6 +31,18 @@ FUNCTIONS = {
         "prefilter": [0x186A0, 0x13B, 0x13C],
         "window": 60,
     },
+    "GetPlayerCountry": {
+        "linux": "GetPlayerCountry()",
+        # the country the local human plays (or observes): CGameState::GetLocalObserved on
+        # g_CurrentGameState with g_AllowGetPlayer raised around the call
+        "signature": "void* (*)()",
+        "pattern": [(r"^movzx ebx, byte ptr \[rip \+ 0x", ""), (r"^mov byte ptr \[rip \+ 0x[0-9a-f]+\], 1$", ""),
+                    (r"^mov rcx, qword ptr \[rip \+ 0x", ""), (r"^call 0x", ""),
+                    (r"^mov byte ptr \[rip \+ 0x[0-9a-f]+\], bl$", "")],
+        "prefilter_bytes": [b"\x0F\xB6\x1D"],  # movzx ebx, byte ptr [rip + x]
+        "window": 12,
+        "max_len": 14,
+    },
     "CConsole_RunCommandNow": {
         "linux": "CConsole::RunCommandNow(CString const&)",
         # rcx = CConsole::_pInstance, rdx = CString const* (the whole command line)
@@ -831,6 +843,83 @@ FUNCTIONS = {
         "prefilter_bytes": [b"\x49\x8B\xD9\x49\x8B\xE8"],  # mov rbx, r9; mov rbp, r8
         "window": 14,
     },
+    "CMegaStructureType_CalcCostTable": {
+        "linux": "CEconomicUnit<CStandardEconomicUnit<CMegaStructureType, CCountry, CEconomicUnitScopeRef<CCountry, void>>>::CalcTable<0>(CResourceTable&, CFixedPoint, bool) const",
+        # rcx = {u32 country, u32 -1, scope (megastructure + CMegaStructure_economic_scope), type}, rdx =
+        # CResourceTable* cost, r8d = 100000 (CFixedPoint 1), r9b = 0: what the upgrade command charges
+        "signature": "void (*)(const void* unit, void* cost, int64_t multiplier, bool flag)",
+        "call_in": {"command": "upgrade_megastructure_command", "slot": 9, "anchor": r"^mov r8d, 0x186a0$",
+                    "pick": "first_call_after"},
+    },
+    "CMegaStructureType_IsPotentiallyUpgradableFrom": {
+        "linux": "CMegaStructureType::IsPotentiallyUpgradableFrom(CCountry const*, CMegaStructure const*) const",
+        # rcx = target type, rdx = country, r8 = megastructure: whether the type is an upgrade the
+        # megastructure's view offers at all (upgrade_from, owner, potential); no reason text
+        "signature": "bool (*)(const void* type, const void* country, const void* megastructure)",
+        # the megastructure's owner (CMegaStructure::owner) and type (::type) read from r8
+        "pattern": [(r"^mov r14, r8$", ""), (r"^mov rbp, rdx$", ""), (r"^mov r15, rcx$", ""),
+                    (r"^mov edx, dword ptr \[r8 \+ 0x1b8\]$", ""), (r"^mov rsi, qword ptr \[r8 \+ 0x178\]$", ""),
+                    (r"^cmp rbx, rbp$", "")],
+        "prefilter_bytes": [b"\x4D\x8B\xF0\x48\x8B\xEA\x4C\x8B\xF9"],  # mov r14, r8; mov rbp, rdx; mov r15, rcx
+        "window": 30,
+    },
+    "CMegaStructureType_IsPotentialInBuildMenu": {
+        "linux": "CMegaStructureType::IsPotentialInBuildMenu(CCountry const&, CFleet const&) const",
+        # rcx = type, rdx = country, r8 = construction fleet: whether the construction ship's build
+        # menu lists the type (potential, then build_menu_potential)
+        "signature": "bool (*)(const void* type, const void* country, const void* fleet)",
+        "strings": [".build_menu_potential"],
+    },
+    "CCountry_HasPotentiallyBuildableMegaStructureForPlanet": {
+        "linux": "CCountry::HasPotentiallyBuildableMegaStructureForPlanet(CPlanet const&, CFleet const&) const",
+        # rcx = country, rdx = planet, r8 = fleet. Walks the megastructure types: planet-placed
+        # (build type 0), IsPotentialInBuildMenu, IsPotentiallyBuildable, then the type's
+        # placement rules (CPlacementRules::IsPossible) for the planet
+        "signature": "bool (*)(const void* country, const void* planet, const void* fleet)",
+        "pattern": [(r"^mov rbp, qword ptr \[rip \+ 0x", ""), (r"^cmp dword ptr \[rbp \+ 0x5c\], ebx$", ""),
+                    (r"^mov rdi, qword ptr \[rsi \+ rax\]$", ""), (r"^cmp dword ptr \[rdi \+ 0x[0-9a-f]+\], 0$", ""),
+                    (r"^call 0x", ""), (r"^call 0x", ""), (r"^lea rcx, \[rdi \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", "")],
+        "prefilter_bytes": [b"\x39\x5D\x5C"],  # cmp dword ptr [rbp + 0x5c], ebx (the type count)
+        "window": 40,
+    },
+    "CMegaStructureType_IsPotentiallyBuildable": {
+        "linux": "CMegaStructureType::IsPotentiallyBuildable(CCountry const&, CFleet const&) const",
+        # rcx = type, rdx = country, r8 = fleet: the build menu's second filter (the menu lists a
+        # type when IsPotentialInBuildMenu and this hold; upgrade stages fail it)
+        "signature": "bool (*)(const void* type, const void* country, const void* fleet)",
+        "call_in": {"from": "CCountry_HasPotentiallyBuildableMegaStructureForPlanet",
+                    "anchor": r"^cmp dword ptr \[rdi \+ 0x[0-9a-f]+\], 0$", "pick": "first_call_after", "skip": 1},
+    },
+    "CPlacementRules_IsPossible": {
+        "linux": "CPlacementRules::IsPossible(CPlanet const*, CCountry const*, CString*) const",
+        # rcx = the type's placement rules (CMegaStructureType_placement_rules), rdx = planet,
+        # r8 = country, r9 = CString* reason
+        "signature": "bool (*)(const void* rules, const void* planet, const void* country, void* reason)",
+        "call_in": {"from": "CCountry_HasPotentiallyBuildableMegaStructureForPlanet",
+                    "anchor": r"^lea rcx, \[rdi \+ 0x[0-9a-f]+\]$", "pick": "first_call_after"},
+    },
+    "CGalacticObject_CalcFTLPointWith": {
+        "linux": "CGalacticObject::CalcFTLPointWith(CCelestialCoordinate const&) const",
+        # rcx = system, rdx = CCelestialCoordinate* out, r8 = a coordinate elsewhere (another
+        # system's): the point on the system's edge toward it (FTL radius * 1.05), origin = system.
+        # Where the AI places outside-gravity-well megastructures
+        "signature": "void* (*)(const void* system, void* out_coordinate, const void* toward)",
+        "pattern": [(r"^mov rdi, rdx$", ""), (r"^mov eax, 0xb504f333$", ""), (r"^mov rdx, qword ptr \[rcx \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^mov rsi, rcx$", ""), (r"^mov r10, r8$", "")],
+        "prefilter_bytes": [b"\xB8\x33\xF3\x04\xB5"],  # mov eax, 0xb504f333
+        "window": 12,
+    },
+    "CMegaStructureType_CanAfford": {
+        "linux": "CMegaStructureType::CanAfford(CCountry const&, CString*) const",
+        # rcx = type, rdx = country, r8 = CString* reason; costs the type in the country's economic
+        # scope (CCountry_economic_scope) with CMegaStructureType_CalcCostTable's CalcTable
+        "signature": "bool (*)(const void* type, const void* country, void* reason)",
+        "pattern": [(r"^mov rsi, r8$", ""), (r"^mov rbx, rdx$", ""), (r"^mov r8, rcx$", ""),
+                    (r"^lea rcx, \[rdx \+ 0x[0-9a-f]+\]$", ""), (r"^mov eax, dword ptr \[rdx \+ 0x20\]$", ""),
+                    (r"^mov dword ptr \[rbp \+ 4\], 0xffffffff$", "")],
+        "prefilter_bytes": [b"\x49\x8B\xF0\x48\x8B\xDA\x4C\x8B\xC1"],  # mov rsi, r8; mov rbx, rdx; mov r8, rcx
+        "window": 60,
+    },
     "CStarbase_GetShipsBuildQueueRef": {
         "linux": "CStarbase::GetShipsBuildQueueRef() const",
         # rcx = starbase, rdx = TPdxRef<CConstructionQueue>* out; the queue its shipyard builds into:
@@ -984,6 +1073,15 @@ def match_call_near(im, spec):
     return sorted(targets)
 
 
+def command_slot(im, token_name, slot):
+    """A command's virtual function: its vtable (out/sdk.json, from emit_sdk) at `slot`."""
+    sdk = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))
+    vts = {c["vtable"] for c in sdk["commands"] if c["token_name"] == token_name}
+    if len(vts) != 1:
+        return None
+    return im.q(vts.pop() + slot * 8) - im.ib
+
+
 def call_near_in(im, fn, cn):
     lines = []
     for i in im.disasm_fn(fn, 0x4000):
@@ -1092,9 +1190,10 @@ def main():
                 print(f"{name}: {len(matches)} callers {[hex(m) for m in matches]} -- fingerprint needs updating")
             continue
         if "call_in" in spec:
-            # the call next to an anchor inside a function located earlier in this table
+            # the call next to an anchor inside a function located earlier in this table, or inside
+            # a command's vtable slot ({"command": token name, "slot": 8 IsValid / 9 Execute})
             ci = spec["call_in"]
-            src = result.get(ci["from"], {}).get("rva")
+            src = result.get(ci["from"], {}).get("rva") if "from" in ci else command_slot(im, ci["command"], ci["slot"])
             matches = call_near_in(im, src, ci) if src is not None else []
             if len(matches) == 1:
                 result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}

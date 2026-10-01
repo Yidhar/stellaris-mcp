@@ -390,6 +390,26 @@ def extract_fields(im, fn, known_tokens, newline_fn):
 ARG_REGS = {"rdx", "r8", "r9"}
 
 
+def enum_switch(insns, i, nxt_i, R):
+    """The value loaded into R at insns[i] is switched on (test/cmp/sub R first) to pick token
+    constants (`mov reg, imm` with an imm in token range) before the next key is written."""
+    between = insns[i + 1:nxt_i]
+    first = None
+    for b in between:
+        rd, wr = regs_rw(b)
+        if b.mnemonic == "call" or (R in wr and R not in rd):
+            return False  # the loaded value is gone (a call or another load) before any switch on it
+        if R in rd:
+            first = b
+            break
+    # switched on as a value (`test ecx, ecx` / `cmp ecx, 5` / `sub ecx, 1`), not used as a pointer
+    if (first is None or first.mnemonic not in ("test", "cmp", "sub") or first.operands[0].type != X86_OP_REG
+            or fam(first.reg_name(first.operands[0].reg)) != R):
+        return False
+    return sum(1 for b in between if b.mnemonic == "mov" and len(b.operands) == 2
+               and b.operands[1].type == X86_OP_IMM and b.operands[1].imm >= 0x100) >= 2
+
+
 def assign_offsets(events, refs, insns, kinds, indirect=None):
     """Pair each token event with the this-reference that carries its value.
 
@@ -399,6 +419,8 @@ def assign_offsets(events, refs, insns, kinds, indirect=None):
       direct kv  : mov r8,[this+d]; mov edx,tok; call WriteKV
       wrapper    : lea rax,[this+d]; mov [rsp+x],rax; WriteToken(tok); call wrapper->Write
       sentinel   : cmp [this+d],-1; je skip; WriteToken(tok); ...
+      enum token : mov ecx,[this+d]; test ecx,ecx; je; sub ecx,1; ... mov ebx,TOKEN_k; WriteToken(tok);
+                   mov edx,ebx (EnumToToken switched into a register before the key is written)
     """
     toks = [e for e in events if e["kind"] == "tok"]
     all_calls = sorted(e["i"] for e in events)
@@ -412,6 +434,8 @@ def assign_offsets(events, refs, insns, kinds, indirect=None):
         as_arg = False
         if nxt is not None:
             if r["cmp"]:
+                belongs_next = True
+            elif r["dst"] and enum_switch(insns, i, nxt["i"], r["dst"]):
                 belongs_next = True
             elif r["dst"]:
                 R = r["dst"]

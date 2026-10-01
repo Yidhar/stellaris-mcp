@@ -67,6 +67,13 @@ public:
     // borders, gateways, wormholes and FTL as the fleet may use them) with its
     // CalcEstimatedDays travel time, the ETA the fleet gets when ordered there
     nlohmann::json FindPath(uint32_t fleet_id, uint32_t to_system);
+    // megastructures: one in detail (with the upgrades it offers), upgrading, a construction
+    // ship's build menu and building
+    nlohmann::json GetMegastructureJson(uint32_t megastructure_id);
+    nlohmann::json UpgradeMegastructure(uint32_t megastructure_id, const std::string& type_key);
+    nlohmann::json GetBuildableMegastructures(uint32_t fleet_id, uint32_t system_id);
+    nlohmann::json BuildMegastructure(uint32_t fleet_id, const std::string& type_key, uint32_t planet_id, uint32_t system_id,
+                                      uint32_t toward_system_id, bool queue);
     // systems for a purpose ("unsurveyed", "outpost", "deposit"), nearest first
     nlohmann::json FindSystems(const std::string& purpose, uint32_t from_system, int limit, uint32_t fleet_id,
                                const std::string& resource, uint32_t species_id = 0xFFFFFFFF);

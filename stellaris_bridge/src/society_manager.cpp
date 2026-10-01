@@ -1,4 +1,5 @@
 #include "society_manager.hpp"
+#include "game_state.hpp"
 #include "sdk/stellaris_sdk.hpp"
 #include "alert_manager.hpp"
 #include "command_builder.hpp"
@@ -111,25 +112,7 @@ bool SocietyManager::Init(uintptr_t base_address) {
 }
 
 void* SocietyManager::GetPlayerCountry() {
-    if (!base_address_) return nullptr;
-
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
-        return nullptr;
-    }
-    if (mgr && (uintptr_t)mgr >= 0x10000) {
-        void* countries_arr = nullptr;
-        uint32_t count = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
-            SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &count) && count > 0) {
-            void* country_0 = nullptr;
-            if (SafeReadPtr((const void*)((uintptr_t)countries_arr + 8), &country_0) && country_0) {
-                return country_0;
-            }
-        }
-    }
-
-    return nullptr;
+    return GameState::Get().GetPlayerCountry();  // the local player's country (not country 0)
 }
 
 uint32_t SocietyManager::GetPlayerCountryId() {

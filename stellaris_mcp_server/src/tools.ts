@@ -624,6 +624,51 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   server.tool(
+    "stellaris_get_megastructure",
+    "One megastructure (Layer 2): type, name, owner, system, planet, an upgrade under way (target, days done, halted) and, for the player's own, the upgrades its view offers: each with the engine's cost (the cost the upgrade charges), possible and the game's reason when not. Megastructure ids come from stellaris_get_system.",
+    { megastructure_id: z.number().int().describe("Megastructure id (stellaris_get_system megastructures[].id)") },
+    async ({ megastructure_id }) => galaxyCall("get_megastructure", { megastructure_id })
+  );
+
+  server.tool(
+    "stellaris_upgrade_megastructure",
+    "Starts an upgrade of one of the player's megastructures (native CCountryUpgradeMegaStructureCommand, as the megastructure view's upgrade button): pays the cost and begins the next stage. type is one of stellaris_get_megastructure upgrades[].type; it may be omitted when exactly one upgrade is offered. Rejected with the game's reason (cost, a requirement, already upgrading).",
+    {
+      megastructure_id: z.number().int().describe("The player's megastructure id"),
+      type: z.string().optional().describe("Target stage key from stellaris_get_megastructure upgrades[].type"),
+    },
+    async ({ megastructure_id, type }) => galaxyCall("upgrade_megastructure", { megastructure_id, type: type ?? "" })
+  );
+
+  server.tool(
+    "stellaris_get_buildable_megastructures",
+    "A construction ship's megastructure build menu (CCountry::ListBuildableMegaStructures: first stages and repairs it can start; upgrades of existing ones are stellaris_upgrade_megastructure): each type with its placement and the engine's cost. With system_id also the sites there the game accepts: planets and stars that meet the type's placement rules (placement=planet), or for open-space types (placement=inside_gravity_well / outside_gravity_well: gateways, citadels, seals) points toward each hyperlane neighbour, the way the AI places them; otherwise the game's reason (a construction already under way, cost, a per-system limit).",
+    {
+      fleet_id: z.number().int().describe("The construction ship's fleet id"),
+      system_id: z.number().int().optional().describe("System to check for sites"),
+    },
+    async ({ fleet_id, system_id }) => galaxyCall("get_buildable_megastructures", system_id === undefined ? { fleet_id } : { fleet_id, system_id })
+  );
+
+  server.tool(
+    "stellaris_build_megastructure",
+    "Orders a player construction ship to build a megastructure (native CBuildMegaStructureCommand, as the build menu's site pick): at a planet or star (planet_id), or for open-space types at the point toward a hyperlane neighbour (system_id + toward_system_id). The ship travels there and starts the construction site, paying the cost. Sites come from stellaris_get_buildable_megastructures. Rejected with the game's reason.",
+    {
+      fleet_id: z.number().int().describe("The construction ship's fleet id"),
+      type: z.string().describe("Megastructure type key from stellaris_get_buildable_megastructures"),
+      planet_id: z.number().int().optional().describe("placement=planet: a planet or star id from that tool's sites[]"),
+      system_id: z.number().int().optional().describe("Open-space placement: the system to build in"),
+      toward_system_id: z.number().int().optional().describe("Open-space placement: sites[].toward_system_id (a hyperlane neighbour)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, type, planet_id, system_id, toward_system_id, queue }) =>
+      galaxyCall("build_megastructure", { fleet_id, type, queue: queue ?? false,
+        ...(planet_id === undefined ? {} : { planet_id }),
+        ...(system_id === undefined ? {} : { system_id }),
+        ...(toward_system_id === undefined ? {} : { toward_system_id }) })
+  );
+
+  server.tool(
     "stellaris_colonize",
     "Orders a player colony ship to colonize a planet (native CFleetColonizePlanetCommand). Rejected with the game's reason (for example uninhabitable, not surveyed, outside your borders).",
     {

@@ -1643,4 +1643,424 @@ nlohmann::json GalaxyManager::FindSystems(const std::string& purpose, uint32_t f
     return res;
 }
 
+// ---- megastructures ----------------------------------------------------------------------------
+// Upgrades as the megastructure view offers them (CMegaStructureType::IsPotentiallyUpgradableFrom,
+// then CCountryUpgradeMegaStructureCommand whose IsValid is CMegaStructureType::CanUpgrade) and
+// construction as a construction ship's build menu (IsPotentialInBuildMenu, then
+// CBuildMegaStructureCommand whose IsValid is CBuildMegaStructureFleetOrder::CanQueue). Costs are
+// the engine's economic unit table {country, -1, scope, type}: scoped to the country for a new
+// megastructure (CMegaStructureType::CalcCost) and to the megastructure for an upgrade (what the
+// upgrade command charges).
+namespace {
+
+constexpr uint32_t kQueueFirst = 0;  // EQueueMode: first, last, clear (the build window's)
+constexpr uint32_t kQueueLast = 1;
+constexpr uint32_t kQueueClear = 2;
+
+struct Call3Ctx {
+    uintptr_t fn;
+    const void* a;
+    const void* b;
+    const void* c;
+    uint8_t result;
+};
+
+void CallByte3(void* p, void*) {
+    auto* x = (Call3Ctx*)p;
+    x->result = ((uint8_t(*)(const void*, const void*, const void*))x->fn)(x->a, x->b, x->c);
+}
+
+bool EngineByte3(uintptr_t fn, const void* a, const void* b, const void* c) {
+    Call3Ctx ctx{ fn, a, b, c, 0 };
+    return CommandBuilder::Get().CallGuarded(&CallByte3, &ctx) && ctx.result;
+}
+
+// CFixedResourceTable pre-sized to every resource: +0 points at the {data, capacity, size} holder
+struct CostTable {
+    void* holder;
+    int64_t* data;
+    int32_t capacity;
+    int32_t size;
+    void* allocator;
+    int64_t values[256];
+};
+
+// the economic unit CalcTable reads: {country id, -1, scope, type}
+struct CostCtx {
+    uintptr_t fn;
+    uint32_t country;
+    uint32_t none;
+    const void* scope;
+    const void* type;
+    CostTable* table;
+};
+
+void CallCostTable(void* p, void*) {
+    auto* x = (CostCtx*)p;
+    ((void (*)(const void*, void*, int64_t, bool))x->fn)(&x->country, x->table, (int64_t)kFixed, false);
+}
+
+nlohmann::json MegaCost(uintptr_t base, uint32_t country_id, const void* scope, const void* type) {
+    const auto& names = GameState::Get().ResourceNames();
+    CostTable t{};
+    t.holder = &t.data;
+    t.data = t.values;
+    t.capacity = t.size = (int32_t)std::min<size_t>(names.size(), 256);
+    CostCtx ctx{ base + sdk::fn::CMegaStructureType_CalcCostTable, country_id, kInvalidId, scope, type, &t };
+    nlohmann::json out = nlohmann::json::object();
+    if (!CommandBuilder::Get().CallGuarded(&CallCostTable, &ctx)) return out;
+    for (int32_t i = 0; i < t.size; ++i) {
+        if (t.values[i] > 0 && !names[i].empty()) out[names[i]] = std::round(t.values[i] / 1000.0) / 100.0;
+    }
+    return out;
+}
+
+// TGameDatabase<CMegaStructureTypeDatabase>: the types at +0x50, count at +0x5C
+std::vector<void*> MegaTypes(uintptr_t base) {
+    std::vector<void*> out;
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t n = 0;
+    if (!Read((const void*)(base + sdk::glob::TGameDatabase_CMegaStructureTypeDatabase_pInstance), &db) || !db ||
+        !Read((const void*)((uintptr_t)db + 0x50), &arr) || !arr || !Read((const void*)((uintptr_t)db + 0x5C), &n) ||
+        n > 4096) {
+        return out;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        void* t = nullptr;
+        if (Read((const void*)((uintptr_t)arr + i * 8), &t) && t) out.push_back(t);
+    }
+    return out;
+}
+
+void* MegaTypeByKey(uintptr_t base, const std::string& key) {
+    for (void* t : MegaTypes(base)) {
+        if (ReadString((uintptr_t)t + kTypeKey) == key) return t;
+    }
+    return nullptr;
+}
+
+// the upgrades the megastructure's view offers the country
+std::vector<void*> MegaUpgrades(uintptr_t base, void* country, void* m) {
+    std::vector<void*> out;
+    for (void* t : MegaTypes(base)) {
+        if (EngineByte3(base + sdk::fn::CMegaStructureType_IsPotentiallyUpgradableFrom, t, country, m)) out.push_back(t);
+    }
+    return out;
+}
+
+// CMegaStructureType_build_type: where a type is placed (the script's build_type)
+constexpr int kBuildAtPlanet = 0;
+constexpr int kBuildInsideGravityWell = 1;
+constexpr int kBuildOutsideGravityWell = 2;
+
+const char* BuildTypeName(int bt) {
+    return bt == kBuildAtPlanet ? "planet" : bt == kBuildInsideGravityWell ? "inside_gravity_well"
+         : bt == kBuildOutsideGravityWell ? "outside_gravity_well" : "unknown";
+}
+
+struct PlacementCtx {
+    uintptr_t fn;
+    const void* rules;
+    const void* planet;
+    const void* country;
+    uint8_t result;
+};
+
+void CallPlacementPossible(void* p, void*) {
+    auto* x = (PlacementCtx*)p;
+    x->result = ((uint8_t(*)(const void*, const void*, const void*, void*))x->fn)(x->rules, x->planet, x->country, nullptr);
+}
+
+// the type's placement rules accept the planet (CPlacementRules::IsPossible, as the build menu)
+bool PlacementPossible(uintptr_t base, void* type, const void* planet, const void* country) {
+    PlacementCtx ctx{ base + sdk::fn::CPlacementRules_IsPossible,
+                      (const void*)((uintptr_t)type + sdk::rt::CMegaStructureType_placement_rules), planet, country, 0 };
+    return CommandBuilder::Get().CallGuarded(&CallPlacementPossible, &ctx) && ctx.result;
+}
+
+// A CCelestialCoordinate's members up to `randomized` (the engine copies it member-wise)
+constexpr size_t kCoordinateSize = sdk::ent::CCelestialCoordinate::randomized + 1;
+
+struct FtlPointCtx {
+    uintptr_t fn;
+    const void* system;
+    uint8_t* out;
+    const void* toward;
+};
+
+void CallFtlPoint(void* p, void*) {
+    auto* x = (FtlPointCtx*)p;
+    ((void* (*)(const void*, void*, const void*))x->fn)(x->system, x->out, x->toward);
+}
+
+// A point in `system` for a type built in open space, the way the AI places one: the system's
+// FTL point toward a neighbouring system (CGalacticObject::CalcFTLPointWith) for outside the
+// gravity well, scaled by DEEPSPACE_CITADEL_INNER_RADIUS_PERCENTAGE inside it. Local x, y.
+bool OpenSpacePoint(uintptr_t base, void* system, void* toward_system, int build_type, int64_t* x, int64_t* y) {
+    namespace cc = sdk::ent::CCelestialCoordinate;
+    uint8_t out[0x40]{};
+    if (!CopyChars((char*)out, (const char*)((uintptr_t)system + sdk::ent::CGalacticObject::coordinate), kCoordinateSize)) {
+        return false;
+    }
+    FtlPointCtx ctx{ base + sdk::fn::CGalacticObject_CalcFTLPointWith, system, out,
+                     (const void*)((uintptr_t)toward_system + sdk::ent::CGalacticObject::coordinate) };
+    if (!CommandBuilder::Get().CallGuarded(&CallFtlPoint, &ctx)) return false;
+    *x = *(int64_t*)(out + cc::x);
+    *y = *(int64_t*)(out + cc::y);
+    if (build_type == kBuildInsideGravityWell) {
+        int64_t pct = ReadOr<int64_t>(base + sdk::glob::NDefines_DEEPSPACE_CITADEL_INNER_RADIUS_PERCENTAGE, 0);
+        if (pct <= 0) return false;
+        *x = *x * pct / (int64_t)kFixed;
+        *y = *y * pct / (int64_t)kFixed;
+    }
+    return true;
+}
+
+NativeCommand UpgradeCommand(uint32_t country_id, uint32_t mega_id, void* type) {
+    namespace um = sdk::cmd::upgrade_megastructure_command;
+    auto cmd = CommandBuilder::Get().Create(um::kSpec);
+    cmd.Set<uint32_t>(um::paying_country, country_id).Set<uint32_t>(um::object, mega_id).Set<void*>(um::type, type);
+    return cmd;
+}
+
+NativeCommand BuildMegaCommand(uint32_t fleet_id, void* type, uint32_t planet_id, uint32_t mode) {
+    // the factory leaves the coordinate empty (origin -1): the planet form of the command
+    namespace bm = sdk::cmd::build_megastructure_command;
+    auto cmd = CommandBuilder::Get().Create(bm::kSpec);
+    cmd.Set<uint32_t>(bm::fleet, fleet_id).Set<void*>(bm::type, type).Set<uint32_t>(bm::planet, planet_id)
+        .Set<uint32_t>(bm::queue, mode);
+    return cmd;
+}
+
+// the coordinate form: a point in the system (local x, y; origin = the system), no planet
+NativeCommand BuildMegaAtPointCommand(uint32_t fleet_id, void* type, uint32_t system_id, int64_t x, int64_t y, uint32_t mode) {
+    namespace bm = sdk::cmd::build_megastructure_command;
+    namespace cc = sdk::ent::CCelestialCoordinate;
+    auto cmd = CommandBuilder::Get().Create(bm::kSpec);
+    cmd.Set<uint32_t>(bm::fleet, fleet_id).Set<void*>(bm::type, type).Set<uint32_t>(bm::planet, kInvalidId)
+        .Set<uint32_t>(bm::queue, mode)
+        .Set<int64_t>(bm::coordinate + cc::x, x)
+        .Set<int64_t>(bm::coordinate + cc::y, y)
+        .Set<uint32_t>(bm::coordinate + cc::origin, system_id);
+    return cmd;
+}
+
+}  // namespace
+
+nlohmann::json GalaxyManager::GetMegastructureJson(uint32_t mega_id) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    namespace ms = sdk::ent::CMegaStructure;
+    namespace up = sdk::ent::SMegaStructureUpgrade;
+    void* m = RefLookup(base_address_, sdk::db::CMegaStructure, mega_id);
+    if (!m || ReadOr<uint32_t>((uintptr_t)m + sdk::rt::CMegaStructure_id, kInvalidId) != mega_id) {
+        return { {"error", "Unknown megastructure id: " + std::to_string(mega_id)} };
+    }
+    const uint32_t owner = ReadOr<uint32_t>((uintptr_t)m + ms::owner, kInvalidId);
+    const uint32_t system_id = ReadOr<uint32_t>((uintptr_t)m + ms::coordinate + sdk::ent::CCelestialCoordinate::origin, kInvalidId);
+    // only what the player can see: own megastructures, or ones in a system the player knows
+    auto sit = s.index.find(system_id);
+    if (owner != s.player_id && (sit == s.index.end() || Intel(s, s.systems[sit->second].obj) < 2)) {
+        return { {"error", "Megastructure " + std::to_string(mega_id) + " is not visible to the player"} };
+    }
+    std::string type = KeyOf((uintptr_t)m + ms::type, kTypeKey);
+    nlohmann::json out = { {"id", mega_id}, {"type", type}, {"type_name", type.empty() ? "" : SafeLocalize(base_address_, type)} };
+    std::string name = PersistentNameText((const void*)((uintptr_t)m + ms::name));
+    if (!name.empty()) out["name"] = name;
+    if (system_id != kInvalidId) {
+        out["system_id"] = system_id;
+        if (sit != s.index.end()) out["system"] = SystemName(system_id, s.systems[sit->second].obj);
+    }
+    if (owner != kInvalidId) {
+        out["owner_id"] = owner;
+        out["owner"] = CountryName(owner);
+    }
+    uint32_t planet = ReadOr<uint32_t>((uintptr_t)m + ms::planet, kInvalidId);
+    if (planet != kInvalidId) out["planet_id"] = planet;
+    if (ReadOr<uint8_t>((uintptr_t)m + ms::is_dismantling, 0)) out["dismantling"] = true;
+    // an upgrade under way (SMegaStructureUpgrade embedded at CMegaStructure::upgrade; the SDK's
+    // offsets for it are CMegaStructure's); progress counts the days done
+    std::string to = KeyOf((uintptr_t)m + up::upgrade_to, kTypeKey);
+    if (!to.empty()) {
+        out["upgrading"] = { {"to", to}, {"to_name", SafeLocalize(base_address_, to)},
+                             {"progress_days", std::round(ReadOr<int64_t>((uintptr_t)m + up::progress, 0) / kFixed)},
+                             {"halted", ReadOr<int32_t>((uintptr_t)m + up::halted, 0) != 0} };
+    }
+    if (owner != s.player_id) return out;
+    nlohmann::json ups = nlohmann::json::array();
+    const void* scope = (const void*)((uintptr_t)m + sdk::rt::CMegaStructure_economic_scope);
+    for (void* t : MegaUpgrades(base_address_, s.player, m)) {
+        std::string key = ReadString((uintptr_t)t + kTypeKey);
+        nlohmann::json u = { {"type", key}, {"name", SafeLocalize(base_address_, key)},
+                             {"cost", MegaCost(base_address_, s.player_id, scope, t)} };
+        std::string why;
+        auto cmd = UpgradeCommand(s.player_id, mega_id, t);
+        u["possible"] = cmd.IsValid(&why);
+        if (!why.empty()) u["reason"] = why;
+        ups.push_back(u);
+    }
+    out["upgrades"] = ups;
+    return out;
+}
+
+nlohmann::json GalaxyManager::UpgradeMegastructure(uint32_t mega_id, const std::string& type_key) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    void* m = RefLookup(base_address_, sdk::db::CMegaStructure, mega_id);
+    if (!m || ReadOr<uint32_t>((uintptr_t)m + sdk::rt::CMegaStructure_id, kInvalidId) != mega_id ||
+        ReadOr<uint32_t>((uintptr_t)m + sdk::ent::CMegaStructure::owner, kInvalidId) != s.player_id) {
+        return { {"success", false}, {"error", "Megastructure " + std::to_string(mega_id) + " is not one of the player's"} };
+    }
+    auto ups = MegaUpgrades(base_address_, s.player, m);
+    void* type = nullptr;
+    if (type_key.empty()) {
+        if (ups.size() != 1) {
+            return { {"success", false}, {"error", ups.empty() ? "This megastructure offers no upgrade"
+                                                                : "Several upgrades are offered: pass type (stellaris_get_megastructure)"} };
+        }
+        type = ups[0];
+    } else {
+        for (void* t : ups) {
+            if (ReadString((uintptr_t)t + kTypeKey) == type_key) type = t;
+        }
+        if (!type) return { {"success", false}, {"error", "Not an upgrade this megastructure offers: " + type_key} };
+    }
+    std::string key = ReadString((uintptr_t)type + kTypeKey);
+    nlohmann::json cost = MegaCost(base_address_, s.player_id,
+                                   (const void*)((uintptr_t)m + sdk::rt::CMegaStructure_economic_scope), type);
+    auto cmd = UpgradeCommand(s.player_id, mega_id, type);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the upgrade" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    return { {"success", true}, {"megastructure_id", mega_id}, {"upgrade_to", key},
+             {"upgrade_name", SafeLocalize(base_address_, key)}, {"cost", cost},
+             {"message", "Upgrade started; stellaris_get_megastructure shows its progress"} };
+}
+
+nlohmann::json GalaxyManager::GetBuildableMegastructures(uint32_t fleet_id, uint32_t system_id) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* fleet = fleets::Find(base_address_, fleet_id);
+    if (!fleet) return { {"error", "Unknown fleet id: " + std::to_string(fleet_id)} };
+    if (system_id != kInvalidId && !s.index.count(system_id)) return { {"error", "Unknown system id: " + std::to_string(system_id)} };
+    const void* scope = (const void*)((uintptr_t)s.player + sdk::rt::CCountry_economic_scope);
+    nlohmann::json list = nlohmann::json::array();
+    void* system = system_id != kInvalidId ? s.systems[s.index[system_id]].obj : nullptr;
+    for (void* t : MegaTypes(base_address_)) {
+        // the menu (CCountry::ListBuildableMegaStructures): potential in the menu and buildable by
+        // this fleet; upgrade stages and repairs fail the second
+        if (!EngineByte3(base_address_ + sdk::fn::CMegaStructureType_IsPotentialInBuildMenu, t, s.player, fleet) ||
+            !EngineByte3(base_address_ + sdk::fn::CMegaStructureType_IsPotentiallyBuildable, t, s.player, fleet)) {
+            continue;
+        }
+        std::string key = ReadString((uintptr_t)t + kTypeKey);
+        const int bt = ReadOr<int32_t>((uintptr_t)t + sdk::rt::CMegaStructureType_build_type, -1);
+        nlohmann::json row = { {"type", key}, {"name", SafeLocalize(base_address_, key)}, {"placement", BuildTypeName(bt)},
+                               {"cost", MegaCost(base_address_, s.player_id, scope, t)} };
+        if (system) {
+            nlohmann::json sites = nlohmann::json::array();
+            std::map<std::string, int> refused;
+            bool any_place = false;
+            if (bt == kBuildAtPlanet) {
+                // the system's planets and stars that meet the placement rules, then the order
+                auto pit = s.planets.find(system_id);
+                for (const auto& p : pit != s.planets.end() ? pit->second : std::vector<PlanetRef>{}) {
+                    if (!PlacementPossible(base_address_, t, p.obj, s.player)) continue;
+                    any_place = true;
+                    std::string why;
+                    if (BuildMegaCommand(fleet_id, t, p.id, kQueueClear).IsValid(&why)) {
+                        sites.push_back({ {"planet_id", p.id},
+                                          {"name", PersistentNameText((const void*)((uintptr_t)p.obj + sdk::ent::CPlanet::name))} });
+                    } else {
+                        ++refused[why.empty() ? "refused" : why];
+                    }
+                }
+            } else if (bt == kBuildInsideGravityWell || bt == kBuildOutsideGravityWell) {
+                // open space: a point toward each neighbouring system
+                for (const auto& lane : s.systems[s.index[system_id]].lanes) {
+                    auto nit = s.index.find(lane.first);
+                    int64_t x = 0, y = 0;
+                    if (nit == s.index.end() || !OpenSpacePoint(base_address_, system, s.systems[nit->second].obj, bt, &x, &y)) continue;
+                    any_place = true;
+                    std::string why;
+                    if (BuildMegaAtPointCommand(fleet_id, t, system_id, x, y, kQueueClear).IsValid(&why)) {
+                        sites.push_back({ {"toward_system_id", lane.first},
+                                          {"toward", SystemName(lane.first, s.systems[nit->second].obj)} });
+                    } else {
+                        ++refused[why.empty() ? "refused" : why];
+                    }
+                }
+            }
+            row["sites"] = sites;
+            if (sites.empty()) {
+                if (!refused.empty()) {
+                    // the most common reason (cost, a construction already under way, a limit ...)
+                    auto best = std::max_element(refused.begin(), refused.end(),
+                                                 [](const auto& a, const auto& b) { return a.second < b.second; });
+                    row["reason"] = best->first;
+                } else if (!any_place) {
+                    row["reason"] = bt == kBuildAtPlanet ? "No planet or star in this system meets its placement rules"
+                                                         : "No place in this system to build it";
+                }
+            }
+        }
+        list.push_back(row);
+    }
+    nlohmann::json out = { {"fleet_id", fleet_id}, {"megastructures", list} };
+    if (system_id != kInvalidId) out["system_id"] = system_id;
+    if (list.empty()) out["note"] = "This fleet's build menu lists no megastructures (not a construction ship, or none unlocked)";
+    return out;
+}
+
+nlohmann::json GalaxyManager::BuildMegastructure(uint32_t fleet_id, const std::string& type_key, uint32_t planet_id,
+                                                 uint32_t system_id, uint32_t toward_system_id, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    void* type = MegaTypeByKey(base_address_, type_key);
+    if (!type) return { {"success", false}, {"error", "Unknown megastructure type: " + type_key} };
+    const int bt = ReadOr<int32_t>((uintptr_t)type + sdk::rt::CMegaStructureType_build_type, -1);
+    const uint32_t mode = queue ? kQueueLast : kQueueClear;
+    nlohmann::json out = { {"fleet_id", fleet_id}, {"type", type_key}, {"name", SafeLocalize(base_address_, type_key)},
+                           {"placement", BuildTypeName(bt)}, {"queued", queue} };
+    NativeCommand cmd = [&]() {
+        if (bt == kBuildAtPlanet) {
+            void* planet = RefLookup(base_address_, sdk::db::CPlanet, planet_id);
+            if (planet) {
+                out["planet_id"] = planet_id;
+                out["planet"] = PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name));
+            }
+            return BuildMegaCommand(fleet_id, type, planet ? planet_id : kInvalidId, mode);
+        }
+        // open space: the point toward the neighbouring system, as the menu listed it
+        int64_t x = 0, y = 0;
+        auto sit = s.index.find(system_id);
+        auto tit = s.index.find(toward_system_id);
+        bool lane = sit != s.index.end() && tit != s.index.end() &&
+                    std::any_of(s.systems[sit->second].lanes.begin(), s.systems[sit->second].lanes.end(),
+                                [&](const auto& l) { return l.first == toward_system_id; });
+        if (lane && OpenSpacePoint(base_address_, s.systems[sit->second].obj, s.systems[tit->second].obj, bt, &x, &y)) {
+            out["system_id"] = system_id;
+            out["toward_system_id"] = toward_system_id;
+        }
+        return BuildMegaAtPointCommand(fleet_id, type, out.contains("system_id") ? system_id : kInvalidId, x, y, mode);
+    }();
+    if (bt == kBuildAtPlanet && !out.contains("planet_id")) {
+        return { {"success", false}, {"error", "This type is built at a planet or star: pass planet_id (stellaris_get_buildable_megastructures sites)"} };
+    }
+    if (bt != kBuildAtPlanet && !out.contains("system_id")) {
+        return { {"success", false}, {"error", "This type is built in open space: pass system_id and toward_system_id, a hyperlane neighbour "
+                                               "(stellaris_get_buildable_megastructures sites)"} };
+    }
+    out["cost"] = MegaCost(base_address_, s.player_id, (const void*)((uintptr_t)s.player + sdk::rt::CCountry_economic_scope), type);
+    std::string why;
+    if (!cmd.IsValid(&why)) return { {"success", false}, {"error", why.empty() ? "The game refused the construction" : why} };
+    if (!cmd.Post(NativeCommand::Check::EngineGate)) return { {"success", false}, {"error", cmd.error()} };
+    out["success"] = true;
+    out["message"] = "Build order posted: the ship travels there and starts the construction site";
+    return out;
+}
+
 }  // namespace bridge

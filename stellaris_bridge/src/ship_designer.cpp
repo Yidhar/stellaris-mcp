@@ -575,16 +575,7 @@ bool ShipDesigner::CanCountryUseComponent(void* p_tmpl, void* p_country) {
 }
 
 void* ShipDesigner::GetPlayerCountry() {
-    if (!base_address_) return nullptr;
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
-        return nullptr;
-    }
-    void* countries_arr = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) || !countries_arr) return nullptr;
-    void* player_country = nullptr;
-    if (!SafeReadPtr((const void*)((uintptr_t)countries_arr + 8), &player_country)) return nullptr;
-    return player_country;
+    return GameState::Get().GetPlayerCountry();  // the local player's country (not country 0)
 }
 
 void* ShipDesigner::FindShipDesign(uint32_t design_id) {

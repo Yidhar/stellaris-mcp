@@ -204,6 +204,29 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([fleet_id, system_id, queue]() {
             return GalaxyManager::Get().BuildOutpost(fleet_id, system_id, queue);
         });
+    } else if (method == "get_megastructure") {
+        uint32_t id = params.value("megastructure_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([id]() { return GalaxyManager::Get().GetMegastructureJson(id); });
+    } else if (method == "upgrade_megastructure") {
+        uint32_t id = params.value("megastructure_id", 0xFFFFFFFFu);
+        std::string type = params.value("type", std::string());
+        fut = TaskQueue::Get().Enqueue([id, type]() { return GalaxyManager::Get().UpgradeMegastructure(id, type); });
+    } else if (method == "get_buildable_megastructures") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([fleet_id, system_id]() {
+            return GalaxyManager::Get().GetBuildableMegastructures(fleet_id, system_id);
+        });
+    } else if (method == "build_megastructure") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        std::string type = params.value("type", std::string());
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        uint32_t system_id = params.value("system_id", 0xFFFFFFFFu);
+        uint32_t toward = params.value("toward_system_id", 0xFFFFFFFFu);
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, type, planet_id, system_id, toward, queue]() {
+            return GalaxyManager::Get().BuildMegastructure(fleet_id, type, planet_id, system_id, toward, queue);
+        });
     } else if (method == "colonize") {
         uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
         uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);

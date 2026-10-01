@@ -130,9 +130,12 @@ def main():
         rows_fp = fp.get("systems", [])
         ids = [x["id"] for x in rows_fp]
         arr = [x["arrival_days"] for x in rows_fp]
-        # hyperlane legs join neighbours; bypass legs (relays, gateways, wormholes) need not.
+        # hyperlane legs join neighbours (the system's own lanes: the ship may start beyond the
+        # map around the capital); bypass legs (relays, gateways, wormholes) need not.
         # Arrival is at the system's entry point; the estimate adds the last leg to the star
-        lane_ok = all((min(a["id"], b["id"]), max(a["id"], b["id"])) in lanes
+        def neighbours(sid):
+            return {h["to"] for h in p.call("get_system", {"system_id": sid}).get("hyperlanes", [])}
+        lane_ok = all((min(a["id"], b["id"]), max(a["id"], b["id"])) in lanes or b["id"] in neighbours(a["id"])
                       for a, b in zip(rows_fp, rows_fp[1:]) if b.get("via") == "hyperlane")
         via_ok = all(b.get("via") in ("hyperlane", "bypass") for b in rows_fp[1:])
         days_ok = (fp.get("estimated_days") or 0) > 0 and all(a <= b for a, b in zip(arr, arr[1:])) \

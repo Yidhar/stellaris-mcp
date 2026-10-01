@@ -174,38 +174,37 @@ void* GameState::GetInGameIdler() {
     return nullptr;
 }
 
+namespace {
+struct PlayerCountryCtx {
+    uintptr_t fn;
+    void* country;
+};
+
+void CallGetPlayerCountry(void* p, void*) {
+    auto* x = (PlayerCountryCtx*)p;
+    x->country = ((void* (*)())x->fn)();
+}
+}  // namespace
+
+// The country the local human plays (or observes): the engine's GetPlayerCountry(), i.e.
+// CGameState::GetLocalObserved. Not country 0: that is whoever was created first. Main thread
+// only, like every TaskQueue task.
 void* GameState::GetPlayerCountry() {
     if (!base_address_) return nullptr;
-
-    // Global CCountryManager at base + sdk::db::CCountry (4.5.1 Cygnus)
-    void* mgr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &mgr) || !mgr || (uintptr_t)mgr < 0x10000) {
-        return nullptr;
-    }
-    if (mgr && (uintptr_t)mgr >= 0x10000) {
-        void* countries_arr = nullptr;
-        uint32_t count = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)mgr + 0x18), &countries_arr) && countries_arr &&
-            SafeReadU32((const void*)((uintptr_t)mgr + 0x20), &count) && count > 0) {
-            void* country_0 = nullptr;
-            // First entry in array (country ID 0 is player)
-            if (SafeReadPtr((const void*)((uintptr_t)countries_arr + 8), &country_0) && country_0) {
-                return country_0;
-            }
-        }
-    }
-
-    return nullptr;
+    PlayerCountryCtx ctx{ base_address_ + sdk::fn::GetPlayerCountry, nullptr };
+    if (!CommandBuilder::Get().CallGuarded(&CallGetPlayerCountry, &ctx) || !ctx.country) return nullptr;
+    // outside a game the engine hands back its null country (id -1)
+    uint32_t id = 0xFFFFFFFF;
+    if (!SafeReadU32((const void*)((uintptr_t)ctx.country + sdk::rt::CCountry_id), &id) || id == 0xFFFFFFFF) return nullptr;
+    return ctx.country;
 }
 
+// 0xFFFFFFFF when not in a game (0 is a real country)
 uint32_t GameState::GetPlayerCountryId() {
     void* country = GetPlayerCountry();
-    if (!country) return 0;
-    uint32_t cid = 0;
-    if (SafeReadU32((const void*)((uintptr_t)country + 0x20), &cid)) {
-        return cid;
-    }
-    return 0;
+    uint32_t cid = 0xFFFFFFFF;
+    if (!country || !SafeReadU32((const void*)((uintptr_t)country + sdk::rt::CCountry_id), &cid)) return 0xFFFFFFFF;
+    return cid;
 }
 
 GameDate GameState::ReadDate() {

@@ -1343,6 +1343,74 @@ def main():
         result["globals"]["TPdxNullObject<CColonyType>::_pInstance"] = next(iter(nulls))
         print(f"TPdxNullObject<CColonyType> 0x{next(iter(nulls)):X}")
 
+    # Economic scopes the megastructure costs are computed in: the CalcTable unit is {country id,
+    # -1, scope, type}. The upgrade command's Execute takes `lea rdx, [megastructure + K]`, the
+    # type's CanAfford `lea rcx, [country + K]`, both right before the call.
+    calc_table = funcs.get("CMegaStructureType_CalcCostTable", {}).get("rva")
+    can_afford = funcs.get("CMegaStructureType_CanAfford", {}).get("rva")
+    sdk_json = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))
+    up_vt = [c["vtable"] for c in sdk_json["commands"] if c["token_name"] == "upgrade_megastructure_command"]
+    scopes = {}
+    for name, fn, rx in (("CMegaStructure_economic_scope", im.q(up_vt[0] + 9 * 8) - im.ib if len(up_vt) == 1 else None,
+                          r"^rdx, \[rbx \+ (0x[0-9a-f]+)\]$"),
+                         ("CCountry_economic_scope", can_afford, r"^rcx, \[rdx \+ (0x[0-9a-f]+)\]$")):
+        if fn is None or calc_table is None:
+            continue
+        last = None
+        for i in im.disasm_fn(fn, 0x400):
+            mm = re.match(rx, i.op_str) if i.mnemonic == "lea" else None
+            if mm:
+                last = int(mm.group(1), 16)
+            if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - im.ib in (calc_table,) and last:
+                scopes[name] = last
+                break
+            if i.mnemonic == "ret":
+                break
+    for name in ("CMegaStructure_economic_scope", "CCountry_economic_scope"):
+        if name in scopes:
+            result["fields"][name] = scopes[name]
+            print(f"{name} +0x{scopes[name]:X}")
+        else:
+            failures.append(f"{name}: no lea before CalcTable")
+
+    # A megastructure type's build type (0 at a planet, else a point in the system: the script's
+    # inside / outside_gravity_well) and placement rules, as the build menu's per-planet check
+    # reads them: `cmp dword ptr [type + K], 0` then `lea rcx, [type + K]` for CPlacementRules::IsPossible
+    has_for_planet = funcs.get("CCountry_HasPotentiallyBuildableMegaStructureForPlanet", {}).get("rva")
+    got_bt = {}
+    if has_for_planet is not None:
+        for i in im.disasm_fn(has_for_planet, 0x200):
+            mm = re.match(r"^dword ptr \[rdi \+ (0x[0-9a-f]+)\], 0$", i.op_str) if i.mnemonic == "cmp" else None
+            if mm and "CMegaStructureType_build_type" not in got_bt:
+                got_bt["CMegaStructureType_build_type"] = int(mm.group(1), 16)
+            mm = re.match(r"^rcx, \[rdi \+ (0x[0-9a-f]+)\]$", i.op_str) if i.mnemonic == "lea" else None
+            if mm and "CMegaStructureType_placement_rules" not in got_bt:
+                got_bt["CMegaStructureType_placement_rules"] = int(mm.group(1), 16)
+            if i.mnemonic == "ret":
+                break
+    for name in ("CMegaStructureType_build_type", "CMegaStructureType_placement_rules"):
+        if name in got_bt:
+            result["fields"][name] = got_bt[name]
+            print(f"{name} +0x{got_bt[name]:X}")
+        else:
+            failures.append(f"{name}: not in HasPotentiallyBuildableMegaStructureForPlanet")
+
+    # Engine defines (NDefines) the bridge reads: each is registered by a thunk
+    # `mov rcx, rdx; lea r9, [variable]; lea rdx, [category]; lea r8, [name]; jmp Read<T>`
+    for define in ("DEEPSPACE_CITADEL_INNER_RADIUS_PERCENTAGE",):
+        at = im.img.find(define.encode() + b"\x00", im.rdata0, im.rdata1)
+        found = set()
+        for r in (im.lea_index().get(at, []) if at != -1 else []):
+            back = list(im.md.disasm(im.img[r - 0x10:r], im.ib + r - 0x10))
+            lea_r9 = [i for i in back if i.mnemonic == "lea" and i.op_str.startswith("r9, [rip + ")]
+            if lea_r9:
+                found.add(rip_target(im, lea_r9[-1]))
+        if len(found) == 1:
+            result["globals"][f"NDefines::{define}"] = found.pop()
+            print(f"define {define} 0x{result['globals'][f'NDefines::{define}']:X}")
+        else:
+            failures.append(f"define {define}: {[hex(v) for v in found]}")
+
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
     cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])
