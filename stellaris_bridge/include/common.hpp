@@ -17,6 +17,7 @@
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <atomic>
 #include <future>
 #include <fstream>
 #include <sstream>
@@ -39,6 +40,8 @@ inline bool SdkMatchesImage(uintptr_t base_address) {
     return matches;
 }
 
+// The bridge's log: <plugin folder>\logs\stellaris_mcp.log. config\stellaris_mcp.ini turns it off
+// ([log] enabled) or adds the debug lines (level = debug: every pipe request and connection).
 class Logger {
 public:
     static Logger& Get() {
@@ -46,23 +49,32 @@ public:
         return instance;
     }
 
-    void Init(const std::string& filepath) {
+    void Init(const std::wstring& filepath) {
         std::lock_guard<std::mutex> lock(mutex_);
-        file_.open(filepath, std::ios::out | std::ios::app);
-        LogInternal("[INIT] Stellaris MCP Bridge Logger started.");
+        if (file_.is_open()) file_.close();
+        file_.open(filepath.c_str(), std::ios::out | std::ios::app);
+    }
+
+    void SetLevel(bool enabled, bool debug) {
+        enabled_ = enabled;
+        debug_ = enabled && debug;
     }
 
     void Log(const std::string& msg) {
+        if (!enabled_) return;
         std::lock_guard<std::mutex> lock(mutex_);
         LogInternal(msg);
     }
 
     template<typename... Args>
     void LogFmt(const char* fmt, Args... args) {
+        if (!enabled_) return;
         char buf[1024];
         snprintf(buf, sizeof(buf), fmt, args...);
         Log(std::string(buf));
     }
+
+    bool DebugEnabled() const { return debug_; }
 
 private:
     Logger() = default;
@@ -89,10 +101,14 @@ private:
 
     std::mutex mutex_;
     std::ofstream file_;
+    std::atomic<bool> enabled_{ true };
+    std::atomic<bool> debug_{ false };
 };
 
 #define LOG(msg) ::bridge::Logger::Get().Log(msg)
 #define LOGF(fmt, ...) ::bridge::Logger::Get().LogFmt(fmt, __VA_ARGS__)
+// only with level = debug
+#define LOGF_DEBUG(fmt, ...) do { if (::bridge::Logger::Get().DebugEnabled()) ::bridge::Logger::Get().LogFmt(fmt, __VA_ARGS__); } while (0)
 
 struct PdxStringView {
     const char* data;

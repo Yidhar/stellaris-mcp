@@ -20,22 +20,19 @@
 #include "contacts_manager.hpp"
 #include "outliner_manager.hpp"
 #include "ipc_server.hpp"
+#include "plugin.hpp"
 
 namespace bridge {
 
 DWORD WINAPI MainInitThread(LPVOID lpParam) {
-    HMODULE hModule = (HMODULE)lpParam;
+    (void)lpParam;
 
-    // Get executable folder for the log file
+    // settings and log live in the plugin's own folder (config\, logs\), never the game folder
+    plugin::Init();
     char exePath[MAX_PATH];
     GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    std::string pathStr(exePath);
-    size_t lastSlash = pathStr.find_last_of("\\/");
-    std::string logPath = (lastSlash != std::string::npos) ? pathStr.substr(0, lastSlash + 1) + "stellaris_bridge.log" : "stellaris_bridge.log";
-
-    Logger::Get().Init(logPath);
     LOG("=================================================");
-    LOG("[INIT] Stellaris MCP Bridge DLL Loaded (v1.0-MVP)");
+    LOG("[INIT] Stellaris MCP Bridge DLL Loaded");
     LOGF("[INIT] Host Process: %s", exePath);
 
     uintptr_t base_address = (uintptr_t)GetModuleHandleA(nullptr);
@@ -79,6 +76,8 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
 
 } // namespace bridge
 
+// Loaded by the Stellaris launcher (or by hand during development) into a running game: DllMain only
+// starts the init thread; everything else happens there and in the Present hook.
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:

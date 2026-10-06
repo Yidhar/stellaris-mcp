@@ -73,8 +73,6 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     std::string method = req.value("method", "");
     nlohmann::json params = req.value("params", nlohmann::json::object());
 
-    LOGF("[IPC_REQ] Method: %s, ID: %s", method.c_str(), id.dump().c_str());
-
     if (method == "ping") {
         return {
             {"jsonrpc", "2.0"},
@@ -792,7 +790,7 @@ void IPCServer::WorkerLoop() {
             continue;
         }
 
-        LOG("[IPC] Named pipe created. Awaiting client connection...");
+        LOGF_DEBUG("%s", "[IPC] Named pipe created. Awaiting client connection...");
         BOOL connected = ConnectNamedPipe(pipe_handle_, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
 
         if (!is_running_) {
@@ -801,7 +799,7 @@ void IPCServer::WorkerLoop() {
         }
 
         if (connected) {
-            LOG("[IPC] Client connected to Named Pipe.");
+            LOGF_DEBUG("%s", "[IPC] Client connected to Named Pipe.");
             std::string read_buffer;
             char chunk[4096];
 
@@ -811,7 +809,7 @@ void IPCServer::WorkerLoop() {
                 if (!ok || bytes_read == 0) {
                     DWORD err = GetLastError();
                     if (err == ERROR_BROKEN_PIPE) {
-                        LOG("[IPC] Client disconnected normally.");
+                        LOGF_DEBUG("%s", "[IPC] Client disconnected normally.");
                     } else {
                         LOGF("[IPC] Pipe read error: 0x%08X", err);
                     }
@@ -837,7 +835,17 @@ void IPCServer::WorkerLoop() {
                     nlohmann::json resp_json;
                     try {
                         auto req_json = nlohmann::json::parse(line);
+                        const auto t0 = std::chrono::steady_clock::now();
                         resp_json = ProcessRequest(req_json);
+                        if (Logger::Get().DebugEnabled()) {
+                            const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0).count();
+                            const bool failed = resp_json.contains("error") && resp_json["error"].is_object();
+                            LOGF_DEBUG("[IPC_REQ] %s id=%s %lld ms%s%s", req_json.value("method", "").c_str(),
+                                       req_json.value("id", nlohmann::json(nullptr)).dump().c_str(), ms,
+                                       failed ? " error " : "",
+                                       failed ? std::to_string(resp_json["error"].value("code", 0)).c_str() : "");
+                        }
                     } catch (const std::exception& ex) {
                         resp_json = {
                             {"jsonrpc", "2.0"},

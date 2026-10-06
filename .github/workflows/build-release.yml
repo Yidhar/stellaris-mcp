@@ -37,7 +37,10 @@ jobs:
           npm ci
           npm run build
 
-      # ---- package: DLL + injector + MCP server with its production dependencies
+      # ---- package: the launcher plugin folder (stl-plugin.json, DLL, defaults\, mcp-server\ without its
+      # dependencies) zipped with its files at the root, plus <zip>.sha256 (scripts/make_plugin.py). A tag
+      # vX.Y.Z gives the manifest version X.Y.Z, which the launcher's updater compares with the latest release
+
       - name: Package
         id: package
         shell: pwsh
@@ -45,40 +48,16 @@ jobs:
           $ErrorActionPreference = "Stop"
           $ver = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           $name = "stellaris-mcp-$ver"
-          $out = Join-Path "package" $name
-          New-Item -ItemType Directory -Force -Path "$out/mcp-server", "$out/scripts" | Out-Null
-
-          Copy-Item build/stellaris_bridge/Release/stellaris_bridge.dll $out/
-          Copy-Item scripts/inject.py, scripts/launch_stellaris.py "$out/scripts/"
-          Copy-Item -Recurse stellaris_mcp_server/dist "$out/mcp-server/dist"
-          Copy-Item stellaris_mcp_server/package.json, stellaris_mcp_server/package-lock.json "$out/mcp-server/"
-          Push-Location "$out/mcp-server"
-          npm ci --omit=dev --ignore-scripts
-          Pop-Location
+          $zip = "package/$name.zip"
+          $pluginVer = if ($env:GITHUB_REF_TYPE -eq "tag") { $ver } else { "0.0.0-dev+$($env:GITHUB_SHA.Substring(0, 7))" }
+          python scripts/make_plugin.py --out "package/stellaris-mcp" --version $pluginVer --zip $zip
+          if ($LASTEXITCODE -ne 0) { throw "make_plugin.py failed" }
 
           # the DLL only works with the stellaris.exe build its SDK was generated from
           $ts = (Select-String -Path stellaris_bridge/include/sdk/stellaris_sdk.hpp -Pattern "kExeTimestamp = (0x[0-9A-Fa-f]+)").Matches[0].Groups[1].Value
           $built = [DateTimeOffset]::FromUnixTimeSeconds([Convert]::ToInt64($ts, 16)).UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'")
 
-          @"
-          # Stellaris MCP $ver
-
-          Built for the stellaris.exe whose PE timestamp is $ts ($built), Stellaris 4.5.1
-          (Windows x64). With any other build the bridge refuses to dispatch commands; regenerate
-          the SDK with tools/sdk_dumper/dump.py and rebuild from source.
-
-          1. Start the game: ``python scripts/launch_stellaris.py`` (runs stellaris.exe -dx11; edit the
-             game directory in the script if yours differs). Load a save.
-          2. Inject the bridge: ``python scripts/inject.py stellaris_bridge.dll``
-          3. Register the MCP server (stdio) with your client: ``node mcp-server/dist/index.js``
-             (Node.js 20+). It talks to the bridge over \\.\pipe\stellaris_mcp_bridge.
-          "@ | Set-Content -Encoding utf8 "$out/README.md"
-
-          $zip = "package/$name.zip"
-          Compress-Archive -Path $out -DestinationPath $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Set-Content -Encoding ascii "$zip.sha256"
-
+          # make_plugin.py wrote $zip.sha256 ("<hex>  <name>"), which the launcher's updater checks
           "name=$name" >> $env:GITHUB_OUTPUT
           "zip=$zip" >> $env:GITHUB_OUTPUT
           "exe_timestamp=$ts" >> $env:GITHUB_OUTPUT
@@ -101,5 +80,7 @@ jobs:
             ${{ steps.package.outputs.zip }}.sha256
           generate_release_notes: true
           body: |
-            Built for **Stellaris 4.5.1** (Windows x64), `stellaris.exe` PE timestamp `${{ steps.package.outputs.exe_timestamp }}` (${{ steps.package.outputs.exe_built }}).
-            The bridge only works with that exact game build; see README.md in the zip for setup.
+            Built for **Stellaris 4.5.2** (Windows x64), `stellaris.exe` PE timestamp `${{ steps.package.outputs.exe_timestamp }}` (${{ steps.package.outputs.exe_built }}).
+            The zip is a Stellaris launcher plugin (DLL plugin spec v2): install it with the launcher, or unpack it into
+            `Documents\Paradox Interactive\Stellaris\plugins\stellaris-mcp\`, and start the game with `stl launch`. The bridge only
+            works with that exact game build; see README.md in the zip for setup.

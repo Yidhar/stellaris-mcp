@@ -6,13 +6,15 @@ import json
 import sys
 
 def main():
-    cmd = ["node", "d:/stellarismcp/stellaris_mcp_server/dist/index.js"]
+    # the server to test: an argument (e.g. an installed plugin's mcp-server\dist\index.js), else the repo build
+    cmd = ["node", sys.argv[1] if len(sys.argv) > 1 else "d:/stellarismcp/stellaris_mcp_server/dist/index.js"]
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",  # the server writes UTF-8 JSON (tool descriptions hold non-ASCII text)
         bufsize=1
     )
 

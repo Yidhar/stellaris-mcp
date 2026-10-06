@@ -112,6 +112,7 @@ stellarismcp/
 │   ├── CMakeLists.txt
 │   ├── include/                # Header definitions & manager interfaces
 │   └── src/                    # Hook manager, IPC server, command dispatchers
+├── plugin/                     # Launcher plugin manifest, default settings, plugin README
 ├── stellaris_mcp_server/       # TypeScript MCP Server (Node.js SDK)
 │   ├── package.json
 │   ├── tsconfig.json
@@ -121,8 +122,8 @@ stellarismcp/
 │       └── tools.ts            # MCP tool registrations (29 tools)
 ├── scripts/                    # Automation, injection, and reverse-engineering tools
 │   ├── build.ps1               # Automated MSVC Release build script
-│   ├── auto_inject.py          # Auto-detects stellaris.exe and injects DLL
-│   ├── inject.py               # Low-level ctypes Win32 DLL injector
+│   ├── make_plugin.py          # Assembles the launcher plugin folder / release zip
+│   ├── reload_dll.py           # Development: re-inject a fresh build into the running game
 │   └── ...                     # Memory exploration & verification scripts
 └── README.md
 ```
@@ -141,43 +142,49 @@ stellarismcp/
 
 ## Getting Started
 
-### 1. Build the Native Bridge DLL
+The bridge is a **Stellaris launcher plugin** (DLL plugin spec v2 of the
+[Stellaris launcher](https://github.com/Yidhar/stellaris-Launcher), `stl`). The launcher installs it, checks it against
+the installed game build, and loads it into the game. Nothing goes into the game folder, and starting the game from Steam
+or the Paradox Launcher starts it without the bridge.
 
-Using PowerShell:
+### 1. Install a release
+
+1. Download `stellaris-mcp-<version>.zip` from the releases. Its files are the plugin folder itself.
+2. Install it with the launcher's Plugins page (*Install plugin*), or unpack it into
+   `Documents\Paradox Interactive\Stellaris\plugins\stellaris-mcp\`.
+3. Enable it in your playset (`stl plugin enable stellaris-mcp`) and start the game with `stl launch` or the Play button.
+4. Install the MCP server's dependencies once: run `mcp-server\install.cmd` in the plugin folder (Node.js 20+; it runs
+   `npm ci --omit=dev` from the lockfile). They are not shipped; run it again after updating the plugin.
+5. Register the MCP server in the plugin folder (`mcp-server\dist\index.js`) with your client, see below.
+
+The plugin folder:
+```
+plugins\stellaris-mcp\
+  stl-plugin.json            manifest (game build it is made for, settings files)
+  stellaris_bridge.dll
+  defaults\stellaris_mcp.ini default settings
+  config\stellaris_mcp.ini   your settings (made from defaults\ by the launcher)
+  logs\stellaris_mcp.log     the bridge's log
+  mcp-server\                the MCP server (Node.js 20+); install.cmd installs its dependencies
+```
+
+### 2. Settings and log
+
+`config\stellaris_mcp.ini` holds `[log] enabled` (`true` / `false`) and `level` (`info`: start-up, errors, timeouts;
+`debug`: also every pipe request with its duration). Edit it from the launcher's Plugins page (gear button); the bridge
+re-reads it within a couple of seconds while the game runs. Without the file it uses those defaults.
+
+### 3. Build from source
+
 ```powershell
-.\scripts\build.ps1
-```
-*Alternatively, build manually via CMake:*
-```bash
-mkdir build && cd build
-cmake .. -A x64
-cmake --build . --config Release
-```
-This produces `build/stellaris_bridge/Release/stellaris_bridge.dll`.
-
-### 2. Build the MCP Server
-
-```bash
-cd stellaris_mcp_server
-npm install
-npm run build
+.\scripts\build.ps1                                   # -> build/stellaris_bridge/Release/stellaris_bridge.dll
+cd stellaris_mcp_server; npm install; npm run build; cd ..
+python scripts/make_plugin.py --with-deps             # -> build/plugin/stellaris-mcp (--zip <file> for a zip)
+D:\stellaris-Launcher\target\release\stl.exe plugin install build/plugin/stellaris-mcp
 ```
 
-### 3. Launch Stellaris & Inject the Bridge
-
-1. Launch **Stellaris** and load your save game or start a new match.
-2. In a terminal, run the injection script:
-```bash
-python scripts/auto_inject.py
-```
-You will see output indicating that `stellaris.exe` was found and `stellaris_bridge.dll` was successfully injected:
-```
-[*] Waiting for stellaris.exe process to appear...
-[+] Found stellaris.exe with PID: 12345
-[+] Found active Stellaris window. Waiting 8s for graphics pipeline...
-[+] Injected DLL into target process.
-[+] Injection complete!
-```
+During development the scripts in `scripts/` (`reload_dll.py`, `build_and_reload.py`) inject the freshly built DLL by
+hand; it then keeps its `config\` and `logs\` next to the build output.
 
 ---
 
@@ -193,7 +200,7 @@ Add the following to your `claude_desktop_config.json` (located at `%APPDATA%\Cl
     "stellaris": {
       "command": "node",
       "args": [
-        "D:\\stellarismcp\\stellaris_mcp_server\\dist\\index.js"
+        "C:\\Users\\<you>\\Documents\\Paradox Interactive\\Stellaris\\plugins\\stellaris-mcp\\mcp-server\\dist\\index.js"
       ]
     }
   }
@@ -207,7 +214,7 @@ In your MCP configuration:
 {
   "name": "stellaris",
   "command": "node",
-  "args": ["D:/stellarismcp/stellaris_mcp_server/dist/index.js"]
+  "args": ["C:/Users/<you>/Documents/Paradox Interactive/Stellaris/plugins/stellaris-mcp/mcp-server/dist/index.js"]
 }
 ```
 

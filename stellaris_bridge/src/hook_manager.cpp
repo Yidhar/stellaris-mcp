@@ -1,5 +1,6 @@
 #include "hook_manager.hpp"
 #include "task_queue.hpp"
+#include "plugin.hpp"
 
 namespace bridge {
 
@@ -13,6 +14,8 @@ HookManager& HookManager::Get() {
 HRESULT __stdcall HookManager::Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     // Process all queued main-thread tasks
     TaskQueue::Get().ProcessAll();
+    // config\stellaris_mcp.ini edited while the game runs (checked every couple of seconds)
+    plugin::PollSettings();
 
     // Call the original Present function
     if (original_present_) {

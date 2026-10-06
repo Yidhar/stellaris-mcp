@@ -37,7 +37,7 @@ There is no unit-test framework. Tests are standalone Python scripts in `scripts
 - `python scripts/test_<feature>_pipeline.py` and `scripts/verify_*.py`: per-feature end-to-end checks against the raw pipe.
 - `python scripts/test_mcp_*_end_to_end.py` / `test_mcp_stdio.py`: exercise the built MCP server over stdio.
 
-The bridge writes its log to `stellaris_bridge.log` next to `stellaris.exe` (in the game directory, not the repo).
+The bridge is a Stellaris launcher plugin (`plugin/stl-plugin.json`, id `stellaris-mcp`). It writes its log to `logs\stellaris_mcp.log` and reads `config\stellaris_mcp.ini` in the folder the DLL was loaded from: `Documents\Paradox Interactive\Stellaris\plugins\stellaris-mcp\` when the launcher loaded it, `build\stellaris_bridge\Release\` when injected by hand with `scripts/reload_dll.py`. `python scripts/make_plugin.py` assembles the plugin folder from a build.
 
 ## Architecture
 

@@ -112,6 +112,7 @@ stellarismcp/
 │   ├── CMakeLists.txt
 │   ├── include/                # 头文件定义与管理器接口
 │   └── src/                    # 钩子挂载、IPC 服务端、命令派发器
+├── plugin/                     # 启动器插件清单、默认设置、插件说明
 ├── stellaris_mcp_server/       # TypeScript MCP 服务端（Node.js SDK）
 │   ├── package.json
 │   ├── tsconfig.json
@@ -121,8 +122,8 @@ stellarismcp/
 │       └── tools.ts            # 29 个 MCP 工具的具体注册与类型校验
 ├── scripts/                    # 编译、注入与逆向工程辅助脚本
 │   ├── build.ps1               # MSVC Release 自动化构建脚本
-│   ├── auto_inject.py          # 自动检测 stellaris.exe 并完成安全注入
-│   ├── inject.py               # Win32 原生内存注入工具
+│   ├── make_plugin.py          # 组装启动器插件目录 / 发布 zip
+│   ├── reload_dll.py           # 开发用：把新构建的 DLL 重新注入运行中的游戏
 │   └── ...                     # 内存探测与全链路验证脚本
 └── README.md
 ```
@@ -141,43 +142,44 @@ stellarismcp/
 
 ## 快速上手
 
-### 1. 编译原生注入 DLL
+Bridge 是 **Stellaris 启动器插件**（[Stellaris 启动器](https://github.com/Yidhar/stellaris-Launcher) `stl` 的 DLL 插件规范 v2）。
+由启动器安装、核对游戏版本并加载进游戏；游戏目录里不放任何文件。从 Steam 或 Paradox 启动器启动游戏时不会加载插件。
 
-在 PowerShell 中直接运行：
+### 1. 安装发布版
+
+1. 从 Releases 下载 `stellaris-mcp-<版本>.zip`，压缩包里的文件就是插件目录本身。
+2. 用启动器插件页的「安装插件」安装，或解压到 `文档\Paradox Interactive\Stellaris\plugins\stellaris-mcp\`。
+3. 在游戏配置里启用（`stl plugin enable stellaris-mcp`），用 `stl launch` 或「开始游戏」按钮启动游戏。
+4. 安装一次 MCP 服务端依赖：运行插件目录里的 `mcp-server\install.cmd`（需要 Node.js 20+，按锁文件执行
+   `npm ci --omit=dev`）。插件不附带依赖，更新插件后需要再运行一次。
+5. 在 MCP 客户端里注册插件目录中的服务端 `mcp-server\dist\index.js`（见下文）。
+
+插件目录：
+```
+plugins\stellaris-mcp\
+  stl-plugin.json            清单（适配的游戏版本、设置文件）
+  stellaris_bridge.dll
+  defaults\stellaris_mcp.ini 默认设置
+  config\stellaris_mcp.ini   你的设置（启动器从 defaults\ 生成）
+  logs\stellaris_mcp.log     Bridge 日志
+  mcp-server\                MCP 服务端（Node.js 20+），install.cmd 安装其依赖
+```
+
+### 2. 设置与日志
+
+`config\stellaris_mcp.ini` 里有 `[log] enabled`（`true` / `false`）和 `level`（`info`：启动、错误、超时；`debug`：另外记录每个管道请求及耗时）。
+可在启动器插件页（齿轮按钮）编辑，游戏运行中保存后几秒内生效；文件不存在时使用上述默认值。
+
+### 3. 从源码构建
+
 ```powershell
-.\scripts\build.ps1
-```
-*或使用标准 CMake 编译：*
-```bash
-mkdir build && cd build
-cmake .. -A x64
-cmake --build . --config Release
-```
-构建成功后将在 `build/stellaris_bridge/Release/stellaris_bridge.dll` 生成二进制文件。
-
-### 2. 构建 MCP 服务端
-
-```bash
-cd stellaris_mcp_server
-npm install
-npm run build
+.\scripts\build.ps1                                   # -> build/stellaris_bridge/Release/stellaris_bridge.dll
+cd stellaris_mcp_server; npm install; npm run build; cd ..
+python scripts/make_plugin.py --with-deps             # -> build/plugin/stellaris-mcp（--zip <文件> 同时打包）
+D:\stellaris-Launcher\target\release\stl.exe plugin install build/plugin/stellaris-mcp
 ```
 
-### 3. 启动游戏并注入 Bridge
-
-1. 启动 **《群星》** 并载入现有存档或开启新对局。
-2. 打开终端，运行自动注入脚本：
-```bash
-python scripts/auto_inject.py
-```
-终端将输出自动捕获到 `stellaris.exe` 进程及成功注入的提示：
-```
-[*] Waiting for stellaris.exe process to appear...
-[+] Found stellaris.exe with PID: 12345
-[+] Found active Stellaris window. Waiting 8s for graphics pipeline...
-[+] Injected DLL into target process.
-[+] Injection complete!
-```
+开发时可用 `scripts/` 里的 `reload_dll.py`、`build_and_reload.py` 手动把新构建的 DLL 注入正在运行的游戏；此时 `config\` 和 `logs\` 位于构建输出目录旁。
 
 ---
 
@@ -193,7 +195,7 @@ python scripts/auto_inject.py
     "stellaris": {
       "command": "node",
       "args": [
-        "D:\\stellarismcp\\stellaris_mcp_server\\dist\\index.js"
+        "C:\\Users\\<你>\\Documents\\Paradox Interactive\\Stellaris\\plugins\\stellaris-mcp\\mcp-server\\dist\\index.js"
       ]
     }
   }
@@ -207,7 +209,7 @@ python scripts/auto_inject.py
 {
   "name": "stellaris",
   "command": "node",
-  "args": ["D:/stellarismcp/stellaris_mcp_server/dist/index.js"]
+  "args": ["C:/Users/<你>/Documents/Paradox Interactive/Stellaris/plugins/stellaris-mcp/mcp-server/dist/index.js"]
 }
 ```
 
