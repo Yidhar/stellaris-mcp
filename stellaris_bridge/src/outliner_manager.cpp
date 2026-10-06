@@ -551,7 +551,7 @@ std::string OutlinerManager::CountryDisplayName(uint32_t country_id) {
     }
     // The display name the outliner tooltips pass for $BLOCKADER$ etc. (a CString at +0x14F0).
     std::string name;
-    SafeReadPdxString((const void*)((uintptr_t)country + 0x14F0 + 0x10), name);
+    SafeReadPdxString((const void*)((uintptr_t)country + sdk::ent::CCountry::name - 0x30 + 0x10), name);
     return name.empty() ? "" : LocalizeKey(name);
 }
 
@@ -673,11 +673,11 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
     void* country = GetPlayerCountry();
     if (!country || !base_address_) return;
 
-    // 1. Read player owned colony IDs from Country + 0x2780 (count at +0x278C)
+    // 1. Read player owned colony IDs from CCountry::owned_planets (data at +0x8, count at +0x14)
     void* colony_vec = nullptr;
     uint32_t colony_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2780), &colony_vec);
-    SafeReadU32((const void*)((uintptr_t)country + 0x278C), &colony_cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_planets + 0x8), &colony_vec);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_planets + 0x14), &colony_cnt);
 
     std::vector<uint32_t> player_colony_ids;
     if (colony_vec && colony_cnt > 0) {
@@ -884,8 +884,8 @@ nlohmann::json OutlinerManager::GetOutlinerSummaryJson() {
     // 2. Military fleets summary
     void* vec_ptr = nullptr;
     uint32_t template_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2648 + 8), &vec_ptr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x2648 + 0x14), &template_cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 8), &vec_ptr);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 0x14), &template_cnt);
 
     double total_military_power = 0.0;
     std::vector<uint32_t> military_fleet_ids;
@@ -1119,8 +1119,8 @@ nlohmann::json OutlinerManager::GetCivilianFleetsJson() {
     // Read leaders to map scientist assignments
     void* l_arr = nullptr;
     uint32_t l_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2750), &l_arr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x275C), &l_cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_leaders + 0x8), &l_arr);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_leaders + 0x14), &l_cnt);
 
     std::unordered_map<uint32_t, HiredLeaderDetail> fleet_leader_map;
     if (l_arr && l_cnt > 0) {

@@ -191,8 +191,8 @@ SocietySummary SocietyManager::GetSummary() {
     void* country = GetPlayerCountry();
     if (!country) return summary;
 
-    SafeReadU32((const void*)((uintptr_t)country + 0x30B4), &summary.adopted_trees_count);
-    SafeReadU32((const void*)((uintptr_t)country + 0x30CC), &summary.unlocked_traditions_count);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x1C), &summary.adopted_trees_count);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x34), &summary.unlocked_traditions_count);
     // CCountry::edicts is a CPdxArray<SCountryActiveEdict>: data at +0, count at +0xC.
     SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::edicts + 0xC), &summary.active_edicts_count);
 
@@ -213,12 +213,6 @@ SocietySummary SocietyManager::GetSummary() {
             summary.can_unlock_tradition = true;
             break;
         }
-    }
-
-    // 2. Also check if unity balance exceeds next cost
-    void* res_mgr = nullptr;
-    if (!summary.can_unlock_tradition && SafeReadPtr((const void*)((uintptr_t)country + 0x1878), &res_mgr) && res_mgr) {
-        // Resources stockpile
     }
 
     return summary;
@@ -256,8 +250,8 @@ nlohmann::json SocietyManager::GetTraditionsJson() {
 
     void* cat_arr = nullptr;
     uint32_t cat_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x30A8), &cat_arr) && cat_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x30B4), &cat_cnt)) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x10), &cat_arr) && cat_arr &&
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x1C), &cat_cnt)) {
         for (uint32_t i = 0; i < cat_cnt && i < 16; ++i) {
             void* cat_p = nullptr;
             if (!SafeReadPtr((const void*)((uintptr_t)cat_arr + i * 8), &cat_p) || !cat_p) {
@@ -282,8 +276,8 @@ nlohmann::json SocietyManager::GetTraditionsJson() {
 
     void* tr_arr = nullptr;
     uint32_t tr_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x30C0), &tr_arr) && tr_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x30CC), &tr_cnt)) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x28), &tr_arr) && tr_arr &&
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x34), &tr_cnt)) {
         for (uint32_t i = 0; i < tr_cnt && i < 128; ++i) {
             void* tr_p = nullptr;
             if (!SafeReadPtr((const void*)((uintptr_t)tr_arr + i * 8), &tr_p) || !tr_p) {
@@ -342,8 +336,8 @@ nlohmann::json SocietyManager::GetTraditionsJson() {
     nlohmann::json perks_json = nlohmann::json::array();
     void* ap_arr = nullptr;
     uint32_t ap_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x30D0), &ap_arr) && ap_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x30E4), &ap_cnt)) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x40), &ap_arr) && ap_arr &&
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::last_picked_tradition + 0x4C), &ap_cnt)) {
         for (uint32_t i = 0; i < ap_cnt && i < 16; ++i) {
             void* ap_p = nullptr;
             if (!SafeReadPtr((const void*)((uintptr_t)ap_arr + i * 8), &ap_p) || !ap_p) {

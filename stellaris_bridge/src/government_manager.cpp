@@ -204,7 +204,7 @@ CouncilSummary GovernmentManager::GetSummary() {
 
     // 1. Ruler name
     uint32_t ruler_id = 0;
-    SafeReadU32((const void*)((uintptr_t)country + 0x1BF0), &ruler_id);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ruler), &ruler_id);
     if (ruler_id != 0 && ruler_id != 0xFFFFFFFF) {
         LeaderDetail ruler = ReadLeader(ruler_id);
         summary.ruler_name = ruler.name.empty() ? ruler.key : ruler.name;
@@ -217,7 +217,7 @@ CouncilSummary GovernmentManager::GetSummary() {
 
     // 3. Council Agenda & Progress from CCountryCouncil
     void* council = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x19F0), &council) && council) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::government), &council) && council) {
         void* agenda = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)council + 0x60), &agenda) && agenda) {
             SafeReadPdxString((const void*)((uintptr_t)agenda + 0x20), summary.active_agenda);
@@ -260,14 +260,14 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
 
     // 1. Ruler
     uint32_t ruler_id = 0;
-    SafeReadU32((const void*)((uintptr_t)country + 0x1BF0), &ruler_id);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ruler), &ruler_id);
     state.ruler = ReadLeader(ruler_id);
 
-    // 2. Ethics from Country + 0x1670 (Array ptr) and + 0x1678 (Count)
+    // 2. Ethics from Country + sdk::ent::CCountry::ethos + 0x10 (Array ptr) and + sdk::ent::CCountry::ethos + 0x18 (Count)
     void* ethics_arr = nullptr;
     uint32_t ethics_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x1670), &ethics_arr) && ethics_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x1678), &ethics_cnt) && ethics_cnt > 0) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::ethos + 0x10), &ethics_arr) && ethics_arr &&
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ethos + 0x18), &ethics_cnt) && ethics_cnt > 0) {
         for (uint32_t i = 0; i < ethics_cnt && i < 16; ++i) {
             void* ethic_ptr = nullptr;
             if (SafeReadPtr((const void*)((uintptr_t)ethics_arr + i * 8), &ethic_ptr) && ethic_ptr) {
@@ -281,7 +281,7 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
 
     // 3. CCountryCouncil details (+0x19F0)
     void* council = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x19F0), &council) && council) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::government), &council) && council) {
         // Government Type
         void* gov_type_ptr = nullptr;
         if (SafeReadPtr((const void*)((uintptr_t)council + 0x10), &gov_type_ptr) && gov_type_ptr) {

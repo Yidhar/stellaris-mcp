@@ -328,24 +328,24 @@ std::unordered_map<std::string, ResourceDetail> GameState::ReadResources(void* c
 
     size_t count = cached_resource_names_.size();
 
-    // 1. Stockpile array from [Country + 0x2B40] + 0x30
+    // 1. Stockpile array from [Country + sdk::ent::CCountry::type + 0x18] + 0x30
     void* bal_ptr = nullptr;
     void* stockpile_arr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x2B40), &bal_ptr) && bal_ptr) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x18), &bal_ptr) && bal_ptr) {
         SafeReadPtr((const void*)((uintptr_t)bal_ptr + 0x30), &stockpile_arr);
     }
 
     // 2. Vector arrays:
-    // Game native total monthly income at Country + 0x2018 (includes market/all sources)
-    // Game native total monthly expense at Country + 0x2038 (includes trades/maintenance)
-    // Game native true monthly net balance at Country + 0x2058
+    // Game native total monthly income at Country + sdk::ent::CCountry::budget + 0x2D8 (includes market/all sources)
+    // Game native total monthly expense at Country + sdk::ent::CCountry::budget + 0x2F8 (includes trades/maintenance)
+    // Game native true monthly net balance at Country + sdk::ent::CCountry::budget + 0x318
     void* income_arr = nullptr;
     void* expense_arr = nullptr;
     void* net_arr = nullptr;
 
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2018), &income_arr);
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2038), &expense_arr);
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2058), &net_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::budget + 0x2D8), &income_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::budget + 0x2F8), &expense_arr);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::budget + 0x318), &net_arr);
 
     auto round2 = [](double val) -> double {
         return std::round(val * 100.0) / 100.0;
@@ -408,7 +408,7 @@ EmpireStats GameState::ReadEmpireStats(void* country) {
     }
     if (country) {
         uint32_t colonies = 0;
-        if (SafeReadU32((const void*)((uintptr_t)country + 0x2CC8), &colonies)) {
+        if (SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_planets + 0x14), &colonies)) {
             stats.colonies = colonies;
         }
     }

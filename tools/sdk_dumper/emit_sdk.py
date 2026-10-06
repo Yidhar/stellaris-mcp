@@ -71,7 +71,8 @@ def copies_from_rcx(ins):
 
 def discover_commands(im, names, layouts, linux_cmd_classes, newline_fn=None):
     lea = im.lea_index()
-    linux = json.loads((OUT / "linux_index.json").read_text(encoding="utf-8"))
+    # the decompile's classes with this exe's token numbers (win_extract.py renumbers them by name)
+    linux = json.loads((OUT / "linux_index_win.json").read_text(encoding="utf-8"))
     linux_cmd_fields = {v["class"]: v["fields"] for v in linux.values() if v.get("method") == "WriteCommandMembers"}
     known_tokens = {f["token"] for v in linux.values() for f in v["fields"]} | set(names)
     tok_vts = []

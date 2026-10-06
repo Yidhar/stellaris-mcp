@@ -11,8 +11,10 @@ import sys
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent / "out" / "win_layouts.json"
+LINUX_TOKENS = Path(__file__).resolve().parent / "linux_tokens.json"
 
-# serializer key -> {token: expected Windows offset}
+# serializer key -> {token: expected Windows offset}. Tokens are numbered as in the decompile
+# (linux_tokens.json); main() renumbers them to the installed exe by name, like win_extract.py.
 GROUND_TRUTH = {
     # commands (engine factories + serializers, 4.5.1)
     "CResearchTechnologyCommand::WriteCommandMembers": {0x2c88: 0x20, 0x2d0d: 0x28},
@@ -44,9 +46,13 @@ SUBOBJECTS = {
 
 
 def main():
-    layouts = json.loads(OUT.read_text(encoding="utf-8"))["layouts"]
+    data = json.loads(OUT.read_text(encoding="utf-8"))
+    layouts = data["layouts"]
+    ref = {int(k, 16): v for k, v in json.loads(LINUX_TOKENS.read_text(encoding="utf-8"))["tokens"].items()}
+    by_name = {v: int(k) for k, v in data["token_names"].items()}
     ok = bad = 0
-    for key, fields in GROUND_TRUTH.items():
+    for key, linux_fields in GROUND_TRUTH.items():
+        fields = {by_name.get(ref.get(t), t): off for t, off in linux_fields.items()}
         lay = layouts.get(key)
         if lay is None:
             print(f"MISSING  {key}")

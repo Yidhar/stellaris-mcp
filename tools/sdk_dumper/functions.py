@@ -369,7 +369,7 @@ FUNCTIONS = {
                     (r"^xchg byte ptr \[rcx \+ 0x[0-9a-f]+\], al$", ""), (r"^lea r14, \[rcx \+ 0x[0-9a-f]+\]$", ""),
                     (r"^mov byte ptr \[rip \+ 0x[0-9a-f]+\], 1$", ""), (r"^call", ""), (r"^mov ebx, dword ptr \[rax \+ 0x", "]"),
                     (r"^or ebx, 2$", "")],
-        "prefilter_bytes": [b"\x80\xB9\x89\x09\x00\x00\x00"],  # cmp byte ptr [rcx + 0x989], 0
+        "prefilter_bytes": [b"\x83\xCB\x02"],  # or ebx, 2 (the flag offsets move between patches)
         "window": 36,
     },
     "CRandomLog_Get": {
@@ -380,7 +380,7 @@ FUNCTIONS = {
                     (r"^xchg byte ptr \[rcx \+ 0x[0-9a-f]+\], al$", ""), (r"^lea r14, \[rcx \+ 0x[0-9a-f]+\]$", ""),
                     (r"^mov byte ptr \[rip \+ 0x[0-9a-f]+\], 1$", ""), (r"^call", ""), (r"^mov ebx, dword ptr \[rax \+ 0x", "]"),
                     (r"^or ebx, 2$", "")],
-        "prefilter_bytes": [b"\x80\xB9\x89\x09\x00\x00\x00"],
+        "prefilter_bytes": [b"\x83\xCB\x02"],
         "window": 36,
         "follow_call": True,
     },

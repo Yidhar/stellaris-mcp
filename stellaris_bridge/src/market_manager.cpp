@@ -151,8 +151,8 @@ bool MarketManager::IsResourceUnlocked(void* country, const std::string& key) {
     // Check researched technologies in CTechnology (+0x16E0 + 0x20)
     void* tech_arr = nullptr;
     uint32_t tech_cnt = 0;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x16E0 + 0x20), &tech_arr) && tech_arr &&
-        SafeReadU32((const void*)((uintptr_t)country + 0x16E0 + 0x28), &tech_cnt)) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::tech_status + 0x20), &tech_arr) && tech_arr &&
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::tech_status + 0x28), &tech_cnt)) {
         std::string req_tech = "";
         if (key == "volatile_motes") req_tech = "volatile_motes";
         else if (key == "exotic_gases") req_tech = "exotic_gases";
@@ -212,11 +212,11 @@ nlohmann::json MarketManager::GetMarketInfo() {
         return { {"error", "Failed to read resource database"} };
     }
 
-    // Read player stockpiles from [Country + 0x2B40] + 0x30
+    // Read player stockpiles from [Country + sdk::ent::CCountry::type + 0x18] + 0x30
     std::unordered_map<std::string, double> stockpiles;
     void* bal_ptr = nullptr;
     void* stock_arr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x2B40), &bal_ptr) && bal_ptr) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x18), &bal_ptr) && bal_ptr) {
         if (SafeReadPtr((const void*)((uintptr_t)bal_ptr + 0x30), &stock_arr) && stock_arr) {
             for (uint32_t i = 0; i < cnt; ++i) {
                 int64_t val_raw = 0;

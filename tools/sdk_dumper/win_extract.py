@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(r"E:\Program Files (x86)\Steam\steamapps\common\Stellaris\stellaris.exe")
 OUT_DIR = ROOT / "tools" / "sdk_dumper" / "out"
 LINUX = OUT_DIR / "linux_index.json"
+LINUX_TOKENS = Path(__file__).resolve().parent / "linux_tokens.json"
 
 NEWLINE_TOKEN = 0x10  # `mov edx,0x10; call` terminates a key=value pair
 VOLATILE = {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11"}
@@ -518,17 +519,56 @@ def assign_offsets(events, refs, insns, kinds, indirect=None):
     return out
 
 
+def command_serializers(im, names, linux_cmd_classes, purecall):
+    """{Linux command class: its Windows WriteCommandMembers} from the image alone: a command's vtable
+    has `mov eax, TOKEN; ret` in slot 10 (GetToken) and the CCommand base's slot 2, its token's name
+    is the class name in snake case (research_technology_command -> CResearchTechnologyCommand), and
+    slot 20 is the serializer. A prototype's slot 20 is _purecall and is skipped; a class whose
+    vtables disagree is left to the token matching."""
+    tok_vts = []
+    for vt in im.lea_index():
+        if not (im.rdata0 <= vt < im.rdata1):
+            continue
+        s10 = im.q(vt + 10 * 8) - im.ib
+        if not (im.text0 <= s10 < im.text1):
+            continue
+        b = im.img[s10:s10 + 6]
+        if b[0] == 0xB8 and b[5] == 0xC3:
+            tok_vts.append((struct.unpack_from("<I", b, 1)[0], vt))
+    base2 = collections.Counter(im.q(vt + 2 * 8) for t, vt in tok_vts
+                                if names.get(t, "").endswith("command")).most_common(1)
+    if not base2:
+        return {}
+    found = collections.defaultdict(set)
+    for t, vt in tok_vts:
+        if im.q(vt + 2 * 8) != base2[0][0] or not names.get(t):
+            continue
+        camel = "C" + "".join(p[:1].upper() + p[1:] for p in names[t].split("_") if p)
+        for guess in (camel, camel + "Command", camel.removesuffix("Command")):
+            if guess in linux_cmd_classes:
+                s20 = im.q(vt + 20 * 8) - im.ib
+                if s20 != purecall and im.text0 <= s20 < im.text1:
+                    found[guess].add(s20)
+                break
+    return {cls: fns.pop() for cls, fns in found.items() if len(fns) == 1}
+
+
 def this_adjust(im, fn):
     """Offset at which the ctor stores the vtable that contains fn (the CPersistent sub-object)."""
     lea = im.lea_index()
+    # the lea targets sorted once: the vtable holding a slot is the nearest one at or below it
+    # (a scan of every target per slot took hours where a function sits in many vtables)
+    if getattr(im, "_lea_sorted", None) is None:
+        im._lea_sorted = sorted(lea)
+    keys = im._lea_sorted
     pat = struct.pack("<Q", im.ib + fn)
     results = collections.Counter()
     vts = []
     pos = im.img.find(pat, im.rdata0)
     while pos != -1 and pos < im.rdata1:
-        starts = [k for k in lea if pos - 0x800 <= k <= pos]
-        if starts:
-            vt = max(starts)
+        k = bisect.bisect_right(keys, pos) - 1
+        if k >= 0 and keys[k] >= pos - 0x800:
+            vt = keys[k]
             vts.append((vt, (pos - vt) // 8))
             for r in lea[vt]:
                 for ins in im.md.disasm(im.img[r:r + 0x40], im.ib + r):
@@ -587,13 +627,31 @@ def build_fields(im, fn, linux_fields, known_tokens, names, newline_fn):
     return fields, calls
 
 
+def remap_linux_tokens(linux, names):
+    """Rewrite the decompile's token numbers to this exe's, by name (linux_tokens.json holds the
+    decompile build's names). A patch that registers new tokens shifts the numbers of every token
+    after them (4.5.2 added 10 and moved 4141), while names stay. Tokens without a name in either
+    table keep their number. Returns (tokens renumbered, tokens named in both)."""
+    ref = {int(k, 16): v for k, v in json.loads(LINUX_TOKENS.read_text(encoding="utf-8"))["tokens"].items()}
+    by_name = {v: k for k, v in names.items()}
+    remap = {t: by_name[n] for t, n in ref.items() if n in by_name}
+    for v in linux.values():
+        for f in v["fields"]:
+            f["token"] = remap.get(f["token"], f["token"])
+    return sum(1 for t, w in remap.items() if t != w), len(remap)
+
+
 def main():
     linux = json.loads(LINUX.read_text(encoding="utf-8"))
     im = Image(EXE)
-    known = {f["token"] for v in linux.values() for f in v["fields"]}
 
-    names, reg_fn = token_names(im, known)
+    names, reg_fn = token_names(im, set())
     print(f"token names: {len(names)} (RegisterToken=0x{reg_fn or 0:X})")
+    moved, both = remap_linux_tokens(linux, names)
+    print(f"decompile tokens renumbered to this exe by name: {moved} of {both}")
+    # the decompile's classes with this exe's token numbers, for the later stages
+    (OUT_DIR / "linux_index_win.json").write_text(json.dumps(linux, indent=1), encoding="utf-8")
+    known = {f["token"] for v in linux.values() for f in v["fields"]}
 
     cands = serializer_candidates(im, known)
     # token-registration init functions mention every token; never serializers
@@ -614,18 +672,15 @@ def main():
     print(f"WriteToken=0x{write_token_fn:X} newline=0x{newline_fn:X} candidates={len(cands)}")
 
     # ---- function matching -------------------------------------------------
-    cmd_json = ROOT / "scripts" / "resolved_cmd_vtables_4.5.json"
-    cmd_vt = {}
-    if cmd_json.exists():
-        for k, v in json.loads(cmd_json.read_text()).items():
-            cmd_vt[k] = int(v["vtable_rva"], 16)
+    slot20_stub = purecall_rva(im)
+    cmd_fn = command_serializers(im, names, {v["class"] for v in linux.values() if v["method"] == "WriteCommandMembers"},
+                                 slot20_stub)
+    print(f"command serializers by token name: {len(cmd_fn)}")
     by_token = collections.defaultdict(set)
     for f, toks in cands.items():
         for t in set(toks):
             by_token[t].add(f)
     tok_freq = collections.Counter(t for toks in cands.values() for t in set(toks))
-
-    slot20_stub = purecall_rva(im)
 
     matched = {}
     for key, cls in linux.items():
@@ -633,13 +688,9 @@ def main():
         if not L:
             continue
         name = cls["class"]
-        if cls["method"] == "WriteCommandMembers" and name in cmd_vt:
-            fn = im.q(cmd_vt[name] + 20 * 8) - im.ib
-            # a prototype object shares the token getter but its slot 20 is _purecall;
-            # then match the real serializer by its tokens below
-            if fn != slot20_stub:
-                matched[key] = {"fn": fn, "how": "cmd-vtable", "score": 1.0}
-                continue
+        if cls["method"] == "WriteCommandMembers" and name in cmd_fn:
+            matched[key] = {"fn": cmd_fn[name], "how": "cmd-vtable", "score": 1.0}
+            continue
         rare = min(L, key=lambda t: tok_freq.get(t, 1 << 30))
         scored = []
         for f in by_token.get(rare, ()):

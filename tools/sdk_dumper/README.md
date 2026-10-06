@@ -22,7 +22,7 @@ and the tokens are the same numbers on Linux and Windows.
 | Stage | Input | Output |
 |---|---|---|
 | `linux_index.py` | `source/stellaris_4.5_source.cpp` (symbolized Linux decompile) | class name → ordered `(token, kind, ref type)`; `out/linux_anchors.json`: the function that loads each `"common/<folder>"` database, and the order in which `CGameStateDatabase` constructs its `TPdxRefDatabase<X>` members |
-| `win_extract.py` | `stellaris.exe` | Windows function per class (token fingerprint, or vtable slot 20 for commands); field offsets from register data flow (a value passed straight to the writer, `lea/mov r8|r9,[this+d]; mov edx,TOKEN; call`, wins over loads after the call; a field Linux writes as the key of a pointed-to object takes the `[this+d]` load read after its token); `this` adjust from the ctor's vtable store; token names from `RegisterToken` |
+| `win_extract.py` | `stellaris.exe` | Windows function per class (token fingerprint, or vtable slot 20 for commands: a command's vtable is the one whose slot 10 returns its token and whose name is the class name in snake case, read from the exe, nothing kept between patches). The decompile's token numbers are renumbered to the exe's by name first (`linux_tokens.json` holds the names of the decompile's build): a patch that registers new tokens shifts every later number (4.5.2 moved 4141), and `out/linux_index_win.json` is the decompile's classes with the exe's numbers, which `emit_sdk.py` reads; `validate.py` maps its ground truth the same way; field offsets from register data flow (a value passed straight to the writer, `lea/mov r8|r9,[this+d]; mov edx,TOKEN; call`, wins over loads after the call; a field Linux writes as the key of a pointed-to object takes the `[this+d]` load read after its token); `this` adjust from the ctor's vtable store; token names from `RegisterToken` |
 | `emit_sdk.py` | the above | commands (vtable = slot 10 `mov eax,TOKEN; ret`, factory, `kSize`; a function that reads its first argument through (a clone or copy constructor) is never taken for the factory, so a command whose only allocator is a clone gets `kFactoryRva = 0` instead of a function that would copy from garbage; the payload comes from the command's own serializer, slot 20, when the class's fingerprint matched a sibling with the same tokens), flattened entities, header |
 | `globals.py` | Linux method bodies ↔ Windows command vtable slots | `TPdxRef<T>::_pDatabase` and other named globals, by co-occurrence voting; `TOKEN_BRANCH_HINTS` pins a database to the `ReadCommandMember` branch of its token when one command reads several |
 | `live_verify.py` | running game (ReadProcessMemory only) | picks between tied database candidates by object type, and checks `ref<T>` fields |
@@ -48,7 +48,7 @@ auto make = (void*(*)())(base + sdk::cmd::research_technology_command::kFactoryR
 Check `sdk::kExeTimestamp` against the running exe's PE `TimeDateStamp` at startup, and refuse
 to dispatch commands when they differ.
 
-## Coverage and limits (4.5.1)
+## Coverage and limits (4.5.2)
 
 - 809/980 serializers matched and 3143/3442 fields resolved. Core classes (`CCountry`,
   `CPlanet`, `CColony`, `CFleet`, `CShip`, `CLeader`, `CSpecies`, queues, ...) are 85–100%.

@@ -357,7 +357,7 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     void* country = GetPlayerCountry();
     uint32_t ruler_id = 0;
     if (country) {
-        SafeReadU32((const void*)((uintptr_t)country + 0x1BF0), &ruler_id);
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ruler), &ruler_id);
     }
 
     if (leader_id == ruler_id) {
@@ -441,12 +441,12 @@ LeaderSummary LeaderManager::GetSummary() {
     void* country = GetPlayerCountry();
     if (!country) return summary;
 
-    // 1. Total hired leaders from [Country + 0x275C]
-    SafeReadU32((const void*)((uintptr_t)country + 0x275C), &summary.total_hired);
+    // 1. Total hired leaders from [Country + sdk::ent::CCountry::owned_leaders + 0x14]
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_leaders + 0x14), &summary.total_hired);
 
-    // 2. Leader capacity & pool count from CCountryLeaderManager [Country + 0x2B48]
+    // 2. Leader capacity & pool count from CCountryLeaderManager [Country + sdk::ent::CCountry::type + 0x20]
     void* c_leader_mgr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x2B48), &c_leader_mgr) && c_leader_mgr) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x20), &c_leader_mgr) && c_leader_mgr) {
         SafeReadU32((const void*)((uintptr_t)c_leader_mgr + 0x30), &summary.pool_count);
         SafeReadU32((const void*)((uintptr_t)c_leader_mgr + 0x50), &summary.leader_capacity);
     }
@@ -484,11 +484,11 @@ nlohmann::json LeaderManager::GetLeadersJson() {
     nlohmann::json result;
     result["summary"] = GetSummaryJson();
 
-    // 1. Hired leaders from [Country + 0x2750]
+    // 1. Hired leaders from [Country + sdk::ent::CCountry::owned_leaders + 0x8]
     void* l_arr = nullptr;
     uint32_t cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2750), &l_arr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x275C), &cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_leaders + 0x8), &l_arr);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::owned_leaders + 0x14), &cnt);
 
     nlohmann::json hired_list = nlohmann::json::array();
     if (l_arr && cnt > 0) {
@@ -533,10 +533,10 @@ nlohmann::json LeaderManager::GetLeadersJson() {
     }
     result["hired_leaders"] = hired_list;
 
-    // 2. Candidate pool from CCountryLeaderManager [Country + 0x2B48] + 0x28
+    // 2. Candidate pool from CCountryLeaderManager [Country + sdk::ent::CCountry::type + 0x20] + 0x28
     nlohmann::json pool_list = nlohmann::json::array();
     void* c_leader_mgr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)country + 0x2B48), &c_leader_mgr) && c_leader_mgr) {
+    if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x20), &c_leader_mgr) && c_leader_mgr) {
         void* pool_arr = nullptr;
         uint32_t pool_cnt = 0;
         SafeReadPtr((const void*)((uintptr_t)c_leader_mgr + 0x28), &pool_arr);
@@ -622,7 +622,7 @@ nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
     void* country = GetPlayerCountry();
     uint32_t ruler_id = 0;
     if (country) {
-        SafeReadU32((const void*)((uintptr_t)country + 0x1BF0), &ruler_id);
+        SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ruler), &ruler_id);
     }
     if (leader_id == ruler_id) {
         return {

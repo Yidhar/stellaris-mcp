@@ -187,8 +187,8 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
 
     void* vec_ptr = nullptr;
     uint32_t vec_cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)country + 0x2648 + 8), &vec_ptr) || !vec_ptr ||
-        !SafeReadU32((const void*)((uintptr_t)country + 0x2648 + 0x14), &vec_cnt) || vec_cnt == 0) {
+    if (!SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 8), &vec_ptr) || !vec_ptr ||
+        !SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 0x14), &vec_cnt) || vec_cnt == 0) {
         return result;
     }
 
@@ -313,8 +313,8 @@ bool FleetManager::ReinforceFleet(uint32_t fleet_id, std::string& out_message) {
     if (country) {
         void* vec_ptr = nullptr;
         uint32_t vec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)country + 0x2648 + 8), &vec_ptr) && vec_ptr &&
-            SafeReadU32((const void*)((uintptr_t)country + 0x2648 + 0x14), &vec_cnt)) {
+        if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 8), &vec_ptr) && vec_ptr &&
+            SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 0x14), &vec_cnt)) {
             for (uint32_t i = 0; i < vec_cnt; ++i) {
                 uint32_t tid = 0;
                 if (SafeReadU32((const void*)((uintptr_t)vec_ptr + i * 4), &tid)) {
@@ -353,8 +353,8 @@ bool FleetManager::SetFleetTemplateQuota(uint32_t fleet_id, uint32_t design_id, 
     if (country) {
         void* vec_ptr = nullptr;
         uint32_t vec_cnt = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)country + 0x2648 + 8), &vec_ptr) && vec_ptr &&
-            SafeReadU32((const void*)((uintptr_t)country + 0x2648 + 0x14), &vec_cnt)) {
+        if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 8), &vec_ptr) && vec_ptr &&
+            SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::fleet_template_manager + 0x8 + 0x14), &vec_cnt)) {
             for (uint32_t i = 0; i < vec_cnt; ++i) {
                 uint32_t tid = 0;
                 if (SafeReadU32((const void*)((uintptr_t)vec_ptr + i * 4), &tid)) {

@@ -86,7 +86,7 @@ void* TechManager::GetPlayerCountry() {
 void* TechManager::GetTechManagerPtr() {
     void* country = GetPlayerCountry();
     if (!country) return nullptr;
-    return (void*)((uintptr_t)country + 0x16E0);
+    return (void*)((uintptr_t)country + sdk::ent::CCountry::tech_status);
 }
 
 std::string TechManager::ExtractTechKey(void* tech_ptr) {

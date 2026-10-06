@@ -1,5 +1,6 @@
 #include "contacts_manager.hpp"
 #include "game_state.hpp"
+#include "fleet_access.hpp"
 #include "sdk/stellaris_sdk.hpp"
 #include <windows.h>
 #include <cstring>
@@ -122,8 +123,10 @@ nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
 
     void* rel_arr = nullptr;
     uint32_t rel_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2C50), &rel_arr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x2C58), &rel_cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::relations_manager + 0x18), &rel_arr);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::relations_manager + 0x20), &rel_cnt);
+    uint32_t own_id = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)country + sdk::rt::CCountry_id), &own_id);
 
     std::string q_mode = mode;
     std::transform(q_mode.begin(), q_mode.end(), q_mode.begin(), ::tolower);
@@ -138,20 +141,24 @@ nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
         void* rel = nullptr;
         if (!SafeReadPtr((const void*)((uintptr_t)rel_arr + i * 8), &rel) || !rel) continue;
 
+        // a relation of this country (the array also holds unused, zeroed slots)
+        uint32_t rel_owner = 0xFFFFFFFF;
+        if (!SafeReadU32((const void*)((uintptr_t)rel + sdk::ent::CRelation::owner), &rel_owner) || rel_owner != own_id) continue;
         uint32_t other_ref = 0;
-        SafeReadU32((const void*)((uintptr_t)rel + 0x0C), &other_ref);
+        SafeReadU32((const void*)((uintptr_t)rel + sdk::ent::CRelation::country), &other_ref);
         uint32_t other_id = other_ref & 0xFFFFFF;
 
-        // Skip self (country 0)
-        if (other_id == 0 || other_id >= c_cap) continue;
+        // skip the player's own relation (any country id is valid, 0 included)
+        if (other_ref == own_id || other_id >= c_cap) continue;
 
         void* other_ptr = nullptr;
         if (!SafeReadPtr((const void*)((uintptr_t)carr + other_id * 16 + 8), &other_ptr) || !other_ptr) continue;
 
         uint8_t f0 = 0, f1 = 0, f2 = 0;
-        SafeReadU8((const void*)((uintptr_t)rel + 0x120), &f0);
-        SafeReadU8((const void*)((uintptr_t)rel + 0x121), &f1);
-        SafeReadU8((const void*)((uintptr_t)rel + 0x122), &f2);
+        // the relation's state bits (contact, communications, pacts ...) start at CRelation::contact
+        SafeReadU8((const void*)((uintptr_t)rel + sdk::ent::CRelation::contact), &f0);
+        SafeReadU8((const void*)((uintptr_t)rel + sdk::ent::CRelation::contact + 1), &f1);
+        SafeReadU8((const void*)((uintptr_t)rel + sdk::ent::CRelation::contact + 2), &f2);
 
         bool has_comm = (f0 & 0x08) != 0;
         bool has_contact = (f2 & 0x01) != 0;
@@ -159,22 +166,17 @@ nlohmann::json ContactsManager::GetContactsInfo(const std::string& mode) {
         bool res_pact = (f1 & 0x10) != 0;
         bool mig_pact = (f1 & 0x20) != 0;
 
-        // Read country name
+        // the empire's name as the game shows it (a generated name's key is a template such as
+        // %ADJECTIVE%, filled from its variables); name_key is that key
         std::string name_key;
-        SafeReadPdxString((const void*)((uintptr_t)other_ptr + 0x1538), name_key);
-        if (name_key.empty()) {
-            SafeReadPdxString((const void*)((uintptr_t)other_ptr + 0x1500), name_key);
-        }
-
-        std::string loc_name = LocalizeKey(name_key);
-        if (loc_name.empty()) {
-            loc_name = "Empire " + std::to_string(other_id);
-        }
+        SafeReadPdxString((const void*)((uintptr_t)other_ptr + sdk::ent::CCountry::name + 0x18), name_key);
+        std::string loc_name = PersistentNameText((const void*)((uintptr_t)other_ptr + sdk::ent::CCountry::name));
+        if (loc_name.empty()) loc_name = LocalizeKey(name_key);
 
         // Country type
         std::string country_type = "default";
         void* ct_ptr = nullptr;
-        if (SafeReadPtr((const void*)((uintptr_t)other_ptr + 0x1A0), &ct_ptr) && ct_ptr) {
+        if (SafeReadPtr((const void*)((uintptr_t)other_ptr + sdk::ent::CCountry::type), &ct_ptr) && ct_ptr) {
             std::string ct_key;
             SafeReadPdxString((const void*)((uintptr_t)ct_ptr + 0x20), ct_key);
             if (!ct_key.empty()) country_type = ct_key;
@@ -233,8 +235,10 @@ nlohmann::json ContactsManager::GetSummaryJson() {
 
     void* rel_arr = nullptr;
     uint32_t rel_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)country + 0x2C50), &rel_arr);
-    SafeReadU32((const void*)((uintptr_t)country + 0x2C58), &rel_cnt);
+    SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::relations_manager + 0x18), &rel_arr);
+    SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::relations_manager + 0x20), &rel_cnt);
+    uint32_t own_id = 0xFFFFFFFF;
+    SafeReadU32((const void*)((uintptr_t)country + sdk::rt::CCountry_id), &own_id);
 
     uint32_t known = 0;
     uint32_t pending = 0;
@@ -242,14 +246,17 @@ nlohmann::json ContactsManager::GetSummaryJson() {
         void* rel = nullptr;
         if (!SafeReadPtr((const void*)((uintptr_t)rel_arr + i * 8), &rel) || !rel) continue;
 
+        // a relation of this country (the array also holds unused, zeroed slots)
+        uint32_t rel_owner = 0xFFFFFFFF;
+        if (!SafeReadU32((const void*)((uintptr_t)rel + sdk::ent::CRelation::owner), &rel_owner) || rel_owner != own_id) continue;
         uint32_t other_ref = 0;
-        SafeReadU32((const void*)((uintptr_t)rel + 0x0C), &other_ref);
+        SafeReadU32((const void*)((uintptr_t)rel + sdk::ent::CRelation::country), &other_ref);
         uint32_t other_id = other_ref & 0xFFFFFF;
-        if (other_id == 0 || other_id >= c_cap) continue;
+        if (other_ref == own_id || other_id >= c_cap) continue;
 
         uint8_t f0 = 0, f2 = 0;
-        SafeReadU8((const void*)((uintptr_t)rel + 0x120), &f0);
-        SafeReadU8((const void*)((uintptr_t)rel + 0x122), &f2);
+        SafeReadU8((const void*)((uintptr_t)rel + sdk::ent::CRelation::contact), &f0);
+        SafeReadU8((const void*)((uintptr_t)rel + sdk::ent::CRelation::contact + 2), &f2);
 
         if (f0 & 0x08) {
             known++;
