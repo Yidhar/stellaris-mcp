@@ -176,7 +176,7 @@ plugins\stellaris-mcp\
 .\scripts\build.ps1                                   # -> build/stellaris_bridge/Release/stellaris_bridge.dll
 cd stellaris_mcp_server; npm install; npm run build; cd ..
 python scripts/make_plugin.py --with-deps             # -> build/plugin/stellaris-mcp（--zip <文件> 同时打包）
-D:\stellaris-Launcher\target\release\stl.exe plugin install build/plugin/stellaris-mcp
+stl plugin install build/plugin/stellaris-mcp                # 启动器的命令行
 ```
 
 开发时可用 `scripts/` 里的 `reload_dll.py`、`build_and_reload.py` 手动把新构建的 DLL 注入正在运行的游戏；此时 `config\` 和 `logs\` 位于构建输出目录旁。

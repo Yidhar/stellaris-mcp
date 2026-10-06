@@ -9,7 +9,7 @@ into any other build.
 
 ## Install
 
-The plugin is loaded by the **Stellaris launcher** (`D:\stellaris-Launcher`, `stl`) and nothing else.
+The plugin is loaded by the **[Stellaris launcher](https://github.com/Yidhar/stellaris-Launcher)** (`stl`) and nothing else.
 
 1. Install it with the launcher's Plugins page (*Install plugin*), or `stl plugin install <folder>`, or unpack this
    zip into `Documents\Paradox Interactive\Stellaris\plugins\stellaris-mcp\`.

@@ -8,7 +8,7 @@
   "game": { "exe_timestamps": ["0x6ABEAA3F"] },
   "load": { "wait": "window", "delay_ms": 1500 },
   "config": [
-    { "file": "stellaris_mcp.ini", "default": "defaults/stellaris_mcp.ini", "title": "Stellaris MCP", "substitute": true }
+    { "file": "stellaris_mcp.ini", "default": "defaults/stellaris_mcp.ini", "title": "Stellaris MCP", "substitute": false }
   ],
   "update": { "github": "Yidhar/stellaris-mcp", "asset": "stellaris-mcp-*.zip" },
   "homepage": "https://github.com/Yidhar/stellaris-mcp"

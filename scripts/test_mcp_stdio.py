@@ -4,10 +4,12 @@
 import subprocess
 import json
 import sys
+from pathlib import Path
 
 def main():
     # the server to test: an argument (e.g. an installed plugin's mcp-server\dist\index.js), else the repo build
-    cmd = ["node", sys.argv[1] if len(sys.argv) > 1 else "d:/stellarismcp/stellaris_mcp_server/dist/index.js"]
+    repo_build = Path(__file__).resolve().parent.parent / "stellaris_mcp_server" / "dist" / "index.js"
+    cmd = ["node", sys.argv[1] if len(sys.argv) > 1 else str(repo_build)]
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,

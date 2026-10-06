@@ -59,3 +59,4 @@ disasm_cmd.py
 tools/sdk_dumper/out/*
 !tools/sdk_dumper/out/linux_index.json
 !tools/sdk_dumper/out/linux_classes.json
+/logs/

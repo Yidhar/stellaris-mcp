@@ -180,7 +180,7 @@ re-reads it within a couple of seconds while the game runs. Without the file it 
 .\scripts\build.ps1                                   # -> build/stellaris_bridge/Release/stellaris_bridge.dll
 cd stellaris_mcp_server; npm install; npm run build; cd ..
 python scripts/make_plugin.py --with-deps             # -> build/plugin/stellaris-mcp (--zip <file> for a zip)
-D:\stellaris-Launcher\target\release\stl.exe plugin install build/plugin/stellaris-mcp
+stl plugin install build/plugin/stellaris-mcp                # the launcher's command line
 ```
 
 During development the scripts in `scripts/` (`reload_dll.py`, `build_and_reload.py`) inject the freshly built DLL by

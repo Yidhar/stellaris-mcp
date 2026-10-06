@@ -15,7 +15,7 @@ stellaris.exe build the SDK was generated for.
 
 Usage:
     python scripts/make_plugin.py [--out DIR] [--version 0.5.0] [--zip FILE] [--dll PATH]
-    D:\\stellaris-Launcher\\target\\release\\stl.exe plugin install build/plugin/stellaris-mcp
+    stl plugin install build/plugin/stellaris-mcp     (the Stellaris launcher's command line)
 """
 import argparse
 import hashlib

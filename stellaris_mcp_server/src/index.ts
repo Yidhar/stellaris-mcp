@@ -3,10 +3,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { PipeClient } from "./pipe_client.js";
 import { registerTools } from "./tools.js";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// <plugin folder>\logs\mcp_server.log beside the bridge's log (this file is mcp-server\dist\index.js);
+// in the repository that is <repo>\logs\
+const LOG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "logs");
 
 function log(msg: string) {
   try {
-    fs.appendFileSync("d:/stellarismcp/mcp_server.log", `[${new Date().toISOString()}] ${msg}\n`);
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(path.join(LOG_DIR, "mcp_server.log"), `[${new Date().toISOString()}] ${msg}\n`);
   } catch {}
 }
 
