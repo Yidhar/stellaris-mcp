@@ -968,7 +968,7 @@ FUNCTIONS = {
     },
     # --- the engine's own Dear ImGui 1.85 (Windows only: DX11 + Win32 backends). A plugin compiles its own copy of
     # ImGui, points GImGui (anchors.py) at the engine's context and draws after the engine's NewFrame
-    # (docs/gui_imgui_feasibility.md; the guidll plugin, repository Yidhar/guidll, is the reference user)
+    # (docs/gui_imgui_feasibility.md; the stellaris-guiexpand plugin, repository Yidhar/stellaris-guiexpand, is the reference user)
     "ImGui_NewFrame": {
         "linux": "ImGui::NewFrame()",
         "signature": "void (*)()",

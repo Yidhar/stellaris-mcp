@@ -2,13 +2,13 @@
 
 状态标记：✅ 在运行中的游戏里实测 / 读到了反汇编；⚠ 推断或没验证。
 前置阅读：`gui_native_system.md` §3.3（本地化命令与 scope）、`gui_plugin_api_investigation.md` §5.3 的 T2。
-代码：guidll 仓库（`Yidhar/guidll`）的 `src/loc.cpp`、`src/core.cpp`；测试内容在 `Yidhar/guidll-test-mod`。
+代码：stellaris-guiexpand 仓库（`Yidhar/stellaris-guiexpand`）的 `src/loc.cpp`、`src/core.cpp`；测试内容在 `Yidhar/stellaris-guiexpand-test-mod`。
 
 ## 0. 结论
 
 **做成了，而且只需要调引擎的一个函数。** 宿主把一段带 `[Root.xxx]` 的本地化文字连同玩家国家的 `CEventScope` 交给 `CGameText::ProcessWithScope`，引擎自己求值。不用解析变量、不用读旗标、不用钩任何东西。
 
-1. ✅ **三种"脚本算出的值"都能显示**：存下来的变量（`[Root.guidll_test_counter]`）、带触发器的 `scripted_loc`（`[Root.GuidllTestFlag]`）、脚本值（`scripted_loc` 里 `value = value:xxx`，`[Root.GuidllTestValue]`），以及引擎自带的命令（`[Root.GetName]`）。值随脚本状态变化：计数器按三次 `+1` 变成 3；设置国家旗标后脚本值从 10 变成 15，旗标文字从"未设置"变成"已设置"。
+1. ✅ **三种"脚本算出的值"都能显示**：存下来的变量（`[Root.guiexpand_test_counter]`）、带触发器的 `scripted_loc`（`[Root.GuiexpandTestFlag]`）、脚本值（`scripted_loc` 里 `value = value:xxx`，`[Root.GuiexpandTestValue]`），以及引擎自带的命令（`[Root.GetName]`）。值随脚本状态变化：计数器按三次 `+1` 变成 3；设置国家旗标后脚本值从 10 变成 15，旗标文字从"未设置"变成"已设置"。
 2. ✅ **函数的 Windows 地址由 dumper 的指纹找到**（不是手写）：`CGameText_ProcessWithScope = 0x5E9350`，`CGameText_ctor = 0x5E4A60`。指纹见 `tools/sdk_dumper/CHANGELOG.md`。
 3. ✅ **便宜**：一次求值 0.5–2 微秒（含造 scope 和释放；一句带四个引用的话 2.1 微秒）。整个声明面板每帧平均 60 微秒。
 4. ✅ **对 mod 作者没有新语法**：声明面板的所有文字元素（`text`、`label`、按钮文字、`badge` 的两句）本来就是 loc 键，现在里面写 `[Root.xxx]` 就行。对插件开发者是接口里追加的 `localize(key, out, cap)`。
@@ -53,17 +53,17 @@ return 结果
 
 ## 4. 实测记录
 
-测试 mod 在 `Yidhar/guidll-test-mod`（`common/scripted_loc`、`common/script_values`、`button_effects` 里的 `guidll_test_bump_counter`），存档 `fmbase`，Stellaris 4.5.2。
+测试 mod 在 `Yidhar/stellaris-guiexpand-test-mod`（`common/scripted_loc`、`common/script_values`、`button_effects` 里的 `guiexpand_test_bump_counter`），存档 `fmbase`，Stellaris 4.5.2。
 
 | # | 做了什么 | 结果 |
 |---|---|---|
-| E27 | 对字面文字求值：`Empire: [Root.GetName]`、`[Root.GuidllTestValue]`、`[Root.guidll_test_counter]`（变量还不存在）、没有标记的普通文字 | `Empire: 夜泊技术官僚国`；`10`（基础值，旗标未设）；空串（变量不存在）；普通文字原样 ✅ |
-| E28 | 三次 `post guidll_test_bump_counter`（经按钮通道），再求值 `[Root.guidll_test_counter]` | `3` ✅ |
-| E29 | `post guidll_test_set_mark`，再求值 `[Root.GuidllTestValue]`、`[Root.GuidllTestFlag]` | `15`（`base 10` + 旗标的 `modifier add 5`）；旗标文字由"未设置"变"已设置" ✅ |
-| E30 | 声明面板里的文字（`text = { text = GUIDLL_TEST_SC_COUNTER }` 等）| 面板显示"帝国：夜泊技术官僚国""计数器（存下来的变量）：3""旗标（scripted_loc）：已设置""脚本值：15"，按钮"计数器加 1" ✅（截图：guidll 仓库的 `docs/images/scoped_panel.png`） |
-| E31 | 一次求值的耗时（200 次取平均，含造 scope、造 CString、求值、释放） | `[Root.GetName]` 0.5 微秒；`[Root.GuidllTestValue]` 0.7 微秒；四个引用的一句话 2.1 微秒 ✅ |
+| E27 | 对字面文字求值：`Empire: [Root.GetName]`、`[Root.GuiexpandTestValue]`、`[Root.guiexpand_test_counter]`（变量还不存在）、没有标记的普通文字 | `Empire: 夜泊技术官僚国`；`10`（基础值，旗标未设）；空串（变量不存在）；普通文字原样 ✅ |
+| E28 | 三次 `post guiexpand_test_bump_counter`（经按钮通道），再求值 `[Root.guiexpand_test_counter]` | `3` ✅ |
+| E29 | `post guiexpand_test_set_mark`，再求值 `[Root.GuiexpandTestValue]`、`[Root.GuiexpandTestFlag]` | `15`（`base 10` + 旗标的 `modifier add 5`）；旗标文字由"未设置"变"已设置" ✅ |
+| E30 | 声明面板里的文字（`text = { text = GUIEXPAND_TEST_SC_COUNTER }` 等）| 面板显示"帝国：夜泊技术官僚国""计数器（存下来的变量）：3""旗标（scripted_loc）：已设置""脚本值：15"，按钮"计数器加 1" ✅（截图：stellaris-guiexpand 仓库的 `docs/images/scoped_panel.png`） |
+| E31 | 一次求值的耗时（200 次取平均，含造 scope、造 CString、求值、释放） | `[Root.GetName]` 0.5 微秒；`[Root.GuiexpandTestValue]` 0.7 微秒；四个引用的一句话 2.1 微秒 ✅ |
 | E32 | 整个声明面板的每帧分发耗时（含求值） | 平均 60 微秒 / 帧 ✅ |
-| E34 | **暂停状态下**再 `post guidll_test_bump_counter`（游戏日期不动），再求值计数器 | `3 → 4`：按钮效果在暂停时也执行，投递后的快照刷新会重新求值 ✅ |
+| E34 | **暂停状态下**再 `post guiexpand_test_bump_counter`（游戏日期不动），再求值计数器 | `3 → 4`：按钮效果在暂停时也执行，投递后的快照刷新会重新求值 ✅ |
 | E33 | 宿主在运行的游戏里热替换（卸载旧的、注入新的）三次（开发用的 `dev_unload`） | 日志里每次都是 `imgui off/on` 重建上下文、字体加入图集（"fonts ours"），之后探针和面板求值照常工作；只有第二次之后截了图 ✅ |
 
 ## 5. 踩到的坑
@@ -88,14 +88,14 @@ return 结果
 | 直接读变量而不经本地化 | 不需要。引擎的 `ProcessVariables<T>`（Linux 行 392492）读的是同一份数据 |
 | 想要数值而不是文字 | 目前拿到的是格式化后的字符串（`15`、`3`）。要数值得自己解析，或者让 mod 用 `scripted_loc` 输出格式化好的文字。⚠ 如果以后要画图（进度条）需要数值，再研究 `value:` 的直接求值 |
 
-## 7. 对 guidll 的影响
+## 7. 对 stellaris-guiexpand 的影响
 
 - 声明面板：`text`、`label`、按钮文字、`badge` 的两句都用 `LocScoped`，mod 作者的 loc 文件里写 `[Root.xxx]` 即可（`docs/mod-authors.md` 新增"显示脚本算出的值"）。
 - 插件接口：`StlGuiApi` 追加 `localize(key, out, cap)`（`docs/developers.md`）。追加成员不改变 API 版本。
-- `tools/live/guidll_test.py` 和宿主的开发命令 `loc <键>` / `scoped <文字>` / `scopedbench <文字>`。
+- `tools/live/guiexpand_test.py` 和宿主的开发命令 `loc <键>` / `scoped <文字>` / `scopedbench <文字>`。
 
 ## 8. 复验（游戏更新后）
 
 1. `python tools/sdk_dumper/dump.py`：`CGameText_ctor`、`CGameText_ProcessWithScope` 各自唯一命中；`validate.py --addresses` 对没有手工表的新版本会跳过。
-2. 在 guidll 里 `python tools/extract_sdk.py <新头文件>` 重新生成子集，重新编译。
+2. 在 stellaris-guiexpand 里 `python tools/extract_sdk.py <新头文件>` 重新生成子集，重新编译。
 3. 游戏里装测试 mod，`scoped [Root.GetName]` 应该得到国家名。

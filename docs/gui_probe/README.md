@@ -13,10 +13,10 @@
 
 | 原来在这里 | 现在在 |
 |---|---|
-| `showcase/showcase.cpp`（宿主、指挥甲板）、`showcase/gen_ui_glyphs.py` | **`Yidhar/guidll`**：`src/`、`tools/gen_ui_glyphs.py` |
-| `api_proto/stellaris_gui_*.h*`（公共接口） | `Yidhar/guidll`：`include/guidll/` |
-| `api_proto/consumer_a.cpp`、`consumer_b.c` | `Yidhar/guidll`：`examples/` |
-| `showcase/mod/zz_gui_showcase/` | **`Yidhar/guidll-test-mod`**（effect 和 loc 键改名为 `guidll_test_*`） |
-| `showcase/live/showcase_test.py` | `Yidhar/guidll`：`tools/live/guidll_test.py` |
+| `showcase/showcase.cpp`（宿主、指挥甲板）、`showcase/gen_ui_glyphs.py` | **`Yidhar/stellaris-guiexpand`**：`src/`、`tools/gen_ui_glyphs.py` |
+| `api_proto/stellaris_gui_*.h*`（公共接口） | `Yidhar/stellaris-guiexpand`：`include/stellaris_guiexpand/` |
+| `api_proto/consumer_a.cpp`、`consumer_b.c` | `Yidhar/stellaris-guiexpand`：`examples/` |
+| `showcase/mod/zz_gui_showcase/` | **`Yidhar/stellaris-guiexpand-test-mod`**（effect 和 loc 键改名为 `guiexpand_test_*`） |
+| `showcase/live/showcase_test.py` | `Yidhar/stellaris-guiexpand`：`tools/live/guiexpand_test.py` |
 
 要看迁出前的原型：`git show 6b5aa58:docs/gui_probe/showcase/showcase.cpp`（该提交是迁出前的最后状态）。

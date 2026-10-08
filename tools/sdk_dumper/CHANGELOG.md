@@ -6,7 +6,7 @@
 
 ### 为什么
 
-guidll 的声明面板要显示"脚本算出来的数值"（存下来的变量、`scripted_loc`、脚本值）。游戏原生界面的做法是在本地化文字里写 `[Root.xxx]`，由引擎带着 `CEventScope` 求值，所以宿主需要直接调引擎的"带作用域的本地化"。研究和结论见 `docs/gui_scoped_localisation.md`。
+stellaris-guiexpand 的声明面板要显示"脚本算出来的数值"（存下来的变量、`scripted_loc`、脚本值）。游戏原生界面的做法是在本地化文字里写 `[Root.xxx]`，由引擎带着 `CEventScope` 求值，所以宿主需要直接调引擎的"带作用域的本地化"。研究和结论见 `docs/gui_scoped_localisation.md`。
 
 ### 改了什么
 
@@ -25,7 +25,7 @@ guidll 的声明面板要显示"脚本算出来的数值"（存下来的变量�
 ### 怎么验证的
 
 - `functions.py` 两条各唯一命中；`validate.py --addresses`：14 个全部吻合。
-- 手工反汇编 `0x5E9350`（调用序列和参数，见 `docs/gui_scoped_localisation.md` §2），再用 guidll 在游戏里调用：`[Root.GetName]` 求出国家名，变量、`scripted_loc`、脚本值都随脚本状态变化（E27–E33）。
+- 手工反汇编 `0x5E9350`（调用序列和参数，见 `docs/gui_scoped_localisation.md` §2），再用 stellaris-guiexpand 在游戏里调用：`[Root.GetName]` 求出国家名，变量、`scripted_loc`、脚本值都随脚本状态变化（E27–E33）。
 
 ### 生成的头文件有什么变化
 
@@ -35,7 +35,7 @@ guidll 的声明面板要显示"脚本算出来的数值"（存下来的变量�
 
 ### 为什么
 
-`docs/gui_imgui_feasibility.md` 的研究表明引擎里编译进了完整的 Dear ImGui 1.85，插件可以把自己的界面画进引擎的上下文。展示 DLL（当时在 `docs/gui_probe/showcase/`，现在是 `Yidhar/guidll` 仓库）当时用的是手工找到的 7 个内部地址（`GImGui`、分配器三个全局、`ImGui::NewFrame`、`NImGuiWrapper::ImGuiInit`）写死在源码里，游戏一更新就失效。项目规则（`CLAUDE.md`）是地址由 dumper 生成、不手写，所以把它们改成指纹，并顺手把"引擎 ImGui 与插件自带 ImGui 的布局是否一致"的守卫所需的常量也读出来。
+`docs/gui_imgui_feasibility.md` 的研究表明引擎里编译进了完整的 Dear ImGui 1.85，插件可以把自己的界面画进引擎的上下文。展示 DLL（当时在 `docs/gui_probe/showcase/`，现在是 `Yidhar/stellaris-guiexpand` 仓库）当时用的是手工找到的 7 个内部地址（`GImGui`、分配器三个全局、`ImGui::NewFrame`、`NImGuiWrapper::ImGuiInit`）写死在源码里，游戏一更新就失效。项目规则（`CLAUDE.md`）是地址由 dumper 生成、不手写，所以把它们改成指纹，并顺手把"引擎 ImGui 与插件自带 ImGui 的布局是否一致"的守卫所需的常量也读出来。
 
 ### 改了什么
 

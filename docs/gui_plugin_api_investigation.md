@@ -10,15 +10,15 @@
 
 | 仓库 | 内容 |
 |---|---|
-| **`Yidhar/guidll`** | 宿主插件（插件 id 和 DLL 名 `guidll`）、公共 C 接口、两个示例插件、声明面板、参考皮肤、文档、CI。`main` 目前只有 GitHub 生成的 README / LICENSE，代码在草稿 PR #1（分支 `initial-import`），合并后才有 |
-| **`Yidhar/guidll-test-mod`** | 测试 mod：一个声明面板、四个 button effect、中英文 loc、安装脚本、静态检查。同样在草稿 PR #1 |
+| **`Yidhar/stellaris-guiexpand`** | 宿主插件（插件 id 和 DLL 名 `stellaris-guiexpand`）、公共 C 接口、两个示例插件、声明面板、参考皮肤、文档、CI。`main` 目前只有 GitHub 生成的 README / LICENSE，代码在草稿 PR #1（分支 `initial-import`），合并后才有 |
+| **`Yidhar/stellaris-guiexpand-test-mod`** | 测试 mod：一个声明面板、四个 button effect、中英文 loc、安装脚本、静态检查。同样在草稿 PR #1 |
 
-对 §10 的决定：
+对 §10 的决定（项目最初叫 `guidll`，2026-10-08 在第一次发布前改名为 `stellaris-guiexpand`，仓库、插件 id、DLL、测试 mod 的键都随之改了；本文其余地方和 git 历史里可能还有旧名）：
 
 | 项 | 做法 |
 |---|---|
-| 1 仓库名、账号、许可 | `Yidhar/guidll`，MIT（头文件同样 MIT） |
-| 2 插件 id 和 DLL 名 | `guidll` / `guidll.dll`（没有用建议的 `stellaris-gui`）；接口前缀 `Stl` / `STL_` 和导出函数 `StlGui_GetApi` 不变 |
+| 1 仓库名、账号、许可 | `Yidhar/stellaris-guiexpand`，MIT（头文件同样 MIT） |
+| 2 插件 id 和 DLL 名 | `stellaris-guiexpand` / `stellaris_guiexpand.dll`（没有用建议的 `stellaris-gui`）；接口前缀 `Stl` / `STL_` 和导出函数 `StlGui_GetApi` 不变 |
 | 3 声明文件夹 | 沿用 `interface/stl_gui/*.txt` |
 | 4 指挥甲板 | **没有拆出**：留在宿主里作为可关闭的参考皮肤（`deck = 0`）。拆成独立消费方插件仍然是更干净的做法，**待你决定** |
 | 5 启动器的加载顺序提示 | 没做；接口本来就不依赖加载顺序 |
@@ -26,7 +26,7 @@
 
 **之后做了 T2（作用域本地化）**：`[Root.xxx]` 现在在声明面板的所有文字里生效；接口追加了 `localize`。研究记录是 `gui_scoped_localisation.md`；dumper 多了两条指纹（`CGameText_ctor`、`CGameText_ProcessWithScope`，见 `tools/sdk_dumper/CHANGELOG.md`）。
 
-迁移时的改动：日志、设置和开发用的命令文件放进插件文件夹（`logs\`、`config\guidll.ini`），不再放在 DLL 旁边；演示用的 effect 改名 `guidll_test_*`，由测试 mod 提供；面板注册表用选项（标题是不是 loc 键、窗口大小）代替对"声明面板"的硬编码。迁移后在游戏里重新验证过（两种注入顺序、四个 effect、故障隔离含三次故障后停用、布局核对、宿主卸载、启动器接受清单）；没有重跑的是"留下没配对的 ImGui 栈"和"不注销就卸载"两项（原型里验证过，代码未改）。
+迁移时的改动：日志、设置和开发用的命令文件放进插件文件夹（`logs\`、`config\stellaris_guiexpand.ini`），不再放在 DLL 旁边；演示用的 effect 改名 `guiexpand_test_*`，由测试 mod 提供；面板注册表用选项（标题是不是 loc 键、窗口大小）代替对"声明面板"的硬编码。迁移后在游戏里重新验证过（两种注入顺序、四个 effect、故障隔离含三次故障后停用、布局核对、宿主卸载、启动器接受清单）；没有重跑的是"留下没配对的 ImGui 栈"和"不注销就卸载"两项（原型里验证过，代码未改）。
 
 ## 0. 结论
 

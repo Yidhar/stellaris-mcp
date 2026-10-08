@@ -130,7 +130,7 @@
 
 ## 7. 探针（可丢弃的验证代码）
 
-位置：`docs/gui_probe/`（`poc.cpp`、`CMakeLists.txt`），实时测试脚本在 `docs/gui_probe/live/`。RVA 写死了，只适用于 4.5.2，**不是产品代码**。注意 `poc.cpp` 的自启动用的是 Present vtable 槽位钩子，在装了 Steam 叠加层 + 别的槽位钩子的环境里会爆栈（§9 E11）；更完整、没有这个问题的实现是 §9.2 的展示 DLL，后来整理成独立仓库 **`Yidhar/guidll`**（私有；见 `gui_plugin_api_investigation.md` 的"实现状态"）。
+位置：`docs/gui_probe/`（`poc.cpp`、`CMakeLists.txt`），实时测试脚本在 `docs/gui_probe/live/`。RVA 写死了，只适用于 4.5.2，**不是产品代码**。注意 `poc.cpp` 的自启动用的是 Present vtable 槽位钩子，在装了 Steam 叠加层 + 别的槽位钩子的环境里会爆栈（§9 E11）；更完整、没有这个问题的实现是 §9.2 的展示 DLL，后来整理成独立仓库 **`Yidhar/stellaris-guiexpand`**（私有；见 `gui_plugin_api_investigation.md` 的"实现状态"）。
 
 - 构建：ImGui v1.85 源码放在上一级的 `imgui185/`（`git clone --depth 1 --branch v1.85 https://github.com/ocornut/imgui.git imgui185`，`CMakeLists.txt` 里的 `IMGUI_DIR` 指向 `../imgui185`，按需修改），MinHook v1.3.4 由 CMake 获取；`cmake -S . -B build -G "Visual Studio 17 2022" -A x64` 然后 `cmake --build build --config Release`。
 - 使用：`stl inject <gui_poc.dll>`；游戏进入后约 10 秒自动启动引擎 ImGui，面板出现；卸载：设置事件 `Local\gui_poc_unload_<pid>`（`live/poc_unload.py`）。
@@ -157,7 +157,7 @@
 
 ### 9.2 展示 DLL
 
-**代码已迁到 `Yidhar/guidll`（`src/deck.cpp` 是这里描述的界面，`src/imgui_host.cpp` 是钩子和字体）；本仓库不再保留，需要原型时用 `git show 6b5aa58:docs/gui_probe/showcase/showcase.cpp`。** 下面是当时的记录，文件名和 `zz_gui_*` 是原型里的。
+**代码已迁到 `Yidhar/stellaris-guiexpand`（`src/deck.cpp` 是这里描述的界面，`src/imgui_host.cpp` 是钩子和字体）；本仓库不再保留，需要原型时用 `git show 6b5aa58:docs/gui_probe/showcase/showcase.cpp`。** 下面是当时的记录，文件名和 `zz_gui_*` 是原型里的。
 
 一个和原版界面完全不同风格的自定义面板，真实读写游戏：
 
@@ -166,8 +166,8 @@
 - 自绘：渐变面板、发光、星空与流星，图标全部由 `ImDrawList` 图元画出（没有图标字体），环形仪表 / 雷达 / 面积图用顶点色渐变。字体：Segoe UI + 微软雅黑（CJK 合并）+ Bahnschrift（数字）。
 - 数据：只在 tick 之间取快照；国家名用引擎的 `CPersistentName::BuildString`；资源从 `CCountry` 的预算 / 库存数组读（同桥接器）。
 
-截图：`docs/gui_probe/showcase/screenshots/`（留在这里）。构建与运行见 guidll 仓库的 `README.md`。
+截图：`docs/gui_probe/showcase/screenshots/`（留在这里）。构建与运行见 stellaris-guiexpand 仓库的 `README.md`。
 
 ### 9.3 下一步：做成公共接入点
 
-宿主对其他开发者（C 接口）和 mod 作者（声明语法）开放的调查、原型和实测（E16–E26）在 `gui_plugin_api_investigation.md`；接口头文件、示例插件、宿主、测试 mod 现在分别在 `Yidhar/guidll` 和 `Yidhar/guidll-test-mod`。
+宿主对其他开发者（C 接口）和 mod 作者（声明语法）开放的调查、原型和实测（E16–E26）在 `gui_plugin_api_investigation.md`；接口头文件、示例插件、宿主、测试 mod 现在分别在 `Yidhar/stellaris-guiexpand` 和 `Yidhar/stellaris-guiexpand-test-mod`。

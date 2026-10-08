@@ -49,7 +49,7 @@ Check `sdk::kExeTimestamp` against the running exe's PE `TimeDateStamp` at start
 to dispatch commands when they differ.
 
 A plugin that draws into the engine's own Dear ImGui (the exe ships 1.85; `docs/gui_imgui_feasibility.md`,
-reference user: `src/imgui_host.cpp` in the guidll repository, `Yidhar/guidll`) takes everything from the header: the context
+reference user: `src/imgui_host.cpp` in the stellaris-guiexpand repository, `Yidhar/stellaris-guiexpand`) takes everything from the header: the context
 pointer `*(ImGuiContext**)(base + sdk::glob::GImGui)`, the allocator pair for
 `ImGui::SetAllocatorFunctions`, the functions to hook (`sdk::fn::ImGui_NewFrame`,
 `NImGuiWrapper_ImGuiInit`), and layout constants to check its own copy of ImGui against at build time:
