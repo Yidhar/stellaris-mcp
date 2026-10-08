@@ -1,0 +1,38 @@
+# Button effects fired from the ImGui showcase (docs/gui_probe/showcase), not from any .gui file.
+# The DLL builds a CExecuteButtonEffectCommand for the player country (This = From = the player country).
+
+zz_gui_grant_energy = {
+	potential = { always = yes }
+	allow = { always = yes }
+	effect = {
+		add_resource = { energy = 100 }
+		log = "zz_gui_showcase: zz_gui_grant_energy executed"
+	}
+}
+
+zz_gui_set_mark = {
+	potential = { always = yes }
+	allow = { NOT = { has_country_flag = zz_gui_marked } }
+	effect = {
+		set_country_flag = zz_gui_marked
+		log = "zz_gui_showcase: zz_gui_set_mark executed"
+	}
+}
+
+zz_gui_clear_mark = {
+	potential = { always = yes }
+	allow = { has_country_flag = zz_gui_marked }
+	effect = {
+		remove_country_flag = zz_gui_marked
+		log = "zz_gui_showcase: zz_gui_clear_mark executed"
+	}
+}
+
+# Needs far more alloys than any test save has: shows how the engine's own allow check is reported back to the UI.
+zz_gui_rich_only = {
+	potential = { always = yes }
+	allow = { has_resource = { type = alloys amount >= 1000000 } }
+	effect = {
+		add_resource = { unity = 1000 }
+	}
+}

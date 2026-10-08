@@ -45,6 +45,7 @@ mcp_server.log
 stellaris_bridge.log
 screen.png
 *.png
+!docs/gui_probe/showcase/screenshots/*.png
 scripts/*.png
 scripts/status_icons/
 scripts/*.json
