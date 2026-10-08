@@ -2,6 +2,35 @@
 
 每次改 `tools/sdk_dumper` 的规则（新增指纹、改启发式、改输出）都在这里记一笔：改了什么、为什么、怎么验证的、生成的头文件有什么变化。游戏补丁后单纯重新 dump 不用记。最新的在最上面。
 
+## 2026-10-08：作用域本地化的定位规则（Stellaris 4.5.2，exe 时间戳 `0x6ABEAA3F`）
+
+### 为什么
+
+guidll 的声明面板要显示"脚本算出来的数值"（存下来的变量、`scripted_loc`、脚本值）。游戏原生界面的做法是在本地化文字里写 `[Root.xxx]`，由引擎带着 `CEventScope` 求值，所以宿主需要直接调引擎的"带作用域的本地化"。研究和结论见 `docs/gui_scoped_localisation.md`。
+
+### 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `functions.py` | `caller_of` 新增两个可选过滤：`calls`（函数体里 `call rel32` 的个数必须恰好是这个数）和 `copies_args`（开头 14 条指令里这些参数寄存器必须被复制到别的寄存器）。新增 2 条指纹，见下表。 |
+| `validate.py` | `ADDRESS_TRUTH` 加入这两个函数的手工核对值。 |
+
+新增的函数指纹（`sdk::fn`）：
+
+| 名字 | 指纹 | 4.5.2 的 RVA |
+|---|---|---|
+| `CGameText_ctor` | 开头依次是 `lea rax,[vtable]`、`mov [rcx],rax`、`mov dword [rcx+8],0x31`、`mov dword [rcx+0x190],0x31`（49 种 scope 类型的个数）。Linux 版把构造函数内联进每个使用者，Windows 版没有，所以它有 200 个调用者 | `0x5E4A60` |
+| `CGameText_ProcessWithScope` | `CGameText_ctor` 的调用者里，函数体恰好有 4 个直接调用（构造函数、处理表填充、`CTextBase::ProcessString`、一个析构），且开头把 `rcx`、`rdx`、`r8` 都复制走。其余 199 个调用者调用更多，或者不复制全部三个参数 | `0x5E9350` |
+
+### 怎么验证的
+
+- `functions.py` 两条各唯一命中；`validate.py --addresses`：14 个全部吻合。
+- 手工反汇编 `0x5E9350`（调用序列和参数，见 `docs/gui_scoped_localisation.md` §2），再用 guidll 在游戏里调用：`[Root.GetName]` 求出国家名，变量、`scripted_loc`、脚本值都随脚本状态变化（E27–E33）。
+
+### 生成的头文件有什么变化
+
+`sdk::fn` 多了 `CGameText_ctor`、`CGameText_ProcessWithScope`，没有别的变化。
+
 ## 2026-10-08：引擎自带 Dear ImGui 的定位规则（Stellaris 4.5.2，exe 时间戳 `0x6ABEAA3F`）
 
 ### 为什么

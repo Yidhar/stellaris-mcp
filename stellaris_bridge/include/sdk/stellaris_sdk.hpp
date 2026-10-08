@@ -621,6 +621,10 @@ namespace fn {
     inline constexpr uintptr_t CGameState_OnSavedGameStarted = 0x271950;
     // CGameState::MicroUpdate() -- the fleet parallel-for (CFleet::MicroUpdateParallel), split out on Windows  --  void (*)(void* game_state)
     inline constexpr uintptr_t CGameState_UpdateShipParallel = 0x2529C0;
+    // CGameText::ProcessWithScope(CString const&, CEventScope const&)  --  void* (*)(void* out_cstring, const void* text_cstring, const void* scope)
+    inline constexpr uintptr_t CGameText_ProcessWithScope = 0x5E9350;
+    // CGameText::CGameText()  --  void* (*)(void* game_text)  -- a ~0xA00-byte object; the loc processor with its 49 scope-type tables
+    inline constexpr uintptr_t CGameText_ctor = 0x5E4A60;
     // CGovernmentCivicType::IsPossible(SEthicGovernmentConfiguration const&, EModdableCivicCondition, CCountry const*, CString*) const  --  bool (*)(const void* civic, const void* config, uint16_t flags, const void* country, void* reason)
     inline constexpr uintptr_t CGovernmentCivicType_IsPossible = 0x533C50;
     // CHasFlagTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* trigger, void* scope)

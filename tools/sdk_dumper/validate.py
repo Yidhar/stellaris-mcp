@@ -50,7 +50,9 @@ SUBOBJECTS = {
 ADDRESS_TRUTH = {
     0x6ABEAA3F: {  # Stellaris 4.5.2 (docs/gui_imgui_feasibility.md section 1.1: the engine's Dear ImGui 1.85)
         "functions": {"ImGui_NewFrame": 0x1E9D240, "NImGuiWrapper_ImGuiNewFrame": 0x3345A0,
-                      "ImGui_ImplWin32_NewFrame": 0x1B28470, "NImGuiWrapper_ImGuiInit": 0x1B11090},
+                      "ImGui_ImplWin32_NewFrame": 0x1B28470, "NImGuiWrapper_ImGuiInit": 0x1B11090,
+                      # scoped localisation (docs/gui_scoped_localisation.md): found by disassembly, not by the fingerprint
+                      "CGameText_ctor": 0x5E4A60, "CGameText_ProcessWithScope": 0x5E9350},
         "globals": {"GImGui": 0x28E2D58, "GImAllocatorAllocFunc": 0x27FD320, "GImAllocatorFreeFunc": 0x27FD328,
                     "GImAllocatorUserData": 0x28E2D68},
         "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,

@@ -24,6 +24,8 @@
 | 5 启动器的加载顺序提示 | 没做；接口本来就不依赖加载顺序 |
 | 6 v1 元素集 | 不变（text / separator / spacer / date / value / gauge / stat / badge / button / row） |
 
+**之后做了 T2（作用域本地化）**：`[Root.xxx]` 现在在声明面板的所有文字里生效；接口追加了 `localize`。研究记录是 `gui_scoped_localisation.md`；dumper 多了两条指纹（`CGameText_ctor`、`CGameText_ProcessWithScope`，见 `tools/sdk_dumper/CHANGELOG.md`）。
+
 迁移时的改动：日志、设置和开发用的命令文件放进插件文件夹（`logs\`、`config\guidll.ini`），不再放在 DLL 旁边；演示用的 effect 改名 `guidll_test_*`，由测试 mod 提供；面板注册表用选项（标题是不是 loc 键、窗口大小）代替对"声明面板"的硬编码。迁移后在游戏里重新验证过（两种注入顺序、四个 effect、故障隔离含三次故障后停用、布局核对、宿主卸载、启动器接受清单）；没有重跑的是"留下没配对的 ImGui 栈"和"不注销就卸载"两项（原型里验证过，代码未改）。
 
 ## 0. 结论
@@ -39,7 +41,7 @@
 3. **自带 ImGui 的最大风险是配置不一致**（比如把 `ImDrawIdx` 改成 32 位，很常见）。✅ 宿主在回调上下文里带上引擎 ImGui 的类型大小，绑定辅助函数运行时比对，不一致就拒绝绘制并说明原因；实测一个 32 位索引的插件被拒绝，其余面板不受影响。
 4. **故障隔离是宿主的责任**。✅ 回调里的空指针访问被捕获、ImGui 的栈（窗口、分组、颜色、样式变量、字体）被复原；不注销就被卸载的插件被检测并摘除；三次故障后停用该面板。
 5. **mod 作者侧：Paradox 脚本语法的声明文件，放 `interface/stl_gui/*.txt`**。✅ 引擎对这个文件夹（以及 `common/stl_gui`、`gfx/stl_gui`）里的文件一个字都不记；`interface/` 和 `localisation/` 不参与多人校验，所以不影响多人兼容；这和 live2d 插件的做法一致（放在引擎不读的文件夹里，没有宿主时 mod 什么都不做）。
-6. **声明的数据绑定只用引擎自己求值的东西**：日期、资源、国家统计、`button_effect` 的可用状态与执行、loc 键。✅ 实测：声明文件 → 宿主 → 真实鼠标点击 → 引擎命令 → 状态联动。**mod 脚本里算出来的数值（变量、脚本值）现在还显示不了**，需要作用域本地化，路径见 §5.3，是下一步最重要的研究项。
+6. **声明的数据绑定只用引擎自己求值的东西**：日期、资源、国家统计、`button_effect` 的可用状态与执行、loc 键。✅ 实测：声明文件 → 宿主 → 真实鼠标点击 → 引擎命令 → 状态联动。**mod 脚本里算出来的数值（变量、`scripted_loc`、脚本值）当时还显示不了，后来做到了**：声明文字里写 `[Root.xxx]`，宿主把它和玩家国家的 `CEventScope` 交给引擎的 `CGameText::ProcessWithScope`，见 `gui_scoped_localisation.md`。
 7. **声明面板和插件面板走同一个注册表**：宿主自己的声明渲染器就是一个"消费方"，这样两条接入路径的行为（可见性、故障隔离、卸载处理）一致，不会各写一套。
 8. **开销**：4 个面板合计平均 **约 110 微秒/帧**（含它们自己生成控件的时间），约占一帧（~21 ms）的 0.5%。✅
 9. **没验证的**：多人下的行为（ImGui 是否可用、命令是否按预期同步）；`imgui off/on` 重启上下文时已连接的消费方（设计上每次回调都带最新的上下文指针，没单独测）；作用域本地化；字体里没有的生僻字。
@@ -207,7 +209,7 @@ panel = {
 |---|---|---|
 | T0 已实现并实测 | 日期；资源（库存 / 月净值 / 收入 / 支出 / 上限）；国家统计（殖民地、人口、帝国规模、军事 / 科技 / 经济力量）；`button_effect` 的可用状态与引擎生成的原因文字；按钮执行；loc 键 | ✅ |
 | T1 用现有手段能做 | **用 `button_effect` 当布尔查询**：mod 写一个 `effect = { }` 为空、`potential` / `allow` 里写任意触发器的 `button_effect`，面板用 `badge` 显示它是否成立，原因文字（引擎对触发器的描述）可以当提示。这样 mod 作者能把**任意触发器**（国家旗标、科技、事件目标……）显示出来，宿主不用解析旗标或变量 | ✅ 原型里的"国家旗标已设置 / 未设置" |
-| T2 需要研究 | **显示脚本算出的数值**（变量、脚本值、`scripted_loc`）。游戏原生 GUI 的做法是：先在 effect 里把值存进变量，再在本地化里写 `[Root.my_var]` 或 scripted_loc，由引擎在当前作用域里求值（`gui_native_system.md`：只能读已存的变量或 `scripted_loc` 的结果）。宿主需要"带作用域的本地化"：引擎里是 `CGameText::GenerateString(CString&, SStringToken const&, bool)`（Linux 反编译第 391523 行），作用域在 `CGameText` 对象内部而不在参数里，所以要构造或取得一个带玩家国家作用域的 `CGameText`（我们已经能构造玩家国家的 `CEventScope`，见 E13）；还要在 Windows exe 里给它加指纹。预计规模：中等，需要一次逆向 | ⚠ 没做，建议作为 M2 的第一项 |
+| T2 ✅ **已实现**（`gui_scoped_localisation.md`，只有玩家国家的 scope） | **显示脚本算出的数值**（变量、脚本值、`scripted_loc`）。下面是实现前的分析：游戏原生 GUI 的做法是：先在 effect 里把值存进变量，再在本地化里写 `[Root.my_var]` 或 scripted_loc，由引擎在当前作用域里求值（`gui_native_system.md`：只能读已存的变量或 `scripted_loc` 的结果）。宿主需要"带作用域的本地化"：引擎里是 `CGameText::GenerateString(CString&, SStringToken const&, bool)`（Linux 反编译第 391523 行），作用域在 `CGameText` 对象内部而不在参数里，所以要构造或取得一个带玩家国家作用域的 `CGameText`（我们已经能构造玩家国家的 `CEventScope`，见 E13）；还要在 Windows exe 里给它加指纹。预计规模：中等，需要一次逆向 | ⚠ 没做，建议作为 M2 的第一项 |
 | T3 以后 | 可见条件（`visible_when = { probe = ... }`）、停靠位置、快捷键、选项卡、图标、列表 | ⚠ 设计未定 |
 
 ### 5.4 本地化

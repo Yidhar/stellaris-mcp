@@ -1000,6 +1000,29 @@ FUNCTIONS = {
         "strings": ["imgui_impl_win32", "xinput1_4.dll"],
         "primary": True,
     },
+    # --- scoped localisation: a loc string with [Root.some_variable] / scripted_loc evaluated against a CEventScope
+    # (docs/gui_scoped_localisation.md). Windows MSVC does not inline the CGameText constructor the way the Linux build does.
+    "CGameText_ctor": {
+        "linux": "CGameText::CGameText()",
+        "signature": "void* (*)(void* game_text)  -- a ~0xA00-byte object; the loc processor with its 49 scope-type tables",
+        # stores the vtable, then the scope type count (0x31 = 49) at +8 and +0x190, and clears the handler tables
+        "pattern": [(r"^lea rax, \[rip", ""), (r"^mov qword ptr \[rcx\], rax$", ""),
+                    (r"^mov dword ptr \[rcx \+ 8\], 0x31$", ""), (r"^mov dword ptr \[rcx \+ 0x190\], 0x31$", "")],
+        "prefilter_bytes": [b"\xC7\x41\x08\x31\x00\x00\x00", b"\xC7\x81\x90\x01\x00\x00\x31\x00\x00\x00"],
+        "window": 12,
+    },
+    "CGameText_ProcessWithScope": {
+        "linux": "CGameText::ProcessWithScope(CString const&, CEventScope const&)",
+        # rcx = result CString (returned in rax, constructed by the call: pass zeroed memory), rdx = the text with its
+        # [...] markup, r8 = the CEventScope (This / Root / From / Prev all resolve through it)
+        "signature": "void* (*)(void* out_cstring, const void* text_cstring, const void* scope)",
+        # the wrapper around CTextBase::ProcessString: builds a CGameText (constructor, handler-table fill), stores the scope,
+        # calls ProcessString, destroys the context -- four direct calls and all three arguments copied up front. The
+        # siblings (ProcessWithoutScope, the many users of a CGameText local) make more calls or copy fewer arguments.
+        "caller_of": "CGameText_ctor",
+        "calls": 4,
+        "copies_args": ["rcx", "rdx", "r8"],
+    },
     "CRT_purecall": {
         "linux": "__cxa_pure_virtual (MSVC: _purecall)",
         "signature": "void (*)()  -- calls the registered purecall handler, then abort()",
@@ -1217,6 +1240,16 @@ def main():
                         e = aligned_entry(im, im.fn_of(im.text0 + i))
                         if e is not None:
                             callers.add(e)
+            if "calls" in spec or "copies_args" in spec:
+                # narrow the callers by shape: the number of direct calls in the body, and which argument registers are
+                # copied to another register in the first instructions
+                def shape_ok(f):
+                    body = im.disasm_fn(f, 0x400)
+                    if "calls" in spec and sum(1 for i in body if i.mnemonic == "call" and i.op_str.startswith("0x")) != spec["calls"]:
+                        return False
+                    head = [f"{i.mnemonic} {i.op_str}" for i in body[:14]]
+                    return all(any(re.match(rf"^mov r\w+, {reg}$", s) for s in head) for reg in spec.get("copies_args", []))
+                callers = {f for f in callers if shape_ok(f)}
             matches = sorted(callers)
             if len(matches) == 1:
                 result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
