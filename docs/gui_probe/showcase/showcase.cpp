@@ -25,23 +25,34 @@
 #include <vector>
 
 #include "imgui.h"
+#include "imgui_internal.h"  // sizeof(ImGuiContext) and member offsets, for the layout guard below
 #include "MinHook.h"
 #include "sdk/stellaris_sdk.hpp"
 #include "ui_glyphs.inc"
 
 #ifndef IM_PI
-#define IM_PI 3.14159265358979323846f  // defined in imgui_internal.h, which this file does not include
+#define IM_PI 3.14159265358979323846f
 #endif
+
+// The engine's Dear ImGui is compiled into stellaris.exe and this DLL carries its own copy, drawing into the engine's context. The SDK
+// (tools/sdk_dumper, anchors.py) reads the engine's layout constants out of its code; if the engine's ImGui ever differs from the 1.85
+// this copy is built from, the build stops here instead of corrupting the shared context at run time.
+static_assert(sizeof(ImGuiContext) == sdk::rt::ImGuiContext_sizeof, "the engine's ImGuiContext differs from the ImGui this DLL is built with");
+static_assert(offsetof(ImGuiContext, IO) + offsetof(ImGuiIO, MetricsActiveAllocations) == sdk::rt::ImGuiContext_io_MetricsActiveAllocations,
+              "ImGuiContext::IO layout differs from the engine's");
+static_assert(offsetof(ImGuiIO, ImeWindowHandle) == sdk::rt::ImGuiIO_ImeWindowHandle, "ImGuiIO::ImeWindowHandle differs from the engine's");
+static_assert(offsetof(ImGuiIO, BackendPlatformUserData) == sdk::rt::ImGuiIO_BackendPlatformUserData,
+              "ImGuiIO::BackendPlatformUserData differs from the engine's");
 
 namespace {
 
-// ---- ImGui internals of the 4.5.2 exe (not in the generated SDK yet; see the feasibility notes for how each was found)
-constexpr uintptr_t kGImGui = 0x28E2D58;     // ImGuiContext* GImGui
-constexpr uintptr_t kNewFrame = 0x1E9D240;   // ImGui::NewFrame
-constexpr uintptr_t kAllocFunc = 0x27FD320;  // GImAllocatorAllocFunc
-constexpr uintptr_t kFreeFunc = 0x27FD328;   // GImAllocatorFreeFunc
-constexpr uintptr_t kAllocUser = 0x28E2D68;  // GImAllocatorUserData
-constexpr uintptr_t kImGuiInit = 0x1B11090;  // NImGuiWrapper::ImGuiInit
+// ---- the engine's ImGui, located by tools/sdk_dumper (functions.py / anchors.py) for the exe this SDK was dumped from
+constexpr uintptr_t kGImGui = sdk::glob::GImGui;                        // ImGuiContext* GImGui
+constexpr uintptr_t kNewFrame = sdk::fn::ImGui_NewFrame;                // ImGui::NewFrame
+constexpr uintptr_t kAllocFunc = sdk::glob::GImAllocatorAllocFunc;      // GImAllocatorAllocFunc
+constexpr uintptr_t kFreeFunc = sdk::glob::GImAllocatorFreeFunc;        // GImAllocatorFreeFunc
+constexpr uintptr_t kAllocUser = sdk::glob::GImAllocatorUserData;       // GImAllocatorUserData
+constexpr uintptr_t kImGuiInit = sdk::fn::NImGuiWrapper_ImGuiInit;      // NImGuiWrapper::ImGuiInit
 
 // ---------------------------------------------------------------------------------------------------------------- plumbing
 uintptr_t g_base = 0;

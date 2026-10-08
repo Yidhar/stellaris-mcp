@@ -966,6 +966,40 @@ FUNCTIONS = {
         "signature": "void (*)(void* window)",
         "strings": ["on_press_begin"],
     },
+    # --- the engine's own Dear ImGui 1.85 (Windows only: DX11 + Win32 backends). A plugin compiles its own copy of
+    # ImGui, points GImGui (anchors.py) at the engine's context and draws after the engine's NewFrame
+    # (docs/gui_imgui_feasibility.md; the showcase in docs/gui_probe/showcase is the reference user)
+    "ImGui_NewFrame": {
+        "linux": "ImGui::NewFrame()",
+        "signature": "void (*)()",
+        # the only user of the built-in "Debug##Default" window name; the reference sits in a chained fragment
+        "strings": ["Debug##Default"],
+        "primary": True,
+    },
+    "NImGuiWrapper_ImGuiNewFrame": {
+        "linux": "NImGuiWrapper::ImGuiNewFrame()",
+        "signature": "void (*)()",
+        # the engine's per-frame entry: render-type switch, backend NewFrame, platform NewFrame, then ImGui::NewFrame
+        # (its only call)
+        "caller_of": "ImGui_NewFrame",
+    },
+    "ImGui_ImplWin32_NewFrame": {
+        "linux": "ImGui_ImplWin32_NewFrame()",
+        "signature": "void (*)()",
+        # sets io.DisplaySize from GetClientRect and io.DeltaTime; the wrapper calls it only when io.ImeWindowHandle
+        # (io + 0x118) is non-null, which is why a context started while the game window was not the active window
+        # draws nothing (ImGuiInit takes the handle from GetActiveWindow)
+        "call_in": {"from": "NImGuiWrapper_ImGuiNewFrame", "anchor": r"^cmp qword ptr \[r\w+ \+ 0x118\], r\w+$",
+                    "pick": "first_call_after"},
+    },
+    "NImGuiWrapper_ImGuiInit": {
+        "linux": "NImGuiWrapper::ImGuiInit()",
+        "signature": "void (*)()",
+        # creates the context, ImPlot / ImNodes contexts and the Win32 + DX9/DX11 backends; the Win32 backend init is inlined
+        # and names itself "imgui_impl_win32" (a switch case of the render type: a chained fragment)
+        "strings": ["imgui_impl_win32", "xinput1_4.dll"],
+        "primary": True,
+    },
     "CRT_purecall": {
         "linux": "__cxa_pure_virtual (MSVC: _purecall)",
         "signature": "void (*)()  -- calls the registered purecall handler, then abort()",
@@ -1014,7 +1048,9 @@ def match_by_strings(im, spec):
         sets.append({im.fn_of(im.text0 + int(h)) for h in hits} - {None})
     found = set()
     for f in set.intersection(*sets):
-        entry = aligned_entry(im, f)
+        # "primary": the string sits in a chained .pdata fragment (a switch case, a cold part); the function wanted is the
+        # one the fragment belongs to, whatever the fragment's own alignment
+        entry = im.primary(f) if spec.get("primary") else aligned_entry(im, f)
         if entry is None:
             continue
         if spec.get("require"):

@@ -4,7 +4,8 @@
     python tools/sdk_dumper/dump.py --no-live  # static only
     python tools/sdk_dumper/dump.py --skip-linux  # reuse out/linux_index.json (no source/ needed)
 
-Stages: linux_index -> win_extract -> validate -> emit_sdk -> globals -> functions -> [live_verify] -> emit_sdk
+Stages: linux_index -> win_extract -> validate -> emit_sdk -> globals -> functions -> [live_verify] -> anchors -> emit_sdk
+        -> validate --addresses
 """
 import subprocess
 import sys
@@ -44,8 +45,10 @@ def main():
             stale.unlink()
     run("anchors.py")
     run("emit_sdk.py")
+    # the located functions / globals against the addresses verified by hand for this exe build (if it has a table)
+    rc |= subprocess.run([sys.executable, str(HERE / "validate.py"), "--addresses"]).returncode
     if rc:
-        raise SystemExit("validate.py reported mismatches against hand-verified layouts -- review before use")
+        raise SystemExit("validate.py reported mismatches against hand-verified layouts or addresses -- review before use")
 
 
 if __name__ == "__main__":

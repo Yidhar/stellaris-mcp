@@ -1,7 +1,7 @@
 # 展示 DLL：和原版完全不同风格的自定义 ImGui 界面
 
 Stellaris 4.5.2（exe 时间戳 `0x6ABEAA3F`，Windows，`-dx11`）。用引擎自带的 Dear ImGui 1.85 画一套独立的界面，读写真实游戏数据。
-设计依据和全部实测记录在 [`../../gui_imgui_feasibility.md`](../../gui_imgui_feasibility.md)（第 9 节是本 DLL 的实验）。**这不是产品代码**：引擎里的 ImGui 内部地址写死在 `showcase.cpp` 开头，只适用于 4.5.2；其余偏移和命令规格取自主仓库生成的 SDK（`stellaris_bridge/include/sdk/stellaris_sdk.hpp`）。
+设计依据和全部实测记录在 [`../../gui_imgui_feasibility.md`](../../gui_imgui_feasibility.md)（第 9 节是本 DLL 的实验）。**这不是产品代码**，但所有引擎地址（RVA）、命令规格和国家字段偏移都取自主仓库生成的 SDK（`stellaris_bridge/include/sdk/stellaris_sdk.hpp`），没有手写 RVA；只有几个数据库内部的偏移（资源名 `+0x30`、资源上限 `+0x110`、脚本数据库的 `+0x50` / `+0x5C`）沿用桥接器里已验证的值。
 
 | | |
 |---|---|
@@ -56,5 +56,5 @@ DLL 的日志和命令文件在 DLL 所在目录：`gui_showcase.log`、`gui_sho
 - 自启动需要有 tick，暂停中的新开局不会自动出现面板（可以先取消暂停，或手动 `imgui on`——此时没有 CJK 字体，除非让 DLL 的 `AutoStart` 重启上下文，见 `AutoStart()`）。
 - 只在 tick 之间取快照；面板里看到的数据最多落后一个 tick。
 - 生僻汉字（国家名等运行时文本）可能显示成 `?`：字体图集只含常用字和界面文字用到的字。
-- 地址写死：游戏更新后要重新定位 `kGImGui` 等六个内部地址（做成插件时应加进 `tools/sdk_dumper`）。
+- 引擎 ImGui 的内部地址（`GImGui`、分配器、`ImGui::NewFrame`、`ImGuiInit`）和布局常量取自主仓库生成的 SDK（`tools/sdk_dumper` 的规则，见其 `CHANGELOG.md`）；游戏更新后先 `python tools/sdk_dumper/dump.py` 再重新编译，引擎的 ImGui 与自带那份布局不一致时 `static_assert` 会让编译失败。
 - 引擎的 `ImGuiInit` 用 `GetActiveWindow()` 取窗口句柄，窗口不活动时句柄为 0，本 DLL 会补上（见 `FixPlatformWindowHandle`）。

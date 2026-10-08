@@ -41,6 +41,10 @@ namespace glob {
     inline constexpr uintptr_t CStrategicResourceDatabase_pInstance = 0x3152B68;  // CStrategicResourceDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CTerraformDatabase_pInstance = 0x3152CC0;  // CTerraformDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CTraitDatabase_pInstance = 0x3154338;  // CTraitDatabase::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t GImAllocatorAllocFunc = 0x27FD320;  // GImAllocatorAllocFunc  score=anchor live=anchor
+    inline constexpr uintptr_t GImAllocatorFreeFunc = 0x27FD328;  // GImAllocatorFreeFunc  score=anchor live=anchor
+    inline constexpr uintptr_t GImAllocatorUserData = 0x28E2D68;  // GImAllocatorUserData  score=anchor live=anchor
+    inline constexpr uintptr_t GImGui = 0x28E2D58;  // GImGui  score=anchor live=anchor
     inline constexpr uintptr_t NDefines_DEEPSPACE_CITADEL_INNER_RADIUS_PERCENTAGE = 0x3151C60;  // NDefines::DEEPSPACE_CITADEL_INNER_RADIUS_PERCENTAGE  score=anchor live=anchor
     inline constexpr uintptr_t TGameDatabase_CAIBudgetEntryDatabase_pInstance = 0x3112730;  // TGameDatabase<CAIBudgetEntryDatabase>::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t TGameDatabase_CAIEconomicPlanDatabase_pInstance = 0x3112618;  // TGameDatabase<CAIEconomicPlanDatabase>::_pInstance  score=anchor live=anchor
@@ -486,6 +490,10 @@ namespace rt {
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
     inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CZone_id = 0x8;
+    inline constexpr std::ptrdiff_t ImGuiContext_io_MetricsActiveAllocations = 0x3B0;
+    inline constexpr std::ptrdiff_t ImGuiContext_sizeof = 0x3F70;
+    inline constexpr std::ptrdiff_t ImGuiIO_BackendPlatformUserData = 0xE0;
+    inline constexpr std::ptrdiff_t ImGuiIO_ImeWindowHandle = 0x118;
     inline constexpr std::ptrdiff_t Token_buildable_colony_ship = 0x3DFD;
     inline constexpr std::ptrdiff_t Token_buildable_federation_ship = 0x3DFC;
     inline constexpr std::ptrdiff_t Token_buildable_galactic_community_ship = 0x3EC7;
@@ -709,6 +717,10 @@ namespace fn {
     inline constexpr uintptr_t GetLocalizedLeaderName = 0x3E9520;
     // GetPlayerCountry()  --  void* (*)()
     inline constexpr uintptr_t GetPlayerCountry = 0x14AAD10;
+    // ImGui_ImplWin32_NewFrame()  --  void (*)()
+    inline constexpr uintptr_t ImGui_ImplWin32_NewFrame = 0x1B28470;
+    // ImGui::NewFrame()  --  void (*)()
+    inline constexpr uintptr_t ImGui_NewFrame = 0x1E9D240;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&, SColonizationData const&)  --  void** (*)(void** out, const void* orbitable, const void* impl, const void* colonization)
     inline constexpr uintptr_t NConstruction_CreateColonyShipBuildable = 0xAB5E10;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&)  --  void** (*)(void** out, const void* orbitable, const void* impl)
@@ -717,6 +729,10 @@ namespace fn {
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x1077F70;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
     inline constexpr uintptr_t NHabitability_CalcHabitability = 0xA20D90;
+    // NImGuiWrapper::ImGuiInit()  --  void (*)()
+    inline constexpr uintptr_t NImGuiWrapper_ImGuiInit = 0x1B11090;
+    // NImGuiWrapper::ImGuiNewFrame()  --  void (*)()
+    inline constexpr uintptr_t NImGuiWrapper_ImGuiNewFrame = 0x3345A0;
     // NShipDesignUtil::CanBuildComponent(CComponentTemplate const*, EDesignOwner, CShipGrowthStage const&, CComponentSlot const*, CString*)  --  bool (*)(const void* component, uint32_t owner, const void* stage, const void* slot, void* reason)
     inline constexpr uintptr_t NShipDesignUtil_CanBuildComponent = 0xE7D280;
     // NSpeciesModification::CalcFreeTraitPoints(CCountry const*, int, int, CSpeciesClass const*, CPdxArray<CTrait const*> const&, int*, int*)  --  void (*)(const void* country, int extra_points, int extra_picks, const void* species_class, const void* traits, int* points, int* picks)

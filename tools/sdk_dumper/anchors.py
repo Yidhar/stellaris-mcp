@@ -23,6 +23,12 @@ functions.json, a database from globals.json) and follows the code from there:
   * runtime fields: CGalacticObject's cached owner is the TPdxRef<CCountry> that
     CCountry::HasAutoSurveyedSystem compares with the country (`mov r8d, [system + X]` after it
     loads the country database).
+  * the engine's Dear ImGui (`imgui_internals`): GImGui is the first global ImGui::NewFrame loads; the allocator pair
+    and the user data are what every inlined ImGui::MemAlloc / MemFree site agrees on (`mov R, [GImGui]; test; je;
+    inc|dec [R + MetricsActiveAllocations]; mov rdx, [user data]; call [alloc|free func]`); sizeof(ImGuiContext) is
+    the one allocation above 0x2000 bytes; io.ImeWindowHandle / io.BackendPlatformUserData come from the wrapper's
+    test before the Win32 NewFrame and that function's first load through GetIO(). A plugin compiled against ImGui
+    1.85 static_asserts its own offsetof / sizeof against these (sdk::rt::ImGui*).
   * TPdxRef<X> databases no command touches: CGameStateDatabase constructs its ref databases in
     the same order on both platforms and Windows inlines each constructor down to its
     `_pDatabase` store. Known databases anchor the two sequences; a gap between two anchors is
@@ -84,6 +90,11 @@ REQUIRED = [
     "TPdxRef<CSituation>::_pDatabase",
     "CConsole::_pInstance",
     "g_bFrameSmoothing",
+    # the engine's Dear ImGui, for plugins that draw into its context
+    "GImGui",
+    "GImAllocatorAllocFunc",
+    "GImAllocatorFreeFunc",
+    "GImAllocatorUserData",
 ]
 
 
@@ -330,6 +341,108 @@ def game_state_refs(im, linux, known):
             for k in range(1, i1 - i0):
                 out[lin[i0 + k]] = best[j0 + k]
     return out
+
+
+def top_vote(votes, min_votes=3):
+    """The key of a Counter that wins clearly (every other key has at most a tenth of its votes), else None."""
+    ranked = votes.most_common(2)
+    if not ranked or ranked[0][1] < min_votes or (len(ranked) > 1 and ranked[1][1] * 10 > ranked[0][1]):
+        return None
+    return ranked[0][0]
+
+
+def imgui_internals(im, funcs):
+    """The engine's Dear ImGui: its global context pointer, the allocator globals and the layout constants a plugin
+    compiled against ImGui 1.85 checks itself against (all of ImGui is compiled into stellaris.exe).
+
+    ImGui::MemAlloc / MemFree are inlined at every site as
+        mov R, [GImGui]; test R, R; je +; inc|dec dword ptr [R + MetricsActiveAllocations]; mov rdx, [GImAllocatorUserData];
+        [mov ecx, size]; call qword ptr [GImAllocatorAllocFunc | GImAllocatorFreeFunc]
+    so the globals are what hundreds of such sites agree on; GImGui itself is the first global ImGui::NewFrame loads.
+    The one allocation of more than 0x2000 bytes is IM_NEW(ImGuiContext) in CreateContext.
+    Returns (globals, fields, problems)."""
+    gl, fl, bad = {}, {}, []
+    new_frame = funcs.get("ImGui_NewFrame", {}).get("rva")
+    wrapper = funcs.get("NImGuiWrapper_ImGuiNewFrame", {}).get("rva")
+    win32 = funcs.get("ImGui_ImplWin32_NewFrame", {}).get("rva")
+    if not (new_frame and wrapper and win32):
+        return gl, fl, ["ImGui_NewFrame / NImGuiWrapper_ImGuiNewFrame / ImGui_ImplWin32_NewFrame not in functions.json"]
+    d0, d1 = data_range(im)
+    g = next((rip_target(im, i) for i in im.disasm_fn(new_frame, 0x100)[:12]
+              if i.mnemonic == "mov" and ", qword ptr [rip + " in i.op_str and d0 <= rip_target(im, i) < d1), None)
+    if g is None:
+        return gl, fl, ["GImGui: ImGui::NewFrame loads no global"]
+
+    allocs, frees, users, sizes, counter = (collections.Counter() for _ in range(5))
+    text = im.img[im.text0:im.text1]
+    for m in re.finditer(rb"[\x48\x4C]\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+        at = im.text0 + m.start()
+        if at + 7 + struct.unpack_from("<i", im.img, at + 3)[0] != g:
+            continue
+        ins = list(im.md.disasm(im.img[at:at + 0x40], im.ib + at))[:10]
+        ops = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        head = re.match(r"^mov (r\w+), qword ptr \[rip \+ ", ops[0]) if ops else None
+        if not head or len(ops) < 6 or ops[1] != f"test {head.group(1)}, {head.group(1)}" or not ops[2].startswith("je "):
+            continue
+        bump = re.match(rf"^(inc|dec) dword ptr \[{head.group(1)} \+ (0x[0-9a-f]+)\]$", ops[3])
+        if not bump:
+            continue
+        user = call = size = None
+        for i, o in zip(ins[4:], ops[4:]):
+            if user is None and o.startswith("mov rdx, qword ptr [rip + "):
+                user = rip_target(im, i)
+            mc = re.match(r"^mov ecx, (0x[0-9a-f]+)$", o)
+            if mc and call is None:
+                size = int(mc.group(1), 16)
+            if o.startswith(("call qword ptr [rip + ", "jmp qword ptr [rip + ")):
+                call = rip_target(im, i)
+                break
+        if user is None or call is None:
+            continue
+        counter[int(bump.group(2), 16)] += 1
+        users[user] += 1
+        (allocs if bump.group(1) == "inc" else frees)[call] += 1
+        if bump.group(1) == "inc" and size is not None and size > 0x2000:
+            sizes[size] += 1
+
+    alloc, free, user, counter_off, ctx_size = top_vote(allocs), top_vote(frees), top_vote(users), top_vote(counter), top_vote(sizes, 1)
+    for what, v, votes in (("GImAllocatorAllocFunc", alloc, allocs), ("GImAllocatorFreeFunc", free, frees),
+                           ("GImAllocatorUserData", user, users), ("ImGuiContext io.MetricsActiveAllocations", counter_off, counter),
+                           ("ImGuiContext size", ctx_size, sizes)):
+        if v is None:
+            bad.append(f"{what}: no clear winner {dict(votes)}")
+    if alloc is not None and alloc == free:
+        bad.append("GImAllocatorAllocFunc == GImAllocatorFreeFunc")
+    if not bad:
+        gl.update({"GImGui": g, "GImAllocatorAllocFunc": alloc, "GImAllocatorFreeFunc": free, "GImAllocatorUserData": user})
+        fl["ImGuiContext_io_MetricsActiveAllocations"] = counter_off
+        fl["ImGuiContext_sizeof"] = ctx_size
+        print(f"ImGui: GImGui 0x{g:X}, allocator 0x{alloc:X} / 0x{free:X} / user data 0x{user:X} "
+              f"({sum(allocs.values())} alloc, {sum(frees.values())} free sites), sizeof(ImGuiContext) 0x{ctx_size:X}, "
+              f"MetricsActiveAllocations at ctx+0x{counter_off:X}")
+
+    # io.ImeWindowHandle: the wrapper tests it before calling the Win32 backend's NewFrame
+    ops = [(i, f"{i.mnemonic} {i.op_str}") for i in im.disasm_fn(wrapper, 0x400)]
+    ime = set()
+    for k in range(len(ops) - 2):
+        c = re.match(r"^cmp qword ptr \[r\w+ \+ (0x[0-9a-f]+)\], r\w+$", ops[k][1])
+        nxt = ops[k + 2][0]
+        if (c and ops[k + 1][1].startswith("je ") and nxt.mnemonic == "call" and nxt.op_str.startswith("0x")
+                and int(nxt.op_str, 16) - im.ib == win32):
+            ime.add(int(c.group(1), 16))
+    # io.BackendPlatformUserData: the first member the Win32 NewFrame loads through GetIO()
+    bd = {int(mm.group(1), 16) for i in im.disasm_fn(win32, 0x100)[:20]
+          if (mm := re.match(r"^mov r\w+, qword ptr \[rax \+ (0x[0-9a-f]+)\]$", f"{i.mnemonic} {i.op_str}"))}
+    if len(ime) != 1:
+        bad.append(f"ImGuiIO ImeWindowHandle: {sorted(ime)}")
+    if len(bd) != 1:
+        bad.append(f"ImGuiIO BackendPlatformUserData: {sorted(bd)}")
+    if len(ime) == 1 and len(bd) == 1:
+        fl["ImGuiIO_ImeWindowHandle"] = ime.pop()
+        fl["ImGuiIO_BackendPlatformUserData"] = bd.pop()
+        print(f"ImGuiIO: ImeWindowHandle +0x{fl['ImGuiIO_ImeWindowHandle']:X}, "
+              f"BackendPlatformUserData +0x{fl['ImGuiIO_BackendPlatformUserData']:X}")
+    return gl, fl, bad
 
 
 def main():
@@ -1568,6 +1681,12 @@ def main():
     else:
         result["vtables"]["NSpeciesModification_SSpeciesColonyPair"] = pvt
         print(f"SSpeciesColonyPair vtable 0x{pvt:X}")
+
+    # the engine's Dear ImGui (sdk::glob::GImGui & co, sdk::rt::ImGui*)
+    ig, ifl, ibad = imgui_internals(im, funcs)
+    result["globals"].update(ig)
+    result["fields"].update(ifl)
+    failures += [f"ImGui: {p}" for p in ibad]
 
     have = set(result["globals"]) | set(globs)
     failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]

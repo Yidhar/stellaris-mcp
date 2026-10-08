@@ -45,7 +45,47 @@ SUBOBJECTS = {
 }
 
 
+# Addresses found by hand in a given build of the exe (key: PE TimeDateStamp), which the fingerprints in functions.py /
+# anchors.py must reproduce. A different build has no table: the fingerprints are then the only source.
+ADDRESS_TRUTH = {
+    0x6ABEAA3F: {  # Stellaris 4.5.2 (docs/gui_imgui_feasibility.md section 1.1: the engine's Dear ImGui 1.85)
+        "functions": {"ImGui_NewFrame": 0x1E9D240, "NImGuiWrapper_ImGuiNewFrame": 0x3345A0,
+                      "ImGui_ImplWin32_NewFrame": 0x1B28470, "NImGuiWrapper_ImGuiInit": 0x1B11090},
+        "globals": {"GImGui": 0x28E2D58, "GImAllocatorAllocFunc": 0x27FD320, "GImAllocatorFreeFunc": 0x27FD328,
+                    "GImAllocatorUserData": 0x28E2D68},
+        "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,
+                   "ImGuiIO_ImeWindowHandle": 0x118, "ImGuiIO_BackendPlatformUserData": 0xE0},
+    },
+}
+
+
+def check_addresses():
+    """`validate.py --addresses`: out/functions.json and out/anchors.json against ADDRESS_TRUTH for this exe."""
+    out = OUT.parent
+    stamp = json.loads(OUT.read_text(encoding="utf-8"))["timestamp"]
+    truth = ADDRESS_TRUTH.get(stamp)
+    if truth is None:
+        print(f"validate --addresses: no hand-verified addresses for exe 0x{stamp:08X}; skipped")
+        return 0
+    funcs = {k: v["rva"] for k, v in json.loads((out / "functions.json").read_text(encoding="utf-8")).items()}
+    anchors = json.loads((out / "anchors.json").read_text(encoding="utf-8"))
+    have = {"functions": funcs, "globals": anchors.get("globals", {}), "fields": anchors.get("fields", {})}
+    ok = bad = 0
+    for kind, items in truth.items():
+        for name, exp in items.items():
+            got = have[kind].get(name)
+            if got == exp:
+                ok += 1
+            else:
+                bad += 1
+                print(f"MISMATCH {kind} {name}: expected 0x{exp:X}, got {hex(got) if got is not None else None}")
+    print(f"validate --addresses: {ok} ok, {bad} wrong")
+    return 1 if bad else 0
+
+
 def main():
+    if "--addresses" in sys.argv[1:]:
+        return check_addresses()
     data = json.loads(OUT.read_text(encoding="utf-8"))
     layouts = data["layouts"]
     ref = {int(k, 16): v for k, v in json.loads(LINUX_TOKENS.read_text(encoding="utf-8"))["tokens"].items()}

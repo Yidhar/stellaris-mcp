@@ -41,7 +41,7 @@
 | `CGameState::HandleTurnTick`（探针用来统计） | `0x251800` | 与 `sdk::fn::CGameState_HandleTurnTick` 一致 ✅ |
 | `CGameIdler::RenderImGui`（虚函数） | ⚠ 未定位 | 没有直接调用者；试过按成员链扫描没找到。不影响方案（钩 `NewFrame` 即可）|
 
-这些以后都应该进 `tools/sdk_dumper`（`functions.py` / `anchors.py`）而不是手写地址；上面"怎么找到的"一列就是指纹。
+**这些地址现在由 `tools/sdk_dumper` 生成，不再手写**（改动记录见 `tools/sdk_dumper/CHANGELOG.md`）：`sdk::glob::GImGui` / `GImAllocatorAllocFunc` / `GImAllocatorFreeFunc` / `GImAllocatorUserData`、`sdk::fn::ImGui_NewFrame` / `NImGuiWrapper_ImGuiNewFrame` / `ImGui_ImplWin32_NewFrame` / `NImGuiWrapper_ImGuiInit`，以及版本 / 布局守卫用的 `sdk::rt::ImGuiContext_sizeof`、`ImGuiContext_io_MetricsActiveAllocations`、`ImGuiIO_ImeWindowHandle`、`ImGuiIO_BackendPlatformUserData`。dumper 的指纹和上表"怎么找到的"不完全相同：`GImGui` 取 `ImGui::NewFrame` 加载的第一个全局；分配器三件套取所有内联的 `MemAlloc` / `MemFree` 站点（`mov R,[GImGui]; test; je; inc|dec [R+0x3B0]; mov rdx,[UserData]; call [Alloc|Free]`，170 个站点）的一致意见；`ImGuiInit` 用 `imgui_impl_win32` + `xinput1_4.dll` 两个字符串并取其所属的主函数（那段代码在 switch 分支的 `.pdata` 片段里）。`GetCurrentContext` / `GetIO` / `MemAlloc` / `MemFree` / `HandleTurnTick` 的行没有进 dumper（插件不需要）。
 
 ## 2. 实验记录（全部在真实游戏里，测试存档 `fmbase`）
 
@@ -80,7 +80,7 @@
 
 1. **分配器**：自带的那份 ImGui 必须用引擎的分配器：`ImGui::SetAllocatorFunctions(*(void**)(base+0x27FD320), *(void**)(base+0x27FD328), *(void**)(base+0x28E2D68))`。共享上下文里的容器会被两边的代码分配和释放。✅（探针这样做，没有出现崩溃）
 2. **每帧重新取上下文指针**（`imgui off/on` 会换掉它，E6）。
-3. **版本 / 布局防护**：读引擎的版本字符串（⚠ 需要一个指纹定位 `GetVersion`）并与 `IMGUI_VERSION` 比较；另外可以比较几个已知的偏移（如 `io.BackendPlatformName@0xD0`、`GImGui+0x3B0` 的计数）。不一致就禁用并记录。
+3. **版本 / 布局防护**：✅ **编译期已做**（展示 DLL 里的 `static_assert`）：dumper 从引擎代码里读出 `sizeof(ImGuiContext)`（`0x3F70`）、`io.MetricsActiveAllocations` 在上下文里的偏移（`0x3B0`）、`io.ImeWindowHandle`（`0x118`）、`io.BackendPlatformUserData`（`0xE0`）放进 SDK（`sdk::rt::ImGui*`），插件用自带的 ImGui 头文件的 `sizeof` / `offsetof` 与它们比较，不一致就编译失败（引擎升级了 ImGui 之后重新 dump、重新编译就会暴露）。⚠ 运行期的版本字符串比较没做（`GetVersion` 没有指纹，且编译期检查已经覆盖了布局）。
 4. **`imgui.ini`**：引擎的 ImGui 默认把窗口布局写到**游戏目录**的 `imgui.ini`（本次实测产生了一个，已删除）。启动器规范禁止写游戏目录，所以要设置 `io.IniFilename` 指向插件目录。落在哪里：规范说更新会替换整个文件夹但保留 `config\`，所以持久的界面状态应放 `config\`（启动器的插件页会把它当文本显示，可接受），或者给自己的窗口加 `ImGuiWindowFlags_NoSavedSettings`。
 5. **中文字体**：在 `ImGuiInit` 返回后、第一次 `NewFrame` 前合并字体（E9）。如果玩家先输入了 `imgui on`（图集已经建好），就得让引擎重建字体纹理（⚠ 需要定位后端的字体纹理创建函数或释放 `pFontSampler`，未验证）。
 6. **DPI / 缩放**：游戏进程对 DPI 不感知，ImGui 的 `DisplaySize` 是逻辑像素（4K 屏上读到 1920×1080）；界面大小用 `io.FontGlobalScale` 或自带字体大小调整。
@@ -138,7 +138,7 @@
 
 ## 8. 如果继续：建议的里程碑
 
-1. **M0 产品化探针**：独立仓库（需要你决定名字和账号），启动器插件规范 v2（清单、`config\`、`logs\`），`imgui.ini` 重定向，版本 / 布局防护，中文字体，SDK 指纹加进主仓库的 dumper，C ABI 的"注册面板"接口（让 perf / live2d / 桥接器的状态页都能挂进来）。
+1. **M0 产品化探针**：独立仓库（需要你决定名字和账号），启动器插件规范 v2（清单、`config\`、`logs\`），`imgui.ini` 重定向，中文字体，C ABI 的"注册面板"接口（让 perf / live2d / 桥接器的状态页都能挂进来）。（版本 / 布局防护和 SDK 指纹进 dumper 已经做完，见 §4.3、§1.1。）
 2. **M1 数据层**：桥接器的同步入口 + tick 快照；只读面板（国家概览、舰队、事件日志）。
 3. **M2 mod 声明式面板**：先研究变量 / 脚本值读取和"界面 → 脚本"的同步路径，再定格式。
 4. **B 方案后备**：保留自带后端的开关，用于引擎 ImGui 版本变化时。
