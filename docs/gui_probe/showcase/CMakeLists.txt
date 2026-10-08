@@ -16,7 +16,7 @@ set(SDK_INCLUDE ${CMAKE_CURRENT_LIST_DIR}/../../../stellaris_bridge/include)
 add_library(gui_showcase SHARED
     showcase.cpp
     ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
-target_include_directories(gui_showcase PRIVATE ${IMGUI_DIR} ${SDK_INCLUDE})
+target_include_directories(gui_showcase PRIVATE ${IMGUI_DIR} ${SDK_INCLUDE} ${CMAKE_CURRENT_LIST_DIR}/../api_proto)
 target_link_libraries(gui_showcase PRIVATE minhook d3d11 dxgi)
 target_compile_definitions(gui_showcase PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 if (MSVC)

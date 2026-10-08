@@ -1,0 +1,31 @@
+# A panel declared by a mod, drawn by the GUI host plugin (docs/gui_plugin_api_investigation.md has the grammar).
+# Without the plugin this file is never read: the game does not look into this folder.
+
+stl_gui_version = 1
+
+panel = {
+	id = overview
+	title = ZZ_GUI_TITLE            # a localisation key; text with a space in it is shown as written
+	size = { 380 440 }
+
+	content = {
+		text = { text = ZZ_GUI_INTRO }
+		separator = yes
+		date = { label = ZZ_GUI_DATE }
+		value = { label = ZZ_GUI_ENERGY    resource = energy    show = stock }
+		value = { label = ZZ_GUI_ENERGY_NET resource = energy   show = net }
+		gauge = { label = ZZ_GUI_MINERALS  resource = minerals }
+		stat  = { label = ZZ_GUI_COLONIES  stat = colonies }
+		stat  = { label = ZZ_GUI_MIL       stat = military_power }
+		separator = yes
+		# a button_effect asked as a yes/no question: allowed right now?  (clear_mark is allowed exactly while the flag is set)
+		badge = { probe = zz_gui_clear_mark  yes = ZZ_GUI_MARK_SET  no = ZZ_GUI_MARK_UNSET }
+		row = {
+			button = { text = ZZ_GUI_BTN_SET    effect = zz_gui_set_mark }
+			button = { text = ZZ_GUI_BTN_CLEAR  effect = zz_gui_clear_mark }
+		}
+		spacer = 6
+		button = { text = ZZ_GUI_BTN_GRANT effect = zz_gui_grant_energy }
+		button = { text = ZZ_GUI_BTN_RICH  effect = zz_gui_rich_only }
+	}
+}

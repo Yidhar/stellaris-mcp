@@ -1,0 +1,3 @@
+# probe: does the engine read (and complain about) gfx/stl_gui/ ?
+stl_gui_version = 1
+zz_probe_marker_gfx = { not_a_key_the_engine_knows = yes }

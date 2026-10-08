@@ -9,6 +9,7 @@
 //
 // Unload: set the event Local\gui_showcase_unload_<pid>.
 #include <windows.h>
+#include <shlobj.h>
 #include <d3d11.h>
 #include <dxgi.h>
 
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -29,6 +31,7 @@
 #include "MinHook.h"
 #include "sdk/stellaris_sdk.hpp"
 #include "ui_glyphs.inc"
+#include "stellaris_gui_api.h"  // the public C interface other plugins draw through (docs/gui_probe/api_proto)
 
 #ifndef IM_PI
 #define IM_PI 3.14159265358979323846f
@@ -566,7 +569,8 @@ struct Pending {
     std::string key;
 };
 std::vector<Pending> g_pending;
-bool g_deck_open = true, g_hud_open = true, g_stars = true;
+bool g_deck_open = true, g_hud_open = true, g_stars = true, g_rescan_mods = false;
+LONG64 g_dispatch_qpc = 0, g_dispatch_frames = 0;
 int g_tab = 0, g_theme = 0, g_sel_res = 0;
 double g_T = 0;
 float g_DT = 0.016f;
@@ -1550,6 +1554,581 @@ void DrawDeck(const ImGuiIO& io) {
 }
 
 // ------------------------------------------------------------------------------------------------------------ frame entry points
+// ======================================================================================================== plugin interface (host side)
+// Other plugins register draw callbacks through the C interface in stellaris_gui_api.h. Registration may come from any thread (a plugin
+// loaded before this one finds the host on a thread of its own); everything else runs on the main thread inside the engine's ImGui frame.
+struct HostPanel {
+    int handle = 0;
+    std::string id, title;
+    uint32_t flags = 0;
+    StlGuiDrawFn draw = nullptr;
+    void* user = nullptr;
+    bool visible = true;
+    bool decl = false;  // declared by a mod (not registered by a plugin)
+    volatile bool dead = false;
+    int faults = 0;
+    uint64_t calls = 0;
+};
+SRWLOCK g_panel_lock = SRWLOCK_INIT;
+std::vector<std::shared_ptr<HostPanel>> g_panels;
+int g_next_panel = 1;
+
+int ApiRegisterPanel(const StlGuiPanelDesc* d) {
+    if (!d || d->size < sizeof(StlGuiPanelDesc) || !d->draw || !d->id || !*d->id) return 0;
+    auto p = std::make_shared<HostPanel>();
+    p->id = d->id;
+    p->title = d->title && *d->title ? d->title : d->id;
+    p->flags = d->flags ? d->flags : STL_PANEL_WINDOW;
+    p->draw = d->draw;
+    p->user = d->user;
+    AcquireSRWLockExclusive(&g_panel_lock);
+    bool dup = false;
+    for (const auto& q : g_panels)
+        if (!q->dead && q->id == p->id) dup = true;
+    if (!dup) {
+        p->handle = g_next_panel++;
+        g_panels.push_back(p);
+    }
+    ReleaseSRWLockExclusive(&g_panel_lock);
+    Log("panel %s: %s (handle %d, code %p)", p->id.c_str(), dup ? "rejected, id already registered" : "registered", p->handle, (void*)d->draw);
+    return dup ? 0 : p->handle;
+}
+void ApiUnregisterPanel(int handle) {
+    AcquireSRWLockExclusive(&g_panel_lock);
+    for (auto& q : g_panels)
+        if (q->handle == handle && !q->dead) {
+            q->dead = true;
+            Log("panel %s: unregistered", q->id.c_str());
+        }
+    ReleaseSRWLockExclusive(&g_panel_lock);
+}
+int ApiGetSnapshot(StlGuiSnapshot* out) {
+    if (!out || out->size < 16) return 0;
+    StlGuiSnapshot t{};
+    t.size = sizeof(t);
+    t.in_game = g_snap.in_game;
+    t.year = g_snap.year;
+    t.month = g_snap.month;
+    t.day = g_snap.day;
+    t.speed = g_snap.speed;
+    t.paused = g_snap.paused;
+    t.player_country_id = g_snap.country_id;
+    t.tick = g_snap.tick;
+    snprintf(t.country_name, sizeof(t.country_name), "%s", g_snap.name.c_str());
+    for (const auto& r : g_snap.res) {
+        if (t.resource_count >= 32) break;
+        StlGuiResource& o = t.resources[t.resource_count++];
+        snprintf(o.key, sizeof(o.key), "%s", r.key.c_str());
+        o.stock = r.stock;
+        o.net = r.net;
+        o.max = r.max;
+    }
+    const uint32_t n = std::min<uint32_t>(out->size, sizeof(t));
+    const uint32_t want = out->size;
+    memcpy(out, &t, n);
+    out->size = want;
+    return g_snap.in_game ? 1 : 0;
+}
+int ApiEffectState(const char* key, char* reason, uint32_t cap) {
+    if (!key) return -1;
+    if (g_tick_depth != 0) return -1;  // a turn tick is running: the engine's checks are not safe to run now
+    bool valid = false;
+    std::string why;
+    RunButtonEffect(key, false, &valid, &why);
+    if (reason && cap) snprintf(reason, cap, "%s", valid ? "" : why.c_str());
+    return valid ? 1 : 0;
+}
+int ApiPostEffect(const char* key) {
+    if (!key || !*key) return 0;
+    g_pending.push_back({ Pending::Button, 0, key });
+    return 1;
+}
+void ApiSetSpeed(int speed) { g_pending.push_back({ Pending::Speed, speed, {} }); }
+void ApiSetPaused(int paused) { g_pending.push_back({ Pending::Pause, paused ? 1 : 0, {} }); }
+void ApiLog(const char* plugin, const char* line) { Log("[%s] %s", plugin ? plugin : "?", line ? line : ""); }
+
+// the C drawing wrappers (a plugin without any ImGui of its own draws through these)
+void UiText(const char* s) { ImGui::TextUnformatted(s ? s : ""); }
+void UiTextColored(uint32_t c, const char* s) {
+    ImGui::PushStyleColor(ImGuiCol_Text, c);
+    ImGui::TextUnformatted(s ? s : "");
+    ImGui::PopStyleColor();
+}
+int UiButton(const char* l) { return ImGui::Button(l ? l : "") ? 1 : 0; }
+int UiCheckbox(const char* l, int* v) {
+    bool b = v && *v;
+    const bool changed = ImGui::Checkbox(l ? l : "", &b);
+    if (v) *v = b ? 1 : 0;
+    return changed ? 1 : 0;
+}
+int UiSlider(const char* l, float* v, float lo, float hi) { return v && ImGui::SliderFloat(l ? l : "", v, lo, hi) ? 1 : 0; }
+void UiSameLine() { ImGui::SameLine(); }
+void UiSeparator() { ImGui::Separator(); }
+void UiProgress(float f, float w, float h, const char* o) { ImGui::ProgressBar(f, ImVec2(w, h), o); }
+void UiTooltip(const char* s) {
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", s ? s : "");
+}
+void UiCursor(float* xy) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    if (xy) xy[0] = p.x, xy[1] = p.y;
+}
+void UiAvail(float* xy) {
+    const ImVec2 p = ImGui::GetContentRegionAvail();
+    if (xy) xy[0] = p.x, xy[1] = p.y;
+}
+void UiDummy(float w, float h) { ImGui::Dummy(ImVec2(w, h)); }
+void UiLine(float x1, float y1, float x2, float y2, uint32_t c, float t) { ImGui::GetWindowDrawList()->AddLine(ImVec2(x1, y1), ImVec2(x2, y2), c, t); }
+void UiRect(float x1, float y1, float x2, float y2, uint32_t c, float r) { ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), c, r); }
+void UiCircle(float x, float y, float r, uint32_t c) { ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(x, y), r, c, 24); }
+void UiText2(float x, float y, uint32_t c, const char* s) { ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), c, s ? s : ""); }
+
+const StlGuiUi g_ui = { sizeof(StlGuiUi), 0,  UiText,   UiTextColored, UiButton,  UiCheckbox, UiSlider, UiSameLine, UiSeparator,
+                        UiProgress,       UiTooltip, UiCursor, UiAvail, UiDummy,  UiLine,     UiRect,   UiCircle,   UiText2 };
+const StlGuiApi g_api = { sizeof(StlGuiApi), STL_GUI_API_VERSION, sdk::kExeTimestamp, 0, ApiRegisterPanel, ApiUnregisterPanel, ApiGetSnapshot,
+                          ApiEffectState,    ApiPostEffect,       ApiSetSpeed,        ApiSetPaused, ApiLog };
+
+// ================================================================================================== panels declared by mods (the mod authors' syntax)
+// A mod describes a panel in the script syntax the game itself uses, in a folder the engine never reads (nothing is logged for it), and
+// the host draws it. Without the host the file does nothing. See docs/gui_plugin_api_investigation.md for the grammar.
+std::string LocKey(const std::string& key);  // forward: the game's localisation
+
+struct SNode {
+    std::string key, value;
+    bool block = false;
+    std::vector<SNode> kids;
+};
+struct Tok {
+    char type;  // '{' '}' '=' or 'w' (a bare word) / 's' (a quoted string)
+    std::string text;
+};
+std::vector<Tok> LexScript(const std::string& s) {
+    std::vector<Tok> t;
+    size_t i = 0;
+    if (s.size() >= 3 && (uint8_t)s[0] == 0xEF && (uint8_t)s[1] == 0xBB && (uint8_t)s[2] == 0xBF) i = 3;
+    while (i < s.size()) {
+        const char c = s[i];
+        if (isspace((unsigned char)c)) {
+            ++i;
+        } else if (c == '#') {
+            while (i < s.size() && s[i] != '\n') ++i;
+        } else if (c == '{' || c == '}' || c == '=') {
+            t.push_back({ c, std::string(1, c) });
+            ++i;
+        } else if (c == '"') {
+            size_t j = i + 1;
+            std::string v;
+            while (j < s.size() && s[j] != '"') v += s[j++];
+            t.push_back({ 's', v });
+            i = j + 1;
+        } else {
+            size_t j = i;
+            while (j < s.size() && !isspace((unsigned char)s[j]) && !strchr("{}=#\"", s[j])) ++j;
+            t.push_back({ 'w', s.substr(i, j - i) });
+            i = j;
+        }
+    }
+    return t;
+}
+bool ParseScriptBlock(const std::vector<Tok>& t, size_t& p, SNode& out, int depth) {
+    if (depth > 24) return false;
+    while (p < t.size()) {
+        const Tok& k = t[p];
+        if (k.type == '}') {
+            ++p;
+            return depth > 0;
+        }
+        if (k.type == '=') return false;
+        SNode n;
+        if (k.type == '{') {  // a nameless block, an item of a list
+            n.block = true;
+            ++p;
+            if (!ParseScriptBlock(t, p, n, depth + 1)) return false;
+        } else if (p + 1 < t.size() && t[p + 1].type == '=') {  // key = value / key = { ... }
+            n.key = k.text;
+            p += 2;
+            if (p >= t.size()) return false;
+            if (t[p].type == '{') {
+                n.block = true;
+                ++p;
+                if (!ParseScriptBlock(t, p, n, depth + 1)) return false;
+            } else if (t[p].type == 'w' || t[p].type == 's') {
+                n.value = t[p].text;
+                ++p;
+            } else {
+                return false;
+            }
+        } else {  // a bare item of a list
+            n.value = k.text;
+            ++p;
+        }
+        out.kids.push_back(std::move(n));
+    }
+    return depth == 0;
+}
+const SNode* ChildOf(const SNode& n, const char* key) {
+    for (const SNode& k : n.kids)
+        if (k.key == key) return &k;
+    return nullptr;
+}
+std::string ValOf(const SNode& n, const char* key, const char* def = "") {
+    const SNode* c = ChildOf(n, key);
+    return c && !c->block ? c->value : std::string(def);
+}
+
+struct DeclPanel {
+    std::string mod, id, title_key;
+    SNode content;
+    float w = 360, h = 300;
+};
+std::vector<std::shared_ptr<DeclPanel>> g_decl;  // referenced by the panels' user pointer: kept for the process lifetime
+
+std::string ReadWholeFile(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return {};
+    std::string s;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) s.append(buf, n);
+    fclose(f);
+    return s;
+}
+std::string StellarisDocs() {
+    char buf[MAX_PATH];
+    if (FAILED(SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, buf))) return {};
+    return std::string(buf) + "\\Paradox Interactive\\Stellaris\\";
+}
+// (mod name, folder) of every mod in dlc_load.json's enabled_mods, through the `path=` of its .mod file
+std::vector<std::pair<std::string, std::string>> EnabledMods() {
+    std::vector<std::pair<std::string, std::string>> out;
+    const std::string docs = StellarisDocs();
+    const std::string json = ReadWholeFile(docs + "dlc_load.json");
+    size_t at = 0;
+    while ((at = json.find("\"mod/", at)) != std::string::npos) {
+        const size_t end = json.find('"', at + 1);
+        if (end == std::string::npos) break;
+        const std::string rel = json.substr(at + 1, end - at - 1);  // mod/xxx.mod
+        at = end + 1;
+        std::string mod = ReadWholeFile(docs + rel);
+        const size_t pp = mod.find("path=\"");
+        if (pp == std::string::npos) continue;
+        const size_t pe = mod.find('"', pp + 6);
+        if (pe == std::string::npos) continue;
+        std::string dir = mod.substr(pp + 6, pe - pp - 6);
+        for (char& ch : dir)
+            if (ch == '/') ch = '\\';
+        std::string name = rel.substr(rel.find('/') + 1);
+        if (name.size() > 4) name.resize(name.size() - 4);
+        out.emplace_back(name, dir);
+    }
+    return out;
+}
+
+void DrawDeclPanel(const StlGuiCallbackCtx* ctx, void* user);
+const char* const kDeclFolders[] = { "interface\\stl_gui", "common\\stl_gui", "gfx\\stl_gui" };  // looked at while the best home is being measured
+void ScanMods() {
+    AcquireSRWLockExclusive(&g_panel_lock);
+    for (auto& p : g_panels)
+        if (p->decl) p->dead = true;  // a rescan replaces what the last one registered
+    ReleaseSRWLockExclusive(&g_panel_lock);
+    int files = 0, panels = 0;
+    for (const auto& [mod, dir] : EnabledMods()) {
+        for (const char* folder : kDeclFolders) {
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA((dir + "\\" + folder + "\\*.txt").c_str(), &fd);
+            if (h == INVALID_HANDLE_VALUE) continue;
+            do {
+                ++files;
+                const std::string path = dir + "\\" + folder + "\\" + fd.cFileName;
+                const std::vector<Tok> toks = LexScript(ReadWholeFile(path));
+                SNode root;
+                size_t p = 0;
+                if (!ParseScriptBlock(toks, p, root, 0)) {
+                    Log("mod %s: %s: syntax error, file ignored", mod.c_str(), path.c_str());
+                    continue;
+                }
+                if (ValOf(root, "stl_gui_version") != "1") {
+                    Log("mod %s: %s: no stl_gui_version = 1, file ignored", mod.c_str(), fd.cFileName);
+                    continue;
+                }
+                for (const SNode& k : root.kids) {
+                    if (k.key != "panel" || !k.block) continue;
+                    auto d = std::make_shared<DeclPanel>();
+                    d->mod = mod;
+                    d->id = ValOf(k, "id");
+                    d->title_key = ValOf(k, "title", d->id.c_str());
+                    if (const SNode* c = ChildOf(k, "content")) d->content = *c;
+                    if (const SNode* sz = ChildOf(k, "size"); sz && sz->kids.size() >= 2) {
+                        d->w = (float)atof(sz->kids[0].value.c_str());
+                        d->h = (float)atof(sz->kids[1].value.c_str());
+                    }
+                    if (d->id.empty()) {
+                        Log("mod %s: %s: a panel without id, ignored", mod.c_str(), fd.cFileName);
+                        continue;
+                    }
+                    g_decl.push_back(d);
+                    const std::string host_id = mod + ":" + d->id;
+                    StlGuiPanelDesc desc{};
+                    desc.size = sizeof(desc);
+                    desc.flags = STL_PANEL_WINDOW;
+                    desc.id = host_id.c_str();
+                    desc.title = d->title_key.c_str();
+                    desc.draw = DrawDeclPanel;
+                    desc.user = d.get();
+                    const int handle = ApiRegisterPanel(&desc);
+                    if (handle) {
+                        AcquireSRWLockExclusive(&g_panel_lock);
+                        for (auto& q : g_panels)
+                            if (q->handle == handle) q->decl = true;
+                        ReleaseSRWLockExclusive(&g_panel_lock);
+                        ++panels;
+                    }
+                }
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+    }
+    Log("mod scan: %d file(s), %d declared panel(s)", files, panels);
+}
+
+struct EffCache {
+    bool valid = false;
+    std::string reason;
+    double t = -10;
+};
+std::unordered_map<std::string, EffCache> g_eff;
+const EffCache& EffState(const std::string& key) {  // the engine's verdict on a button_effect, refreshed twice a second
+    EffCache& e = g_eff[key];
+    if (g_T - e.t > 0.5 && g_tick_depth == 0) {
+        bool valid = false;
+        std::string why;
+        RunButtonEffect(key.c_str(), false, &valid, &why);
+        e.valid = valid;
+        e.reason = valid ? "" : why;
+        e.t = g_T;
+    }
+    return e;
+}
+std::unordered_map<std::string, std::string> g_loc_cache;
+bool CallLocalizeKey(const std::string& key, RawCStr* out) {
+    struct View {
+        const char* data;
+        uint64_t size;
+    } v{ key.data(), key.size() };
+    __try {
+        ((void* (*)(void*, const void*))(g_base + sdk::fn::PdxLocalize))(out, &v);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// a loc key goes through the game's localisation; anything with a space (or a key the game does not know) is shown as written
+std::string LocKey(const std::string& key) {
+    if (key.empty() || key.find(' ') != std::string::npos) return key;
+    auto it = g_loc_cache.find(key);
+    if (it != g_loc_cache.end()) return it->second;
+    RawCStr out{};
+    out.s.cap = 15;
+    std::string text = key;
+    if (CallLocalizeKey(key, &out)) {
+        std::string t = TakeCString(out);
+        if (!t.empty()) text = t;
+    }
+    return g_loc_cache.emplace(key, text).first->second;
+}
+
+void DrawDeclNode(const SNode& n, int depth);
+void DrawDeclBlock(const SNode& block, bool row, int depth) {
+    bool first = true;
+    for (const SNode& k : block.kids) {
+        if (row && !first) ImGui::SameLine();
+        DrawDeclNode(k, depth + 1);
+        first = false;
+    }
+}
+double StatValue(const std::string& stat, bool* known) {
+    *known = true;
+    if (stat == "colonies") return g_snap.colonies;
+    if (stat == "pops") return g_snap.pops;
+    if (stat == "empire_size") return g_snap.empire_size;
+    if (stat == "military_power") return g_snap.mil;
+    if (stat == "tech_power") return g_snap.tech;
+    if (stat == "economy_power") return g_snap.eco;
+    *known = false;
+    return 0;
+}
+void DrawDeclNode(const SNode& n, int depth) {
+    if (depth > 10) return;
+    if (n.key == "row" && n.block) {
+        DrawDeclBlock(n, true, depth);
+    } else if (n.key == "text" && n.block) {
+        ImGui::TextWrapped("%s", LocKey(ValOf(n, "text")).c_str());
+    } else if (n.key == "separator") {
+        ImGui::Separator();
+    } else if (n.key == "spacer") {
+        ImGui::Dummy(ImVec2(0, (float)atof(n.value.c_str())));
+    } else if (n.key == "date" && n.block) {
+        ImGui::Text("%s  %04u.%02u.%02u", LocKey(ValOf(n, "label")).c_str(), g_snap.year, g_snap.month, g_snap.day);
+    } else if (n.key == "stat" && n.block) {
+        bool known;
+        const double v = StatValue(ValOf(n, "stat"), &known);
+        const std::string st = ValOf(n, "stat");
+        char t[32];
+        if (st == "colonies" || st == "pops" || st == "empire_size") snprintf(t, sizeof(t), "%.0f", v);
+        else Fmt(t, sizeof(t), v);
+        ImGui::Text("%s  %s", LocKey(ValOf(n, "label")).c_str(), known ? t : "?");
+    } else if (n.key == "value" && n.block) {
+        const ResInfo* r = FindRes(ValOf(n, "resource").c_str());
+        const std::string show = ValOf(n, "show", "stock");
+        char t[32] = "?";
+        if (r) Fmt(t, sizeof(t), show == "net" ? r->net : show == "income" ? r->income : show == "expense" ? r->expense : show == "max" ? r->max : r->stock, show == "net");
+        ImGui::Text("%s  %s", LocKey(ValOf(n, "label")).c_str(), t);
+    } else if (n.key == "gauge" && n.block) {
+        const ResInfo* r = FindRes(ValOf(n, "resource").c_str());
+        ImGui::TextUnformatted(LocKey(ValOf(n, "label")).c_str());
+        char t[48] = "?";
+        float frac = 0.f;
+        if (r) {
+            char a[32], b[32];
+            Fmt(a, sizeof(a), r->stock);
+            Fmt(b, sizeof(b), r->net, true);
+            snprintf(t, sizeof(t), "%s  (%s)", a, b);
+            frac = r->max > 0 ? (float)(r->stock / r->max) : 0.f;
+        }
+        ImGui::ProgressBar(frac, ImVec2(-1, 0), t);
+    } else if (n.key == "badge" && n.block) {  // a button_effect used as a yes/no question to the game: is it allowed right now?
+        const EffCache& e = EffState(ValOf(n, "probe"));
+        const ImU32 col = e.valid ? IM_COL32(90, 235, 150, 255) : IM_COL32(255, 100, 110, 255);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 6, p.y + ImGui::GetTextLineHeight() * 0.5f), 4.5f, col, 12);
+        ImGui::Dummy(ImVec2(16, ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(LocKey(ValOf(n, e.valid ? "yes" : "no")).c_str());
+    } else if (n.key == "button" && n.block) {
+        const std::string effect = ValOf(n, "effect");
+        const EffCache& e = EffState(effect);
+        if (!e.valid) ImGui::BeginDisabled();
+        const bool clicked = ImGui::Button(LocKey(ValOf(n, "text", effect.c_str())).c_str());
+        if (!e.valid) ImGui::EndDisabled();
+        if (!e.valid && !e.reason.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", e.reason.c_str());
+        if (clicked && e.valid) g_pending.push_back({ Pending::Button, 0, effect });
+    }
+}
+void DrawDeclPanel(const StlGuiCallbackCtx*, void* user) {
+    const DeclPanel* d = (const DeclPanel*)user;
+    if (!g_snap.in_game) {
+        ImGui::TextDisabled("not in a game");
+        return;
+    }
+    DrawDeclBlock(d->content, false, 0);
+}
+
+// A callback that raises an exception must not take the game down, and one that leaves ImGui's stacks unbalanced (a Begin without End, a
+// pushed colour never popped) must not break the frame of everybody after it: the stacks are put back to where they were.
+struct StackMark {
+    int windows, colors, vars, fonts, groups;
+};
+StackMark MarkStacks() {
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    return { g.CurrentWindowStack.Size, g.ColorStack.Size, g.StyleVarStack.Size, g.FontStack.Size, g.GroupStack.Size };
+}
+int RestoreStacks(const StackMark& m, int windows_kept) {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    int repaired = 0;
+    while (g.CurrentWindowStack.Size > m.windows + windows_kept) {
+        if (g.CurrentWindow && (g.CurrentWindow->Flags & ImGuiWindowFlags_ChildWindow)) ImGui::EndChild();
+        else ImGui::End();
+        ++repaired;
+    }
+    while (g.GroupStack.Size > m.groups) ImGui::EndGroup(), ++repaired;
+    if (g.ColorStack.Size > m.colors) repaired += g.ColorStack.Size - m.colors, ImGui::PopStyleColor(g.ColorStack.Size - m.colors);
+    if (g.StyleVarStack.Size > m.vars) repaired += g.StyleVarStack.Size - m.vars, ImGui::PopStyleVar(g.StyleVarStack.Size - m.vars);
+    while (g.FontStack.Size > m.fonts) ImGui::PopFont(), ++repaired;
+    return repaired;
+}
+bool CallDraw(StlGuiDrawFn fn, const StlGuiCallbackCtx* ctx, void* user, DWORD* code) {
+    __try {
+        fn(ctx, user);
+        return true;
+    } __except (*code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// whether the code of a callback is still mapped (a plugin that was unloaded without unregistering)
+bool CodeIsMapped(const void* p) {
+    MEMORY_BASIC_INFORMATION m;
+    return VirtualQuery(p, &m, sizeof(m)) && m.State == MEM_COMMIT && (m.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+}
+
+void DispatchPanels() {
+    std::vector<std::shared_ptr<HostPanel>> list;
+    AcquireSRWLockShared(&g_panel_lock);
+    for (const auto& p : g_panels)
+        if (!p->dead) list.push_back(p);
+    ReleaseSRWLockShared(&g_panel_lock);
+    if (list.empty()) return;
+
+    ImGuiContext* ctx_ptr = ImGui::GetCurrentContext();
+    StlGuiCallbackCtx cb{};
+    cb.size = sizeof(cb);
+    cb.api_version = STL_GUI_API_VERSION;
+    cb.imgui_context = ctx_ptr;
+    cb.imgui_alloc = *(void**)(g_base + kAllocFunc);
+    cb.imgui_free = *(void**)(g_base + kFreeFunc);
+    cb.imgui_alloc_user = *(void**)(g_base + kAllocUser);
+    cb.imgui_version_num = IMGUI_VERSION_NUM;
+    cb.imgui_sizeof_io = (uint32_t)sizeof(ImGuiIO);
+    cb.imgui_sizeof_style = (uint32_t)sizeof(ImGuiStyle);
+    cb.imgui_sizeof_drawvert = (uint32_t)sizeof(ImDrawVert);
+    cb.imgui_sizeof_drawidx = (uint32_t)sizeof(ImDrawIdx);
+    cb.ui = &g_ui;
+    cb.api = &g_api;
+    cb.font_body = F(g_font_body);
+    cb.font_bold = F(g_font_bold);
+    cb.font_numbers = F(g_font_num_s);
+
+    for (const auto& p : list) {
+        if (!CodeIsMapped((const void*)p->draw)) {
+            p->dead = true;
+            Log("panel %s: its code is no longer mapped (plugin unloaded without unregistering), dropped", p->id.c_str());
+            continue;
+        }
+        if (!p->visible) continue;
+        const StackMark mark = MarkStacks();
+        const bool window = (p->flags & STL_PANEL_WINDOW) != 0;
+        bool shown = true;
+        if (window) {
+            float w = 360, h = 280;
+            std::string name = p->title;
+            if (p->decl) {  // the visible title is a loc key; the id after ### keeps the window's identity when the language changes
+                const auto* d = (const DeclPanel*)p->user;
+                w = d->w;
+                h = d->h;
+                name = LocKey(p->title) + "###" + p->id;
+            }
+            ImGui::SetNextWindowSize(ImVec2(w * g_S, h * g_S), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowPos(ImVec2((30.f + 400.f * (float)((p->handle - 1) % 3)) * g_S, (120.f + 40.f * (float)((p->handle - 1) / 3)) * g_S), ImGuiCond_FirstUseEver);
+            shown = ImGui::Begin(name.c_str(), &p->visible, ImGuiWindowFlags_NoSavedSettings);
+            if (shown) ImGui::SetWindowFontScale(g_fit);
+        }
+        bool ok = true;
+        DWORD code = 0;
+        if (shown) ok = CallDraw(p->draw, &cb, p->user, &code);
+        ++p->calls;
+        const int repaired = RestoreStacks(mark, window ? 1 : 0);
+        if (window) ImGui::End();
+        if (!ok) {
+            ++p->faults;
+            Log("panel %s: exception 0x%08lX in its draw callback (fault %d of 3), ImGui stacks restored (%d entries)", p->id.c_str(), code, p->faults, repaired);
+            if (p->faults >= 3) {
+                p->dead = true;
+                Log("panel %s: disabled after 3 faults", p->id.c_str());
+            }
+        } else if (repaired) {
+            Log("panel %s: left %d ImGui stack entries open, restored", p->id.c_str(), repaired);
+        }
+    }
+}
+
 bool RunConsole(const char* line);
 void PollCommandFile() {
     static int n = 0;
@@ -1568,6 +2147,19 @@ void PollCommandFile() {
         else if (!strcmp(cmd, "hud")) g_hud_open = iv != 0;
         else if (!strcmp(cmd, "tab")) g_tab = std::clamp(iv, 0, 4);
         else if (!strcmp(cmd, "theme")) g_theme = std::clamp(iv, 0, 3);
+        else if (!strcmp(cmd, "scan")) g_rescan_mods = true;
+        else if (!strcmp(cmd, "panel")) {  // "panel <id> 0/1": show / hide a registered panel; "panel list": log them
+            char pid[96] = {};
+            int vis = 1;
+            sscanf(line, "%*s %95s %d", pid, &vis);
+            AcquireSRWLockShared(&g_panel_lock);
+            for (const auto& p : g_panels) {
+                if (!strcmp(pid, "list")) Log("panel %d %s '%s' flags %u visible %d dead %d calls %llu faults %d", p->handle, p->id.c_str(), p->title.c_str(), p->flags,
+                                            (int)p->visible, (int)p->dead, (unsigned long long)p->calls, p->faults);
+                else if (p->id == pid) p->visible = vis != 0;
+            }
+            ReleaseSRWLockShared(&g_panel_lock);
+        }
         else if (!strcmp(cmd, "res")) g_sel_res = iv;
         else if (!strcmp(cmd, "speed")) g_pending.push_back({ Pending::Speed, iv, {} });
         else if (!strcmp(cmd, "pause")) g_pending.push_back({ Pending::Pause, iv, {} });
@@ -1581,6 +2173,10 @@ void PollCommandFile() {
             {
                 ImGuiIO& dio = ImGui::GetIO();
                 ImDrawData* dd = ImGui::GetDrawData();
+                LARGE_INTEGER qf;
+                QueryPerformanceFrequency(&qf);
+                Log("panel dispatch: %.1f us per frame on average over %lld frames", g_dispatch_frames ? 1e6 * (double)g_dispatch_qpc / (double)qf.QuadPart / (double)g_dispatch_frames : 0.0,
+                    (long long)g_dispatch_frames);
                 Log("imgui: ctx %p frame %d display %.0fx%.0f windows %d active %d vtx %d idx %d drawdata %s cmdlists %d totalvtx %d capture mouse %d kbd %d | ui: hud %d deck %d tab %d S %.2f fit %.2f fonts_ctx %p",
                     (void*)ImGui::GetCurrentContext(), ImGui::GetFrameCount(), dio.DisplaySize.x, dio.DisplaySize.y, dio.MetricsRenderWindows, dio.MetricsActiveWindows,
                     dio.MetricsRenderVertices, dio.MetricsRenderIndices, dd ? (dd->Valid ? "valid" : "invalid") : "null", dd ? dd->CmdListsCount : -1,
@@ -1694,6 +2290,20 @@ void Frame() {
     ImGui::PushFont(F(g_font_body));
     if (g_hud_open) DrawHud(io);
     if (g_deck_open) DrawDeck(io);
+    static bool scanned = false;
+    if ((!scanned && g_snap.in_game) || g_rescan_mods) {
+        scanned = true;
+        g_rescan_mods = false;
+        ScanMods();
+    }
+    {
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        DispatchPanels();  // panels other plugins registered through StlGui_GetApi, and the ones mods declare
+        QueryPerformanceCounter(&t1);
+        g_dispatch_qpc += t1.QuadPart - t0.QuadPart;
+        ++g_dispatch_frames;
+    }
     ImGui::PopFont();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(3);
@@ -1925,6 +2535,12 @@ DWORD WINAPI Worker(LPVOID) {
 }
 
 } // namespace
+
+// The one export other plugins look for (GetProcAddress by name). Returns the function table for any API version this host implements.
+extern "C" __declspec(dllexport) const StlGuiApi* StlGui_GetApi(uint32_t requested_version) {
+    if (requested_version == 0 || requested_version > STL_GUI_API_VERSION) return nullptr;
+    return &g_api;
+}
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {

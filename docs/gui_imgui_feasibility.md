@@ -165,3 +165,7 @@
 - 数据：只在 tick 之间取快照；国家名用引擎的 `CPersistentName::BuildString`；资源从 `CCountry` 的预算 / 库存数组读（同桥接器）。
 
 截图：`docs/gui_probe/showcase/screenshots/`。构建与运行见 `docs/gui_probe/showcase/README.md`。
+
+### 9.3 下一步：做成公共接入点
+
+宿主对其他开发者（C 接口）和 mod 作者（声明语法）开放的调查、原型和实测（E16–E26）在 `gui_plugin_api_investigation.md`；原型代码在 `docs/gui_probe/api_proto/`。

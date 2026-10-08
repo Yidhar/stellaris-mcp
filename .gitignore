@@ -46,6 +46,7 @@ stellaris_bridge.log
 screen.png
 *.png
 !docs/gui_probe/showcase/screenshots/*.png
+!docs/gui_probe/api_proto/screenshots/*.png
 scripts/*.png
 scripts/status_icons/
 scripts/*.json
