@@ -1,3 +1,0 @@
-# probe: does the engine read (and complain about) common/stl_gui/ ?
-stl_gui_version = 1
-zz_probe_marker_common = { not_a_key_the_engine_knows = yes }

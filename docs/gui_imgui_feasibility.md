@@ -130,7 +130,7 @@
 
 ## 7. 探针（可丢弃的验证代码）
 
-位置：`docs/gui_probe/`（`poc.cpp`、`CMakeLists.txt`），实时测试脚本在 `docs/gui_probe/live/`。RVA 写死了，只适用于 4.5.2，**不是产品代码**。注意 `poc.cpp` 的自启动用的是 Present vtable 槽位钩子，在装了 Steam 叠加层 + 别的槽位钩子的环境里会爆栈（§9 E11）；更完整、没有这个问题的实现在 `docs/gui_probe/showcase/`（§9.2）。
+位置：`docs/gui_probe/`（`poc.cpp`、`CMakeLists.txt`），实时测试脚本在 `docs/gui_probe/live/`。RVA 写死了，只适用于 4.5.2，**不是产品代码**。注意 `poc.cpp` 的自启动用的是 Present vtable 槽位钩子，在装了 Steam 叠加层 + 别的槽位钩子的环境里会爆栈（§9 E11）；更完整、没有这个问题的实现是 §9.2 的展示 DLL，后来整理成独立仓库 **`Yidhar/guidll`**（私有；见 `gui_plugin_api_investigation.md` 的"实现状态"）。
 
 - 构建：ImGui v1.85 源码放在上一级的 `imgui185/`（`git clone --depth 1 --branch v1.85 https://github.com/ocornut/imgui.git imgui185`，`CMakeLists.txt` 里的 `IMGUI_DIR` 指向 `../imgui185`，按需修改），MinHook v1.3.4 由 CMake 获取；`cmake -S . -B build -G "Visual Studio 17 2022" -A x64` 然后 `cmake --build build --config Release`。
 - 使用：`stl inject <gui_poc.dll>`；游戏进入后约 10 秒自动启动引擎 ImGui，面板出现；卸载：设置事件 `Local\gui_poc_unload_<pid>`（`live/poc_unload.py`）。
@@ -155,7 +155,9 @@
 | E14 | 键盘模拟控制台命令（SendInput 扫描码）驱动游戏。 | 中文输入法把按键吞进候选栏，命令行变成乱码；关 IME 后仍不稳定，多次 Esc 还会打开游戏的系统菜单。**不要再用键盘模拟**：展示 DLL 提供了文件命令 `console <行>`（`CConsole::RunCommandNow`，长行用引擎分配器），在游戏进程里直接执行。|
 | E15 | 展示 DLL 热重载（卸载旧的、注入新的，不重启游戏）。 | 新 DLL 发现引擎 ImGui 已在运行但图集不是自己的，于是用 `imgui off` + `imgui on` 重建上下文并在 `ImGuiInit` 钩子里加字体。上下文地址有时不变，所以"是否换了上下文"不能靠指针比较，`IniFilename` 等每帧都要重设。|
 
-### 9.2 展示 DLL（`docs/gui_probe/showcase/`）
+### 9.2 展示 DLL
+
+**代码已迁到 `Yidhar/guidll`（`src/deck.cpp` 是这里描述的界面，`src/imgui_host.cpp` 是钩子和字体）；本仓库不再保留，需要原型时用 `git show 6b5aa58:docs/gui_probe/showcase/showcase.cpp`。** 下面是当时的记录，文件名和 `zz_gui_*` 是原型里的。
 
 一个和原版界面完全不同风格的自定义面板，真实读写游戏：
 
@@ -164,8 +166,8 @@
 - 自绘：渐变面板、发光、星空与流星，图标全部由 `ImDrawList` 图元画出（没有图标字体），环形仪表 / 雷达 / 面积图用顶点色渐变。字体：Segoe UI + 微软雅黑（CJK 合并）+ Bahnschrift（数字）。
 - 数据：只在 tick 之间取快照；国家名用引擎的 `CPersistentName::BuildString`；资源从 `CCountry` 的预算 / 库存数组读（同桥接器）。
 
-截图：`docs/gui_probe/showcase/screenshots/`。构建与运行见 `docs/gui_probe/showcase/README.md`。
+截图：`docs/gui_probe/showcase/screenshots/`（留在这里）。构建与运行见 guidll 仓库的 `README.md`。
 
 ### 9.3 下一步：做成公共接入点
 
-宿主对其他开发者（C 接口）和 mod 作者（声明语法）开放的调查、原型和实测（E16–E26）在 `gui_plugin_api_investigation.md`；原型代码在 `docs/gui_probe/api_proto/`。
+宿主对其他开发者（C 接口）和 mod 作者（声明语法）开放的调查、原型和实测（E16–E26）在 `gui_plugin_api_investigation.md`；接口头文件、示例插件、宿主、测试 mod 现在分别在 `Yidhar/guidll` 和 `Yidhar/guidll-test-mod`。

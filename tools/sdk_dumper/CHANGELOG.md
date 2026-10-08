@@ -6,7 +6,7 @@
 
 ### 为什么
 
-`docs/gui_imgui_feasibility.md` 的研究表明引擎里编译进了完整的 Dear ImGui 1.85，插件可以把自己的界面画进引擎的上下文。展示 DLL（`docs/gui_probe/showcase/`）当时用的是手工找到的 7 个内部地址（`GImGui`、分配器三个全局、`ImGui::NewFrame`、`NImGuiWrapper::ImGuiInit`）写死在源码里，游戏一更新就失效。项目规则（`CLAUDE.md`）是地址由 dumper 生成、不手写，所以把它们改成指纹，并顺手把"引擎 ImGui 与插件自带 ImGui 的布局是否一致"的守卫所需的常量也读出来。
+`docs/gui_imgui_feasibility.md` 的研究表明引擎里编译进了完整的 Dear ImGui 1.85，插件可以把自己的界面画进引擎的上下文。展示 DLL（当时在 `docs/gui_probe/showcase/`，现在是 `Yidhar/guidll` 仓库）当时用的是手工找到的 7 个内部地址（`GImGui`、分配器三个全局、`ImGui::NewFrame`、`NImGuiWrapper::ImGuiInit`）写死在源码里，游戏一更新就失效。项目规则（`CLAUDE.md`）是地址由 dumper 生成、不手写，所以把它们改成指纹，并顺手把"引擎 ImGui 与插件自带 ImGui 的布局是否一致"的守卫所需的常量也读出来。
 
 ### 改了什么
 

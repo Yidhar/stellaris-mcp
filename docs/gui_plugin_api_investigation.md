@@ -2,7 +2,29 @@
 
 状态标记：✅ 在运行中的游戏里实测 / 读到了源码或规范；⚠ 推断、只看了摘要或没验证；📎 外部资料（链接在 §11）。
 前置阅读：`gui_imgui_feasibility.md`（引擎自带的 ImGui 能用、怎么用）、`gui_native_system.md`（原生 .gui 系统的限制）。
-原型代码：`gui_probe/api_proto/`（接口头文件、两个消费方插件）和 `gui_probe/showcase/`（宿主一侧）。
+原型代码：`gui_probe/api_proto/`（接口头文件、两个消费方插件）和 `gui_probe/showcase/`（宿主一侧）——**这些代码已迁出，见下面的"实现状态"**；本文是调查记录，里面的文件名（`gui_showcase.dll`、`zz_gui_*`、`consumer_a/b`）是原型里的名字。
+
+## 实现状态（2026-10-08）
+
+调查之后按 §7 的建议做成了独立仓库（均为私有，需要时 `gh repo edit <仓库> --visibility public`）：
+
+| 仓库 | 内容 |
+|---|---|
+| **`Yidhar/guidll`** | 宿主插件（插件 id 和 DLL 名 `guidll`）、公共 C 接口、两个示例插件、声明面板、参考皮肤、文档、CI。`main` 目前只有 GitHub 生成的 README / LICENSE，代码在草稿 PR #1（分支 `initial-import`），合并后才有 |
+| **`Yidhar/guidll-test-mod`** | 测试 mod：一个声明面板、四个 button effect、中英文 loc、安装脚本、静态检查。同样在草稿 PR #1 |
+
+对 §10 的决定：
+
+| 项 | 做法 |
+|---|---|
+| 1 仓库名、账号、许可 | `Yidhar/guidll`，MIT（头文件同样 MIT） |
+| 2 插件 id 和 DLL 名 | `guidll` / `guidll.dll`（没有用建议的 `stellaris-gui`）；接口前缀 `Stl` / `STL_` 和导出函数 `StlGui_GetApi` 不变 |
+| 3 声明文件夹 | 沿用 `interface/stl_gui/*.txt` |
+| 4 指挥甲板 | **没有拆出**：留在宿主里作为可关闭的参考皮肤（`deck = 0`）。拆成独立消费方插件仍然是更干净的做法，**待你决定** |
+| 5 启动器的加载顺序提示 | 没做；接口本来就不依赖加载顺序 |
+| 6 v1 元素集 | 不变（text / separator / spacer / date / value / gauge / stat / badge / button / row） |
+
+迁移时的改动：日志、设置和开发用的命令文件放进插件文件夹（`logs\`、`config\guidll.ini`），不再放在 DLL 旁边；演示用的 effect 改名 `guidll_test_*`，由测试 mod 提供；面板注册表用选项（标题是不是 loc 键、窗口大小）代替对"声明面板"的硬编码。迁移后在游戏里重新验证过（两种注入顺序、四个 effect、故障隔离含三次故障后停用、布局核对、宿主卸载、启动器接受清单）；没有重跑的是"留下没配对的 ImGui 栈"和"不注销就卸载"两项（原型里验证过，代码未改）。
 
 ## 0. 结论
 
