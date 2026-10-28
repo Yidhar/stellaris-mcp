@@ -2,7 +2,7 @@
 save from the main menu, save, leave for the main menu, load the new save back, and the refusals.
 
 Needs the game running with the bridge injected. It loads saves of the campaign given with
---campaign (default: the oldest campaign folder, the test save), writes one save named
+--campaign (default: TEST_CAMPAIGN, the test save), writes one save named
 mcp_test_save into it, and puts continue_game.json (the main menu's Continue target, which every
 save rewrites) back as it was.
 
@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 
 RESULTS = []
+# the test save: a 4.5 campaign (the game refuses saves of older versions)
+TEST_CAMPAIGN = "10_689234343"
 SERVER = Path(__file__).resolve().parent.parent / "stellaris_mcp_server" / "dist" / "index.js"
 
 def record(name, ok, detail=""):
@@ -61,7 +63,7 @@ class Mcp:
 
 def run(m):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--campaign")
+    ap.add_argument("--campaign", default=TEST_CAMPAIGN)
     ap.add_argument("--file", default=None)
     args = ap.parse_args()
     ok, listing = m.tool("stellaris_list_saves")
@@ -70,8 +72,7 @@ def run(m):
     if not ok:
         return 1
     user_dir = Path(listing["saves_folder"]).parent
-    campaigns = listing["campaigns"]
-    campaign = args.campaign or sorted(campaigns, key=lambda c: c["latest_modified"])[0]["campaign"]
+    campaign = args.campaign
     ok, saves = m.tool("stellaris_list_saves", {"campaign": campaign})
     record("list_saves lists one campaign's saves with headers", ok and saves["saves"] and saves["saves"][0].get("date"),
            f"{campaign}: {len(saves['saves']) if ok else saves}")

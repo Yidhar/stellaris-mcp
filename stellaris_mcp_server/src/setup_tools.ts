@@ -19,7 +19,7 @@ export function registerSetupTools(server: McpServer, client: PipeClient) {
 
   server.tool(
     "stellaris_list_empire_designs",
-    "The empires a new game can be played as (Layer 1): the prescripted empires and the user's saved designs, each with its key, name, type (prescripted / user), species name, ethics, origin and playable (the design's own playable condition; the game's empire list hides prescripted designs that fail it). Works on the main menu and in game. Details and the game's validation: stellaris_get_empire_design.",
+    "The empires a new game can be played as (Layer 1): the prescripted empires and the user's saved designs, each with its key, name, type (prescripted / user), species name, ethics, origin and playable (the design's own playable condition), and on the main menu valid (the game's validation for playing it; the game's empire list hides prescripted designs that fail either). Works on the main menu and in game. Details and why a design is invalid: stellaris_get_empire_design.",
     {},
     async () => call("list_empire_designs")
   );
