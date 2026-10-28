@@ -671,6 +671,55 @@ std::vector<EventInfo> EventManager::GetActiveEvents() {
     return events;
 }
 
+nlohmann::json EventManager::GetPendingJson() {
+    // the windows waiting for the player, compact: what GetActiveEvents shows, without
+    // descriptions, options and effects
+    nlohmann::json out = nlohmann::json::array();
+    void* idler = GameState::Get().GetInGameIdler();
+    if (!idler) return out;
+    const std::pair<std::ptrdiff_t, uintptr_t> views[] = {
+        { sdk::rt::CInGameIdler_CStartScreenWindow, sdk::vt::CStartScreenWindow },
+        { sdk::rt::CInGameIdler_CAnomalyWindow, sdk::vt::CAnomalyWindow },
+        { sdk::rt::CInGameIdler_CFirstContactView, sdk::vt::CFirstContactView },
+    };
+    const uint32_t ids[] = { START_SCREEN_EVENT_ID, ANOMALY_EVENT_ID, FIRST_CONTACT_EVENT_ID };
+    const char* kinds[] = { "start_screen", "anomaly", "first_contact" };
+    for (int k = 0; k < 3; ++k) {
+        if (ShownView(idler, views[k].first, views[k].second)) out.push_back({ {"window_id", ids[k]}, {"kind", kinds[k]} });
+    }
+
+    void** windows = nullptr;
+    uint32_t count = 0;
+    if (!SafeReadPtr((const void*)((uintptr_t)idler + 0x170), (void**)&windows) ||
+        !SafeReadU32((const void*)((uintptr_t)idler + 0x17c), &count) || !windows || count == 0 || count > 200) {
+        return out;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        void* win = nullptr;
+        if (!SafeReadPtr((const void*)&windows[i], &win) || !win) continue;
+        nlohmann::json e = { {"kind", "event"} };
+        uint32_t window_id = 0;
+        SafeReadU32((const void*)((uintptr_t)win + 0x98), &window_id);
+        e["window_id"] = window_id;
+        uint32_t open_id = 0xFFFFFFFF;
+        void* ope = SafeReadU32((const void*)((uintptr_t)win + kWinOpenEventId), &open_id) ? FindOpenPlayerEvent(base_address_, open_id) : nullptr;
+        void* handle = nullptr;
+        void* event = nullptr;
+        if (ope && SafeReadPtr((const void*)((uintptr_t)ope + sdk::ent::COpenPlayerEvent::event), &handle) && handle &&
+            SafeReadPtr(handle, &event) && event) {
+            e["event_key"] = ExtractPdxString((void*)((uintptr_t)event + kEventKey));
+            EventTextCtx ctx{};
+            ctx.event = event;
+            ctx.scope = (void*)((uintptr_t)ope + sdk::ent::COpenPlayerEvent::scope);
+            ctx.fn = base_address_ + sdk::fn::CEvent_GetTitle;
+            std::string text;
+            if (CommandBuilder::Get().CallForText(&CallEventTitle, &ctx, &text) && !text.empty()) e["title"] = CleanPdxString(text);
+        }
+        out.push_back(e);
+    }
+    return out;
+}
+
 nlohmann::json EventManager::GetActiveEventsJson() {
     auto events = GetActiveEvents();
     nlohmann::json arr = nlohmann::json::array();

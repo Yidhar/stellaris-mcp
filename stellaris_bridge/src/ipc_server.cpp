@@ -144,6 +144,8 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     } else if (method == "delete_empire_design") {
         std::string key = params.value("key", std::string());
         fut = TaskQueue::Get().Enqueue([key]() { return EmpireDesignManager::Get().Delete(key); });
+    } else if (method == "get_attention") {
+        fut = TaskQueue::Get().Enqueue([]() { return GameState::Get().GetAttentionJson(); });
     } else if (method == "get_galaxy_settings") {
         fut = TaskQueue::Get().Enqueue([]() { return GalaxySetupManager::Get().GetJson(); });
     } else if (method == "set_galaxy_settings") {

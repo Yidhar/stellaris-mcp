@@ -193,3 +193,9 @@ flowchart TD
 - 布局和 Linux 一致：CFixedPoint 成员在 `sdk::rt::SGalaxyConfigSettings_*`（anchors 从 Windows 序列化函数的 `cmp [rdi+X], -0x186a0; mov edx, token` 读出）；枚举是 4 字节、放在奇数偏移（0x115 规模、0x119 科技缩放）；`sdk::ent::SGalaxyConfigSettingsSP::clustered/ironman` 是相对 `CSettings` 的偏移。枚举取值名在 `sdk::enums`（Linux 反编译里 `Get*LocKey` 的 switch）。
 - 开新游戏 = 主菜单的快速开始：`g_QuickStartSave` 为空 + `g_bQuickStart = 1`，前端 `UpdateInternal` 会建人类玩家（随机预设，设计 +0x38 = 1）并调用 `LaunchGame`（`+0x218 = 0x101`），下一次 update 才 `StartNewGame`。指定帝国：在这两次 update 之间的 Present 里 `CHuman::SetDesign(AccessLocalHuman(gs), 预设)`（`MenuManager::OnFrame`）。`-empire=` 命令行走的是同一套（`GetDesignByKey` + `IsValid` + `IsPlayable` + `CHuman` + `SetDesign` + `AddHuman`）。
 - 快速开始的新游戏不一定弹开局画面（`0xFFFF0001`），看时机。tiny 银河约 7 秒生成，small 约 11 秒。
+
+## 15. 暂停原因与待处理事件 (verified 4.5.2)
+
+- `CInGameIdler`：速度 `sdk::rt::CInGameIdler_speed`（0x590）、暂停 `CInGameIdler_paused`（0x594）、`+0x595` 外来暂停锁、`CInGameIdler_auto_paused_by_popup`（0x5C8，`SetAutoPausedWithPopup` 置位）。暂停且 0x5C8 置位 = 被弹窗（事件窗口、设置为暂停的消息）暂停；游戏内 `UpdateInternal` 在没有弹窗再按住时（`IsAutoPausedByMessagePopup`，Windows 上内联）、非多人且 `CSettings::auto_unpause` 时发 `CPauseGame(false)` 自动恢复。
+- 实测：事件窗口不一定暂停游戏（看玩家的消息设置），时间会带着打开的事件窗口继续走，所以要主动轮询待处理窗口，不能只看暂停状态。
+- 待处理窗口：开局画面、异常点、首次接触三个视图（`ShownView`），加 `idler+0x170/+0x17C` 的事件窗口数组（窗口 id 在 +0x98，`COpenPlayerEvent` 给出脚本 id 和标题）。回答一个事件可能马上打开事件链的下一个。

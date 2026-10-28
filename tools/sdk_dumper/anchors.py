@@ -1711,6 +1711,41 @@ def main():
             result["slots"]["CEmpireDesign_Delete"] = got["delete_slot"]
             print("design saving:", {k: hex(v) for k, v in got.items()})
 
+    # CInGameIdler "paused by a popup" (SetAutoPausedWithPopup): the in-game update resumes the game
+    # once no popup holds it: `cmp byte ptr [idler + F], 0; ...` (IsAutoPausedByMessagePopup,
+    # inlined), then not multiplayer (`cmp byte ptr [rax + is_multiplayer], 0`) and CSettings
+    # auto_unpause, then it builds a CPauseGame (the pausegame command's constructor)
+    sdk_cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])
+    pause_vt = next((c.get("vtable") for c in sdk_cmds if c.get("token_name") == "pausegame"), None)
+    is_mp_off = result["fields"].get("CGameIdler_is_multiplayer")
+    auto = set()
+    if pause_vt and is_mp_off is not None:
+        text = im.img[im.text0:im.text1]
+        lea = im.lea_index()
+        for ctor in sorted({im.fn_of(r) for r in lea.get(pause_vt, [])} - {None}):
+            for a, _ in direct_callers(ctor):
+                c = im.fn_of(a)
+                if c is None:
+                    continue
+                body = im.disasm_fn(c, 0x9000)
+                at = next((n for n, x in enumerate(body) if x.address - im.ib == a), None)
+                if at is None:
+                    continue
+                window = body[max(0, at - 30):at]
+                tests = [(k, re.match(r"^byte ptr \[(\w+) \+ (0x[0-9a-f]+)\], 0$", x.op_str)) for k, x in enumerate(window) if x.mnemonic == "cmp"]
+                tests = [(k, m) for k, m in tests if m]
+                mp = next((k for k, m in tests if m.group(1) == "rax" and int(m.group(2), 16) == is_mp_off), None)
+                if mp is None:
+                    continue
+                before = [m for k, m in tests if k < mp and m.group(1) != "rax"]
+                if before:
+                    auto.add(int(before[-1].group(2), 16))
+    if len(auto) != 1:
+        failures.append(f"CInGameIdler auto-paused-by-popup flag: {sorted(hex(x) for x in auto)}")
+    else:
+        result["fields"]["CInGameIdler_auto_paused_by_popup"] = auto.pop()
+        print(f"CInGameIdler auto-paused-by-popup flag 0x{result['fields']['CInGameIdler_auto_paused_by_popup']:X}")
+
     # New game. The galaxy setup's pickers write the single-player galaxy settings in CSettings
     # (SGalaxyConfigSettingsSP at galaxy_config_sp) and LaunchNewGame reads them from there, so
     # CSettings::_pInstance is the global loaded right before `lea r, [reg + galaxy_config_sp]`.

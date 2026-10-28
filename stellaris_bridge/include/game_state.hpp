@@ -56,6 +56,9 @@ public:
 
     // Export as JSON for MCP/IPC
     nlohmann::json GetStatusJson();
+    // what wants the player now, compact and cheap enough to ask after every tool call: paused,
+    // speed, date, why the game is paused (pause_reason), and the event windows waiting
+    nlohmann::json GetAttentionJson();
 
     void* GetInGameIdler();
     void* GetPlayerCountry();

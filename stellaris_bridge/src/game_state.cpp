@@ -12,6 +12,7 @@
 #include "contacts_manager.hpp"
 #include "outliner_manager.hpp"
 #include "menu_manager.hpp"
+#include "event_manager.hpp"
 #include <cmath>
 
 namespace bridge {
@@ -531,8 +532,8 @@ GameStatus GameState::ReadStatus() {
 
     uint32_t raw_speed = 0;
     uint8_t raw_paused = 0;
-    if (SafeReadU32((const void*)((uintptr_t)idler + 0x590), &raw_speed) &&
-        SafeReadU8((const void*)((uintptr_t)idler + 0x594), &raw_paused)) {
+    if (SafeReadU32((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_speed), &raw_speed) &&
+        SafeReadU8((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_paused), &raw_paused)) {
         status.in_game = true;
         status.speed = raw_speed;
         status.is_paused = (raw_paused != 0); // Clausewitz engine: 1 = paused, 0 = running
@@ -554,6 +555,36 @@ GameStatus GameState::ReadStatus() {
     }
 
     return status;
+}
+
+nlohmann::json GameState::GetAttentionJson() {
+    nlohmann::json out = { {"screen", MenuManager::Get().Screen()} };
+    void* idler = GetInGameIdler();
+    if (!idler || MenuManager::Get().Loading()) return out;
+    uint32_t speed = 0;
+    uint8_t paused = 0, popup = 0, auto_unpause = 0, multiplayer = 0;
+    SafeReadU32((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_speed), &speed);
+    SafeReadU8((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_paused), &paused);
+    // set when a popup (an event window, a message set to pause) paused the game; the idler's
+    // update resumes the game once no popup holds it, with CSettings auto_unpause and not in
+    // multiplayer
+    SafeReadU8((const void*)((uintptr_t)idler + sdk::rt::CInGameIdler_auto_paused_by_popup), &popup);
+    SafeReadU8((const void*)((uintptr_t)idler + sdk::rt::CGameIdler_is_multiplayer), &multiplayer);
+    void* settings = nullptr;
+    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::CSettings_pInstance), &settings) && settings) {
+        SafeReadU8((const void*)((uintptr_t)settings + sdk::ent::CSettings::auto_unpause), &auto_unpause);
+    }
+    nlohmann::json events = EventManager::Get().GetPendingJson();
+    out["paused"] = paused != 0;
+    out["speed"] = speed;
+    GameDate date = ReadDate();
+    if (!date.formatted.empty()) out["date"] = date.formatted;
+    if (paused) {
+        out["pause_reason"] = popup ? (events.empty() ? "popup" : "event") : "player";
+        if (popup) out["resumes_when_closed"] = auto_unpause && !multiplayer;
+    }
+    out["pending_events"] = events;
+    return out;
 }
 
 nlohmann::json GameState::GetStatusJson() {
@@ -579,6 +610,14 @@ nlohmann::json GameState::GetStatusJson() {
         {"is_paused", status.is_paused},
         {"speed", status.speed}
     };
+    if (status.in_game) {
+        // what waits for the player: why the game is paused, the event windows (details:
+        // get_active_events)
+        nlohmann::json a = GetAttentionJson();
+        if (a.contains("pause_reason")) root["pause_reason"] = a["pause_reason"];
+        if (a.contains("resumes_when_closed")) root["resumes_when_closed"] = a["resumes_when_closed"];
+        root["pending_events"] = a.value("pending_events", nlohmann::json::array());
+    }
     if (MenuManager::Get().QuickStartPending()) root["quick_start_pending"] = true;  // a load still requested
 
     if (status.in_game) {

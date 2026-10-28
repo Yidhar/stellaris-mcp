@@ -33,6 +33,8 @@ public:
     // Call on main thread to get active events snapshot
     std::vector<EventInfo> GetActiveEvents();
     nlohmann::json GetActiveEventsJson();
+    // the windows waiting for the player, compact (window_id, kind, event_key, title)
+    nlohmann::json GetPendingJson();
 
     // Call on main thread to resolve an event choice
     nlohmann::json ResolveEvent(uint32_t window_id, int option_index);

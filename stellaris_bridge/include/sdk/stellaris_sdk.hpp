@@ -416,6 +416,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CInGameIdler_CAnomalyWindow = 0xB08;
     inline constexpr std::ptrdiff_t CInGameIdler_CFirstContactView = 0xC90;
     inline constexpr std::ptrdiff_t CInGameIdler_CStartScreenWindow = 0xBE8;
+    inline constexpr std::ptrdiff_t CInGameIdler_auto_paused_by_popup = 0x5C8;
     inline constexpr std::ptrdiff_t CInGameIdler_busy = 0x5D0;
     inline constexpr std::ptrdiff_t CInGameIdler_paused = 0x594;
     inline constexpr std::ptrdiff_t CInGameIdler_resign_pending = 0xA61;

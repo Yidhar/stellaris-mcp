@@ -6,7 +6,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 1: stellaris_get_status
   server.tool(
     "stellaris_get_status",
-    "Retrieves current Stellaris game status (Layer 1 Global Perception in progressive disclosure architecture). Includes session active state, pause state, speed (0-4), date, empire statistics (empire_size, colonies, starbases, naval_capacity), empire resources (stockpile/income/expense/net for all 26 resources), situation_log indicators, council indicators, society indicators, leaders indicators, market indicators (is_galactic_market, market_fee_percent), discoveries indicators (held_relics_count, can_activate_relic), and contacts indicators (known_empires_count, pending_first_contacts_count).",
+    "Retrieves current Stellaris game status (Layer 1 Global Perception in progressive disclosure architecture). Includes session active state, pause state with pause_reason (event / popup / player) and resumes_when_closed, pending_events (the event windows waiting: window_id, kind, event_key, title; answer them with stellaris_get_active_events / stellaris_resolve_event), speed (0-4), date, empire statistics (empire_size, colonies, starbases, naval_capacity), empire resources (stockpile/income/expense/net for all 26 resources), situation_log indicators, council indicators, society indicators, leaders indicators, market indicators (is_galactic_market, market_fee_percent), discoveries indicators (held_relics_count, can_activate_relic), and contacts indicators (known_empires_count, pending_first_contacts_count).",
     {},
     async () => {
       try {
@@ -36,7 +36,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 2: stellaris_set_paused
   server.tool(
     "stellaris_set_paused",
-    "Pauses or unpauses the Stellaris game deterministically via native CPauseCommand.",
+    "Pauses or unpauses the Stellaris game deterministically via native CPauseCommand. To let time pass and stop at the next event, use stellaris_run_until instead of unpausing and polling.",
     {
       paused: z.boolean().describe("True to pause the game, false to resume simulation."),
     },
@@ -68,7 +68,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 3: stellaris_set_speed
   server.tool(
     "stellaris_set_speed",
-    "Adjusts the game simulation speed using native game speed commands.",
+    "Adjusts the game simulation speed using native game speed commands (stellaris_run_until also takes a speed).",
     {
       speed: z
         .number()

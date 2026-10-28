@@ -4,6 +4,7 @@ import { PipeClient } from "./pipe_client.js";
 import { registerTools } from "./tools.js";
 import { registerSessionTools } from "./session_tools.js";
 import { registerSetupTools } from "./setup_tools.js";
+import { registerAttentionTools, withAttentionNotes } from "./attention.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,10 +29,14 @@ async function main() {
 
   const client = new PipeClient();
 
+  // every tool's result notes the event windows waiting for the player
+  withAttentionNotes(server, client);
+
   // Register all Stellaris tools
   registerTools(server, client);
   registerSessionTools(server, client);
   registerSetupTools(server, client);
+  registerAttentionTools(server, client);
   log("Tools registered.");
 
   // Connect over standard stdio transport for MCP client
