@@ -23,6 +23,7 @@
 #include "plugin.hpp"
 #include "menu_manager.hpp"
 #include "empire_design_manager.hpp"
+#include "galaxy_setup_manager.hpp"
 
 namespace bridge {
 
@@ -61,6 +62,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
     OutlinerManager::Get().Init(base_address);
     MenuManager::Get().Init(base_address);
     EmpireDesignManager::Get().Init(base_address);
+    GalaxySetupManager::Get().Init(base_address);
 
     if (!HookManager::Get().Init()) {
         LOG("[INIT_FATAL] Failed to hook DXGI Present. Aborting.");

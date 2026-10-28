@@ -1648,9 +1648,9 @@ def main():
             usr = {t for n, t in calls if any(ins[k].op_str == "r8b, 1" for k in range(max(0, n - 4), n))}
             both = pre & usr
             refs = {rip_target(im, i) for i in ins[:ret] if "[rip + " in i.op_str and i.mnemonic in ("mov", "movsxd")}
-            names = {t - 8 for t in refs if t + 0xC in refs}
-            if len(both) == 1 and len(names) == 1:
-                got["init_from_file"], got["names"] = both.pop(), names.pop()
+            file_names = {t - 8 for t in refs if t + 0xC in refs}
+            if len(both) == 1 and len(file_names) == 1:
+                got["init_from_file"], got["names"] = both.pop(), file_names.pop()
                 break
         if "names" in got:
             text = im.img[im.text0:im.text1]
@@ -1710,6 +1710,130 @@ def main():
                 "signature": "bool (*)(void* design)  -- the fix-ups the game runs on every design after reading; true when it changed one"}
             result["slots"]["CEmpireDesign_Delete"] = got["delete_slot"]
             print("design saving:", {k: hex(v) for k, v in got.items()})
+
+    # New game. The galaxy setup's pickers write the single-player galaxy settings in CSettings
+    # (SGalaxyConfigSettingsSP at galaxy_config_sp) and LaunchNewGame reads them from there, so
+    # CSettings::_pInstance is the global loaded right before `lea r, [reg + galaxy_config_sp]`.
+    # Its CFixedPoint members (unset = -100000, the template's value) are not in the Linux index
+    # (the decompile drops the value argument); the Windows serializer spells each one
+    # `cmp qword ptr [rdi + X], -0x186a0; ... mov edx, token`.
+    sdk_json = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))["entities"]
+    sp_off = next((f["abs"] for f in sdk_json.get("CSettings", {}).get("fields", []) if f["name"] == "galaxy_config_sp"), None)
+    settings_globals = collections.Counter()
+    if sp_off is not None:
+        text = im.img[im.text0:im.text1]
+        lea = re.compile(rb"\x48\x8D[\x80-\xBF]" + struct.pack("<I", sp_off))
+        for m in lea.finditer(text):
+            f = im.fn_of(im.text0 + m.start())
+            if f is None:
+                continue
+            body = im.disasm_fn(f, 0x2000)
+            for n, i in enumerate(body):
+                if i.address - im.ib != im.text0 + m.start():
+                    continue
+                for p in body[max(0, n - 6):n]:
+                    mm = re.match(r"^(\w+), qword ptr \[rip \+ 0x[0-9a-f]+\]$", p.op_str)
+                    if p.mnemonic == "mov" and mm and f"[{mm.group(1)} + {sp_off:#x}]" in i.op_str:
+                        settings_globals[rip_target(im, p)] += 1
+    if len(settings_globals) != 1:
+        failures.append(f"CSettings::_pInstance: {dict(settings_globals)}")
+    else:
+        result["globals"]["CSettings::_pInstance"] = next(iter(settings_globals))
+        print(f"CSettings::_pInstance 0x{next(iter(settings_globals)):X}")
+    gcs = sdk_json.get("SGalaxyConfigSettings", {}).get("serializer_rva")
+    fixed = {}
+    if gcs:
+        body = im.disasm_fn(gcs, 0x3000)
+        for n, i in enumerate(body):
+            m = re.match(r"^qword ptr \[rdi \+ (0x[0-9a-f]+)\], -0x186a0$", i.op_str)
+            if i.mnemonic != "cmp" or not m:
+                continue
+            for k in body[n + 1:n + 6]:
+                t = re.match(r"^edx, (0x[0-9a-f]+)$", k.op_str)
+                if k.mnemonic == "mov" and t and int(t.group(1), 16) in names:
+                    fixed[names[int(t.group(1), 16)]] = int(m.group(1), 16)
+                    break
+    if len(fixed) < 10:
+        failures.append(f"galaxy settings fixed-point fields: {fixed}")
+    else:
+        for name, off in fixed.items():
+            result["fields"][f"SGalaxyConfigSettings_{name}"] = off
+        print(f"galaxy settings fixed-point fields: {len(fixed)}")
+
+    # The main menu's quick start of a new game (CFrontEndIdler::UpdateInternal, the function that
+    # reads "latest" and "save games"): with g_bQuickStart set and no save named, it adds a human
+    # with a random design, then `mov rcx, [rip + g_CurrentGameState]; call AccessLocalHuman;
+    # ...; mov rcx, rax; call CHuman::SetDesign; ...; call LaunchGame`, and LaunchGame (the main
+    # menu's start button) sets `mov word ptr [rbx + X], 0x101`: StartNewGame runs on the next update
+    got = {}
+    for f in sorted(fns_with_strings("latest", "save games")):
+        body = im.disasm_fn(f, 0x8000)
+        calls = [(n, int(i.op_str, 16) - im.ib) for n, i in enumerate(body) if i.mnemonic == "call" and i.op_str.startswith("0x")]
+        for n, t in calls:
+            tb = im.disasm_fn(t, 0x60)[:20]
+            st = next((re.match(r"^word ptr \[r\w+ \+ (0x[0-9a-f]+)\], 0x101$", x.op_str) for x in tb
+                       if x.mnemonic == "mov" and re.match(r"^word ptr \[r\w+ \+ 0x[0-9a-f]+\], 0x101$", x.op_str)), None)
+            if not st:
+                continue
+            prev = [(m, u) for m, u in calls if m < n][-2:]
+            if len(prev) == 2 and any(body[k].mnemonic == "mov" and body[k].op_str == "rcx, rax"
+                                      for k in range(prev[0][0] + 1, prev[1][0])):
+                got = {"launch": t, "field": int(st.group(1), 16), "set_design": prev[1][1], "local_human": prev[0][1]}
+                break
+        if got:
+            break
+    if not got:
+        failures.append("main menu quick start: LaunchGame / AccessLocalHuman / CHuman::SetDesign")
+    else:
+        result["fields"]["CFrontEndIdler_launch"] = got["field"]
+        result["functions"]["CFrontEndIdler_LaunchGame"] = {
+            "rva": got["launch"], "linux": "CFrontEndIdler::LaunchGame()",
+            "signature": "void (*)(void* front_end_idler)  -- the start button: StartNewGame on the next update"}
+        result["functions"]["CGameState_AccessLocalHuman"] = {
+            "rva": got["local_human"], "linux": "CGameState::AccessLocalHuman()",
+            "signature": "void* (*)(void* game_state)  -- the local CHuman"}
+        result["functions"]["CHuman_SetDesign"] = {
+            "rva": got["set_design"], "linux": "CHuman::SetDesign(CEmpireDesign const&)",
+            "signature": "void (*)(void* human, const void* design)  -- copies the design into the human's setup"}
+        print("quick start:", {k: hex(v) for k, v in got.items()})
+
+    # the galaxy settings' enums, value -> name, from the Linux decompile (source-level switches,
+    # the same on every platform): the loc keys CGalaxyConfiguration::Get*LocKey returns, and the
+    # scaling tokens GetScalingTypeTokenFromEnum returns (scaling_off + value)
+    src = Path(__file__).resolve().parents[2] / "source" / "stellaris_4.5_source.cpp"
+    enums = {}
+    if src.exists():
+        import mmap
+        with open(src, "rb") as fh:
+            mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            for enum, fn in (("Difficulty", "CGalaxyConfiguration::GetDifficultyLocKey"),
+                             ("Aggressiveness", "CGalaxyConfiguration::GetAggressivenessLocKey"),
+                             ("CrisisType", "CGalaxyConfiguration::GetCrisisTypeLocKey"),
+                             ("TechScaling", "CGalaxyConfiguration::GetTechCostDifficultyScaleLocKey")):
+                s = mm.find(b"\n/* " + fn.encode())
+                if s < 0:
+                    continue
+                body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
+                vals = {int(n): k for n, k in re.findall(r'case (\d+):\s*\w+ = "([A-Z_]+)"', body)}
+                vals.update({int(n): k for n, k in re.findall(r'== (\d+)\) \{\s*\w+ = "([A-Z_]+)"', body)})
+                rest = [k for k in re.findall(r'"([A-Z_]+)"', body) if k not in vals.values() and k != "RT_ERROR"]
+                zero = re.search(r"!= (\d+)\)", body)
+                if rest and zero and int(zero.group(1)) not in vals:
+                    vals[int(zero.group(1))] = rest[0]
+                vals = {n: k for n, k in vals.items() if k != "RT_ERROR"}
+                if vals and sorted(vals) == list(range(len(vals))):
+                    enums[enum] = [vals[n] for n in range(len(vals))]
+            s = mm.find(b"\n/* GetScalingTypeTokenFromEnum")
+            if s >= 0:
+                body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
+                lim, base = re.search(r"param_1 < (\d+)", body), re.search(r"param_1 \+ (0x[0-9a-f]+)", body)
+                linux_names = json.loads((HERE / "linux_tokens.json").read_text(encoding="utf-8"))["tokens"]
+                if lim and base:
+                    enums["Scaling"] = [linux_names.get(hex(int(base.group(1), 16) + k), "") for k in range(int(lim.group(1)))]
+    if set(enums) != {"Difficulty", "Aggressiveness", "CrisisType", "TechScaling", "Scaling"}:
+        failures.append(f"galaxy settings enums: {sorted(enums)}")
+    result["enums"] = enums
+    print("galaxy settings enums:", enums)
 
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]

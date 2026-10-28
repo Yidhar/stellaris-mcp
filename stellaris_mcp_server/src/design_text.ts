@@ -175,6 +175,10 @@ export interface DesignChanges {
   room?: string;
   advisor_voice?: string;
   spawn?: "yes" | "no" | "always";
+  ruler_name?: string;
+  ruler_gender?: string;
+  ruler_portrait?: string;
+  ruler_trait?: string;
 }
 
 const literal = (text: string): Value => [
@@ -234,6 +238,20 @@ export function applyChanges(designText: string, newKey: string, changes: Design
     if (c.name_list !== undefined) setEntries(s, ["name_list"], one("name_list", quote(c.name_list)));
     if (c.gender !== undefined) setEntries(s, ["gender"], one("gender", c.gender));
     if (c.traits) setEntries(s, ["trait"], many("trait", c.traits));
+  }
+
+  // the ruler (a prescripted file's spelling: name, gender, portrait, trait, leader_class)
+  if ([c.ruler_name, c.ruler_gender, c.ruler_portrait, c.ruler_trait].some((v) => v !== undefined)) {
+    let ruler = d.find((e) => e.key !== null && unquote(e.key) === "ruler" && typeof e.value !== "string");
+    if (!ruler) {
+      ruler = { key: "ruler", op: "=", value: [{ key: "leader_class", op: "=", value: "official" }] };
+      d.push(ruler);
+    }
+    const r = ruler.value as Entry[];
+    if (c.ruler_name !== undefined) setEntries(r, ["name"], one("name", quote(c.ruler_name)));
+    if (c.ruler_gender !== undefined) setEntries(r, ["gender"], one("gender", c.ruler_gender));
+    if (c.ruler_portrait !== undefined) setEntries(r, ["portrait"], one("portrait", quote(c.ruler_portrait)));
+    if (c.ruler_trait !== undefined) setEntries(r, ["trait"], one("trait", quote(c.ruler_trait)));
   }
 
   setEntries(d, ["key"], one("key", quote(newKey)));

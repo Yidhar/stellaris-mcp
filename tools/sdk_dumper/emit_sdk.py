@@ -315,6 +315,14 @@ def main():
             w(f"    inline constexpr int {ident(name)} = {k};")
         w("}  // namespace vt")
         w("")
+    if anchors.get("enums"):
+        w("// =============================== enums ================================")
+        w("// Engine enums, value -> name (index = value), from the Linux decompile by anchors.py.")
+        w("namespace enums {")
+        for name, vals in sorted(anchors["enums"].items()):
+            w(f"    inline constexpr const char* {ident(name)}[] = {{ {', '.join(json.dumps(v) for v in vals)} }};")
+        w("}  // namespace enums")
+        w("")
     fpath = OUT / "functions.json"
     funcs = json.loads(fpath.read_text(encoding="utf-8")) if fpath.exists() else {}
     # plus the functions anchors.py follows from located code (call chains, thin wrappers)

@@ -21,6 +21,7 @@
 #include "outliner_manager.hpp"
 #include "menu_manager.hpp"
 #include "empire_design_manager.hpp"
+#include "galaxy_setup_manager.hpp"
 
 namespace bridge {
 
@@ -143,6 +144,14 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     } else if (method == "delete_empire_design") {
         std::string key = params.value("key", std::string());
         fut = TaskQueue::Get().Enqueue([key]() { return EmpireDesignManager::Get().Delete(key); });
+    } else if (method == "get_galaxy_settings") {
+        fut = TaskQueue::Get().Enqueue([]() { return GalaxySetupManager::Get().GetJson(); });
+    } else if (method == "set_galaxy_settings") {
+        nlohmann::json settings = params.value("settings", nlohmann::json::object());
+        fut = TaskQueue::Get().Enqueue([settings]() { return GalaxySetupManager::Get().Set(settings); });
+    } else if (method == "start_new_game") {
+        std::string empire = params.value("empire", std::string());
+        fut = TaskQueue::Get().Enqueue([empire]() { return MenuManager::Get().StartNewGame(empire); });
     } else if (method == "finish_load") {
         fut = TaskQueue::Get().Enqueue([]() { return MenuManager::Get().FinishLoad(); });
     } else if (method == "exit_to_main_menu") {

@@ -41,11 +41,22 @@ public:
     // the next frames
     nlohmann::json SaveGame(const std::string& name, bool overwrite);
 
+    // main menu: start a new single-player game with the galaxy settings as they are, the way the
+    // main menu's quick start does (g_bQuickStart with no save named: the menu adds a human with a
+    // random design and calls LaunchGame). design_key empty or "random": that random empire;
+    // otherwise the human takes that design on the frame the launch is set (StartNewGame runs on
+    // the next update), checked first with the game's validation
+    nlohmann::json StartNewGame(const std::string& design_key);
+    // every frame (the Present hook, not while loading): hands a pending design to the local human
+    void OnFrame();
+
 private:
     MenuManager() = default;
     void* FrontEndIdler() const;
     void* InGameIdler() const;
     uintptr_t base_address_ = 0;
+    void* pending_design_ = nullptr;  // for the local human once the launch is set
+    int pending_frames_ = 0;
 };
 
 }  // namespace bridge

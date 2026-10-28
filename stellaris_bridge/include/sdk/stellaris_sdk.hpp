@@ -34,6 +34,7 @@ namespace glob {
     inline constexpr uintptr_t COnActionDatabase_pInstance = 0x3152CB0;  // COnActionDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t COpinionModifierDatabase_pInstance = 0x3152C88;  // COpinionModifierDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CRandom_Forbidden = 0x2813CFD;  // CRandom_Forbidden  score=anchor live=anchor
+    inline constexpr uintptr_t CSettings_pInstance = 0x322EE90;  // CSettings::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CShipBehaviorDatabase_pInstance = 0x3157BE8;  // CShipBehaviorDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CShipDesignTemplatesDatabase_pInstance = 0x3157E38;  // CShipDesignTemplatesDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CSpecialProjectDatabase_pInstance = 0x31542A8;  // CSpecialProjectDatabase::_pInstance  score=anchor live=anchor
@@ -401,6 +402,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CFleetTemplate_id = 0x8;
     inline constexpr std::ptrdiff_t CFleet_coordinate_base = 0x38;
     inline constexpr std::ptrdiff_t CFleet_id = 0x30;
+    inline constexpr std::ptrdiff_t CFrontEndIdler_launch = 0x218;
     inline constexpr std::ptrdiff_t CGalacticObject_id = 0x8;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
     inline constexpr std::ptrdiff_t CGameIdler_is_multiplayer = 0x180;
@@ -497,6 +499,29 @@ namespace rt {
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
     inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CZone_id = 0x8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_colonizable_planet_odds = 0x98;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_command_limit_galaxy_mult = 0xD0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_devastation = 0x158;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_early_game_spawn_chance_scale = 0x128;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_late_game_spawn_chance_scale = 0x138;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_mid_game_spawn_chance_scale = 0x130;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_spawn_cooldown_scale = 0x150;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_crises = 0xB0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cutholoids_scaling = 0x168;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_fallen_empire_strength_scale = 0x170;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_growth_scale = 0xE0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_logistic_ceiling_v2 = 0xD8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_logistics_fleet_upkeep_costs = 0xE8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_logistics_planet_deficit_costs = 0xF0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_naval_capacity_mult = 0xC8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_num_gateways = 0x80;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_num_hyperlanes = 0x90;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_num_wormhole_pairs = 0x88;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_primitive_odds = 0xA8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_resource_abundance = 0xA0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_technology = 0xB8;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_traditions = 0xC0;
+    inline constexpr std::ptrdiff_t SGalaxyConfigSettings_voidworms_scaling = 0x160;
     inline constexpr std::ptrdiff_t Token_buildable_colony_ship = 0x3DFD;
     inline constexpr std::ptrdiff_t Token_buildable_federation_ship = 0x3DFC;
     inline constexpr std::ptrdiff_t Token_buildable_galactic_community_ship = 0x3EC7;
@@ -533,6 +558,16 @@ namespace vt {
     inline constexpr int CGuiView_Hide = 7;
     inline constexpr int CShipDesignImplementation_Destroy = 0;
 }  // namespace vt
+
+// =============================== enums ================================
+// Engine enums, value -> name (index = value), from the Linux decompile by anchors.py.
+namespace enums {
+    inline constexpr const char* Aggressiveness[] = { "AGGRESSIVENESS_NORMAL", "AGGRESSIVENESS_HIGH", "AGGRESSIVENESS_LOW" };
+    inline constexpr const char* CrisisType[] = { "CRISIS_TYPE_ANY", "CRISIS_TYPE_PRETHORYN", "CRISIS_TYPE_UNBIDDEN", "CRISIS_TYPE_CONTINGENCY", "CRISIS_TYPE_SYNTH_QUEEN", "CRISIS_TYPE_ALL" };
+    inline constexpr const char* Difficulty[] = { "DIFFICULTY_CIVILIAN", "DIFFICULTY_CADET", "DIFFICULTY_ENSIGN", "DIFFICULTY_CAPTAIN", "DIFFICULTY_COMMODORE", "DIFFICULTY_ADMIRAL", "DIFFICULTY_GRAND_ADMIRAL" };
+    inline constexpr const char* Scaling[] = { "scaling_off", "scaling_mid", "scaling_late" };
+    inline constexpr const char* TechScaling[] = { "DIFF_TECH_SCALING_OFF", "DIFF_TECH_SCALING_LOW", "DIFF_TECH_SCALING_NORMAL", "DIFF_TECH_SCALING_HIGH", "DIFF_TECH_SCALING_EXTREME" };
+}  // namespace enums
 
 // ============================== functions =============================
 // Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).
@@ -625,10 +660,14 @@ namespace fn {
     inline constexpr uintptr_t CFleet_CalcMilitaryPower = 0xC7F9A0;
     // CFleet::CalcMovementPathFindSettings() const (MSVC: the bool part; settings = flag ? 3 : 2)  --  bool (*)(const void* fleet)
     inline constexpr uintptr_t CFleet_PathFindSettingsFlag = 0xC87300;
+    // CFrontEndIdler::LaunchGame()  --  void (*)(void* front_end_idler)  -- the start button: StartNewGame on the next update
+    inline constexpr uintptr_t CFrontEndIdler_LaunchGame = 0x8BC280;
     // CGalacticObject::CalcFTLPointWith(CCelestialCoordinate const&) const  --  void* (*)(const void* system, void* out_coordinate, const void* toward)
     inline constexpr uintptr_t CGalacticObject_CalcFTLPointWith = 0x86DC40;
     // CGalacticObject::GetClaimsBy(CCountry const*) const  --  void* (*)(const void* system, void* out_claim, const void* country)
     inline constexpr uintptr_t CGalacticObject_GetClaimsBy = 0x8655B0;
+    // CGameState::AccessLocalHuman()  --  void* (*)(void* game_state)  -- the local CHuman
+    inline constexpr uintptr_t CGameState_AccessLocalHuman = 0x24C580;
     // CGameState::HandleTurnTick(CPdxArray<CCommand*, int>&)  --  void (*)(void* game_state, void* commands)
     inline constexpr uintptr_t CGameState_HandleTurnTick = 0x251800;
     // CGameState::OnNewGameStarted()  --  void (*)(void* game_state)
@@ -641,6 +680,8 @@ namespace fn {
     inline constexpr uintptr_t CGovernmentCivicType_IsPossible = 0x533C50;
     // CHasFlagTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* trigger, void* scope)
     inline constexpr uintptr_t CHasFlagTrigger_ActualEvaluate = 0x195A7A0;
+    // CHuman::SetDesign(CEmpireDesign const&)  --  void (*)(void* human, const void* design)  -- copies the design into the human's setup
+    inline constexpr uintptr_t CHuman_SetDesign = 0x5AAA50;
     // CInGameIdler::DoResign()  --  void (*)(void* in_game_idler)  -- leaves for the main menu (the resign dialog's accept)
     inline constexpr uintptr_t CInGameIdler_DoResign = 0x9348D0;
     // CInGameIdler::SaveGame(CString const&, bool, bool)  --  int (*)(void* in_game_idler, const void* name_cstring, bool cloud, bool overwrite)

@@ -186,3 +186,10 @@ flowchart TD
 - 读入：`InitFromFile(db, VFS 路径, true)` 把文件里每个块追加到用户数组（键 = 块名），之后要跑 `CEmpireDesign::PostReadInit`（游戏启动时对每个预设都跑）。删除对象走 vtable 槽 `sdk::vt::CEmpireDesign_Delete`（标志 1 = 释放），和 `DeleteUserDesign` 一样。
 - **不要调用 `SaveUserFile` / `SaveDesign` / `DeleteUserDesign`**：它们会从内存重写整个用户文件，没加载的 mod 定义的物种类、特质、起源会被丢掉（GF_nyto 的预设实测丢失）。桥接只改内存，文件由 MCP 端按块增、换、删。
 - 文本键名（`CEmpireDesign::WriteMembers` / `ReadMember`）：顶层 `name`、`adjective`（`{ key="…" literal=yes }`）、`ethic` 重复键、`civics = { … }`（也读 `civic`）、`authority`、`government`、`origin`、`planet_class`、`planet_name`、`system_name`、`initializer`、`graphical_culture`、`city_graphical_culture`、`room`、`advisor_voice_type`、`spawn_enabled`、`species = { class portrait species_name species_plural species_adjective name_list gender trait… }`（读入也接受 `name` / `plural` / `adjective` / `species_class`）。
+
+## 14. 银河设置与开新游戏 (verified 4.5.2)
+
+- 单人银河设置：`CSettings::_pInstance` + `galaxy_config_sp`（`SGalaxyConfigSettingsSP`）。银河设置界面的选项直接写这个结构，`LaunchNewGame` 在单人模式下用 `LoadGalaxyConfigSPSettings` 从这里读，所以写内存就等于界面写回。每个成员都有"未设置"值（整数 -1、CFixedPoint -100000、字符串为空、难度 2、科技缩放 2、其余枚举 0），未设置就用模板（银河大小）自己的值。
+- 布局和 Linux 一致：CFixedPoint 成员在 `sdk::rt::SGalaxyConfigSettings_*`（anchors 从 Windows 序列化函数的 `cmp [rdi+X], -0x186a0; mov edx, token` 读出）；枚举是 4 字节、放在奇数偏移（0x115 规模、0x119 科技缩放）；`sdk::ent::SGalaxyConfigSettingsSP::clustered/ironman` 是相对 `CSettings` 的偏移。枚举取值名在 `sdk::enums`（Linux 反编译里 `Get*LocKey` 的 switch）。
+- 开新游戏 = 主菜单的快速开始：`g_QuickStartSave` 为空 + `g_bQuickStart = 1`，前端 `UpdateInternal` 会建人类玩家（随机预设，设计 +0x38 = 1）并调用 `LaunchGame`（`+0x218 = 0x101`），下一次 update 才 `StartNewGame`。指定帝国：在这两次 update 之间的 Present 里 `CHuman::SetDesign(AccessLocalHuman(gs), 预设)`（`MenuManager::OnFrame`）。`-empire=` 命令行走的是同一套（`GetDesignByKey` + `IsValid` + `IsPlayable` + `CHuman` + `SetDesign` + `AddHuman`）。
+- 快速开始的新游戏不一定弹开局画面（`0xFFFF0001`），看时机。tiny 银河约 7 秒生成，small 约 11 秒。

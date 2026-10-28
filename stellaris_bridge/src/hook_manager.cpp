@@ -15,7 +15,11 @@ HookManager& HookManager::Get() {
 HRESULT __stdcall HookManager::Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     // Process all queued main-thread tasks, except while a save or galaxy loads: the engine renders
     // its loading screen from inside the load, with the game state half rebuilt
-    if (!MenuManager::Get().Loading()) TaskQueue::Get().ProcessAll();
+    if (!MenuManager::Get().Loading()) {
+        // a new game's empire, handed over between the launch and StartNewGame
+        MenuManager::Get().OnFrame();
+        TaskQueue::Get().ProcessAll();
+    }
     // config\stellaris_mcp.ini edited while the game runs (checked every couple of seconds)
     plugin::PollSettings();
 

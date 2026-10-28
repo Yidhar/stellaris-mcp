@@ -191,6 +191,69 @@ nlohmann::json MenuManager::LoadSave(const std::string& campaign, const std::str
              {"message", "Loading; the main menu picks the save up on its next frame"} };
 }
 
+struct HumanCtx {
+    uintptr_t local_human;
+    uintptr_t set_design;
+    void* game_state;
+    void* design;
+};
+
+void CallSetHumanDesign(void* p, void*) {
+    auto* x = (HumanCtx*)p;
+    void* human = ((void* (*)(void*))x->local_human)(x->game_state);
+    if (human) ((void (*)(void*, const void*))x->set_design)(human, x->design);
+}
+
+nlohmann::json MenuManager::StartNewGame(const std::string& design_key) {
+    if (Screen() != "main_menu" || Loading()) {
+        return { {"success", false}, {"error", "A new game starts from the main menu (screen: " + Screen() + ")"} };
+    }
+    if (QuickStartPending() || pending_design_) {
+        return { {"success", false}, {"error", "A load or a new game is already starting"} };
+    }
+    void* design = nullptr;
+    std::string type;
+    if (!design_key.empty() && design_key != "random") {
+        design = EmpireDesignManager::Get().Find(design_key, &type);
+        if (!design) return { {"success", false}, {"error", "No empire design with key " + design_key + " (stellaris_list_empire_designs)"} };
+        nlohmann::json check = EmpireDesignManager::Get().DetailJson(design_key);
+        if (check.value("playable", false) == false) {
+            return { {"success", false}, {"error", "\"" + design_key + "\" is not playable (its playable condition)"} };
+        }
+        if (!check["valid"].is_boolean() || !check["valid"].get<bool>()) {
+            return { {"success", false}, {"error", "The game refuses \"" + design_key + "\": " + check.value("invalid_reason", std::string("validation failed"))} };
+        }
+    }
+    // no save named: the menu's update starts a new game
+    static const char kEmpty[] = "";
+    AssignCtx ctx{ base_address_ + sdk::fn::CString_Assign, (void*)(base_address_ + sdk::glob::g_QuickStartSave), kEmpty, 0 };
+    if (!CommandBuilder::Get().CallGuarded(&CallAssign, &ctx) || !WriteByte(base_address_ + sdk::glob::g_bQuickStart, 1)) {
+        return { {"success", false}, {"error", "Starting the new game failed"} };
+    }
+    pending_design_ = design;
+    pending_frames_ = 0;
+    LOGF("[MENU] new game, empire %s", design ? design_key.c_str() : "random");
+    return { {"success", true}, {"empire", design ? design_key : "random"},
+             {"message", "Starting; the main menu launches the game on its next frame"} };
+}
+
+void MenuManager::OnFrame() {
+    if (!pending_design_) return;
+    void* idler = FrontEndIdler();
+    uint8_t launch = 0;
+    if (idler && ReadVal((uintptr_t)idler + sdk::rt::CFrontEndIdler_launch, &launch) && launch) {
+        void* gs = nullptr;
+        ReadVal(base_address_ + sdk::glob::g_CurrentGameState, &gs);
+        HumanCtx h{ base_address_ + sdk::fn::CGameState_AccessLocalHuman, base_address_ + sdk::fn::CHuman_SetDesign, gs, pending_design_ };
+        const bool ok = gs && CommandBuilder::Get().CallGuarded(&CallSetHumanDesign, &h);
+        LOGF("[MENU] new game: design handed to the local human: %s", ok ? "yes" : "FAILED");
+        pending_design_ = nullptr;
+    } else if (++pending_frames_ > 600 || !idler) {
+        LOG("[MENU] new game: the launch never came; design dropped");
+        pending_design_ = nullptr;
+    }
+}
+
 nlohmann::json MenuManager::FinishLoad() {
     if (Screen() != "in_game") {
         return { {"success", false}, {"error", "No game is in (screen: " + Screen() + ")"} };
