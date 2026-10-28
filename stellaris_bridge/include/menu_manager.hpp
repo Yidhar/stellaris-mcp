@@ -18,13 +18,15 @@ public:
     // a save or a new galaxy is being loaded (s_pLoadGameProgress is set): the engine renders the
     // loading screen from inside its own load, so the bridge must not run engine code then
     bool Loading() const;
-    // { screen, quick_start_pending, user_dir }; any thread
+    // { screen, quick_start_pending, user_dir, game_dir, user_design_file }; any thread
     nlohmann::json ScreenJson() const;
     // a save load requested (g_bQuickStart) and not yet taken or cleared
     bool QuickStartPending() const;
 
     // the user data folder the game reads saves from: Documents\Paradox Interactive\Stellaris
     static std::wstring UserDir();
+    // the game's install folder (stellaris.exe's)
+    static std::wstring GameDir();
 
     // main menu: load "<campaign>/<file>" (the file name without .sav) the way the main menu's
     // continue does (g_QuickStartSave + g_bQuickStart; the menu's own update loads it)

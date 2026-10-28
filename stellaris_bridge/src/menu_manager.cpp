@@ -1,4 +1,5 @@
 #include "menu_manager.hpp"
+#include "empire_design_manager.hpp"
 #include "command_builder.hpp"
 #include "common.hpp"
 #include "sdk/stellaris_sdk.hpp"
@@ -140,13 +141,24 @@ std::wstring MenuManager::UserDir() {
     return out;
 }
 
+std::wstring MenuManager::GameDir() {
+    wchar_t path[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring out(path, n);
+    const size_t slash = out.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? L"" : out.substr(0, slash);
+}
+
 bool MenuManager::QuickStartPending() const {
     uint8_t pending = 0;
     return base_address_ && ReadVal(base_address_ + sdk::glob::g_bQuickStart, &pending) && pending;
 }
 
 nlohmann::json MenuManager::ScreenJson() const {
-    return { {"screen", Screen()}, {"quick_start_pending", QuickStartPending()}, {"user_dir", Utf8(UserDir())} };
+    return { {"screen", Screen()}, {"quick_start_pending", QuickStartPending()}, {"user_dir", Utf8(UserDir())},
+             {"game_dir", Utf8(GameDir())},
+             // the user design file (a VFS name in the user folder; a static array, read from any thread)
+             {"user_design_file", EmpireDesignManager::Get().UserFile()} };
 }
 
 nlohmann::json MenuManager::LoadSave(const std::string& campaign, const std::string& file) {

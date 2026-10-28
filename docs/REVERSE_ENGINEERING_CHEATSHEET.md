@@ -178,3 +178,11 @@ flowchart TD
 - 布局全部来自 SDK（anchors.py 从设计器自己的代码读出）：设计 `stages`（+0x20，内联 `CShipGrowthStage`）；阶段 `ship_size` +8、`sections` +0x18/+0x24、必需组件 `components` +0x30/+0x3C；分段 `template` +0x40、组件 `CPdxArray<CShipDesignComponent>` +0x50/+0x5C（0x20：槽 +8、组件模板 +0x10）；分段模板槽 +0x178/+0x184（`CComponentSlot` 0x98，名称 +0x18，尺寸 +0x94，类型 +0x95）；组件模板 尺寸 +0x1E0、类型 +0x1E1、组件集 +0x848；船体 flags +0xC8（bit 1 = `is_designable`）。
 - 编辑走设计器路径：`CShipDesignSection::SetComponentOnSlot(section, 组件, 槽)`（替换或插入），必需组件按组件集替换阶段数组里的那一项（同 `CShipDesignerBase::SetRequiredComponent`），然后 `CShipGrowthStage::UpdateResources`、`CShipDesign::CalcLongName`。检查顺序同设计器：槽尺寸/类型（`ComponentIsAllowedOnSlot`，0xB / 4 = 任意）→ `NShipDesignUtil::CanBuildComponent(组件, 0, 阶段, 槽或空, 原因)` → 保存检查 `CShipGrowthStage::IsValidToSaveForCountry(阶段, 0, 国家, 原因)`。
 - 旧代码的手写地址全部失效：0xD6E290 不是 `SetComponentOnSlot`（真正的是 0xD6F040），0xD6C420 其实是 `IsValidToSaveForCountry`（被当成 UpdateResources 单参数调用），0xE0FEE0 不是 `CalcLongName`（0xE10C30），0x689FE0（"国家加入设计"）直接访问违例崩溃。
+
+## 13. 帝国预设与主菜单 (verified 4.5.2)
+
+- `CEmpireDesignDatabase::_pInstance`（数据库本身就是 "default" 预设）：内置预设 `CPdxArray<CEmpireDesign*>` +0xC78（来自 `prescripted_countries\*.txt`），用户预设 +0xC90（来自 `UserDesignsFileNames` 的最后一个：`user_empire_designs_v3.4.txt`，用户目录下的 VFS 裸文件名）。查键时先内置、再用户。
+- 校验同帝国列表：`SScopedFakeCountry` 建一次，每个预设 `SetDesign(fc, 预设, true)` 重建，`IsEmpireDesignValid(3, 预设, 国家, CString* 原因)`，最后销毁。只能在主菜单做（临时国家建在游戏状态里）。
+- 读入：`InitFromFile(db, VFS 路径, true)` 把文件里每个块追加到用户数组（键 = 块名），之后要跑 `CEmpireDesign::PostReadInit`（游戏启动时对每个预设都跑）。删除对象走 vtable 槽 `sdk::vt::CEmpireDesign_Delete`（标志 1 = 释放），和 `DeleteUserDesign` 一样。
+- **不要调用 `SaveUserFile` / `SaveDesign` / `DeleteUserDesign`**：它们会从内存重写整个用户文件，没加载的 mod 定义的物种类、特质、起源会被丢掉（GF_nyto 的预设实测丢失）。桥接只改内存，文件由 MCP 端按块增、换、删。
+- 文本键名（`CEmpireDesign::WriteMembers` / `ReadMember`）：顶层 `name`、`adjective`（`{ key="…" literal=yes }`）、`ethic` 重复键、`civics = { … }`（也读 `civic`）、`authority`、`government`、`origin`、`planet_class`、`planet_name`、`system_name`、`initializer`、`graphical_culture`、`city_graphical_culture`、`room`、`advisor_voice_type`、`spawn_enabled`、`species = { class portrait species_name species_plural species_adjective name_list gender trait… }`（读入也接受 `name` / `plural` / `adjective` / `species_class`）。

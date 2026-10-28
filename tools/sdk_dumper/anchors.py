@@ -1627,6 +1627,90 @@ def main():
             "signature": "void (*)(void* fake_country)"}
         print("design validation:", {k: hex(v[0]) for k, v in got.items()})
 
+    # Saving user designs. CEmpireDesignDatabase::Init enumerates "prescripted_countries" and reads
+    # each file with InitFromFile(db, path, false) (`xor r8d, r8d; call`), then the newest existing
+    # name of UserDesignsFileNames (a CPdxArray<CString>: data `mov rdi, [rip + A+8]`, size
+    # `movsxd .., [rip + A+0x14]`) with InitFromFile(db, path, true) (`mov r8b, 1; call`).
+    # SaveUserFile is the other function reading that size, and it is the tail of SaveDesign (the
+    # one allocating a design, `mov ecx, 0xC78`) and DeleteUserDesign (the one storing the user
+    # array's new size, then deletes the design through its vtable). The bridge keeps the file to
+    # itself: SaveUserFile rewrites every user design from memory and so drops the parts an unloaded
+    # mod defined
+    if design_db is not None:
+        user_size = arrays[1] + 0x14
+        got = {}
+        for f in sorted(fns_with_strings("prescripted_countries")):
+            ins = im.disasm_fn(f, 0x1000)
+            ret = next((n for n, i in enumerate(ins) if i.mnemonic == "ret"), len(ins))
+            calls = [(n, int(i.op_str, 16) - im.ib) for n, i in enumerate(ins[:ret])
+                     if i.mnemonic == "call" and i.op_str.startswith("0x")]
+            pre = {t for n, t in calls if any(ins[k].op_str == "r8d, r8d" for k in range(max(0, n - 4), n))}
+            usr = {t for n, t in calls if any(ins[k].op_str == "r8b, 1" for k in range(max(0, n - 4), n))}
+            both = pre & usr
+            refs = {rip_target(im, i) for i in ins[:ret] if "[rip + " in i.op_str and i.mnemonic in ("mov", "movsxd")}
+            names = {t - 8 for t in refs if t + 0xC in refs}
+            if len(both) == 1 and len(names) == 1:
+                got["init_from_file"], got["names"] = both.pop(), names.pop()
+                break
+        if "names" in got:
+            text = im.img[im.text0:im.text1]
+            readers = set()
+            # `mov r32, [rip + d]` / `movsxd r64, [rip + d]`, scanned overlapping (every opcode byte)
+            for m in re.finditer(rb"(?=[\x8B\x63](.)(....))", text, re.S):
+                modrm, disp = m.group(1)[0], m.group(2)
+                if (modrm & 0xC7) == 0x05 and im.text0 + m.start() + 6 + struct.unpack("<i", disp)[0] == got["names"] + 0x14:
+                    f = im.fn_of(im.text0 + m.start())
+                    if f is not None:
+                        readers.add(f)
+            for f in sorted(readers):
+                callers = {im.fn_of(a) for a, _ in direct_callers(f)} - {None}
+                kinds = {}
+                for c in callers:
+                    # up to its tail call of SaveUserFile (the disassembly runs on into the next function)
+                    body = im.disasm_fn(c, 0x400)
+                    body = body[:next((n for n, i in enumerate(body) if i.mnemonic in ("jmp", "call")
+                                       and i.op_str == hex(im.ib + f)), len(body)) + 1]
+                    if any(i.mnemonic == "mov" and i.op_str == "ecx, 0xc78" for i in body):
+                        kinds["save"] = c
+                    elif any(i.mnemonic == "mov" and re.match(rf"^dword ptr \[r\w+ \+ {user_size:#x}\], r\w+$", i.op_str) for i in body):
+                        kinds["delete"] = c
+                        # the design's deleting destructor: `mov edx, 1; ... call [rax + 8*k]`
+                        for n, i in enumerate(body):
+                            m = re.match(r"^qword ptr \[rax(?: \+ (0x[0-9a-f]+|\d+))?\]$", i.op_str)
+                            if i.mnemonic == "call" and m and any(body[k].op_str == "edx, 1" for k in range(max(0, n - 3), n)):
+                                kinds["delete_slot"] = int(m.group(1) or "0", 0) // 8
+                    else:
+                        # CEmpireDesignDatabase::PostReadInit: CEmpireDesign::PostReadInit on every design
+                        # (`mov rcx, [rcx + rbx*8]; call`), SaveUserFile when one changed
+                        per = {int(i.op_str, 16) - im.ib for n, i in enumerate(body) if n and i.mnemonic == "call"
+                               and i.op_str.startswith("0x") and re.match(r"^rcx, qword ptr \[r\w+ \+ r\w+\*8\]$", body[n - 1].op_str)}
+                        if len(per) == 1:
+                            kinds["post_read"] = per.pop()
+                if {"save", "delete", "post_read"} <= set(kinds):
+                    got.update(kinds, save_file=f)
+                    break
+        if set(got) != {"init_from_file", "names", "save_file", "save", "delete", "delete_slot", "post_read"}:
+            failures.append(f"empire design saving: {sorted(got)}")
+        else:
+            result["globals"]["UserDesignsFileNames"] = got["names"]
+            result["functions"]["CEmpireDesignDatabase_InitFromFile"] = {
+                "rva": got["init_from_file"], "linux": "CEmpireDesignDatabase::InitFromFile(char const*, bool)",
+                "signature": "void (*)(void* db, const char* vfs_path, bool user)  -- appends each design in the file"}
+            result["functions"]["CEmpireDesignDatabase_SaveUserFile"] = {
+                "rva": got["save_file"], "linux": "CEmpireDesignDatabase::SaveUserFile()",
+                "signature": "void (*)(void* db)  -- rewrites the whole newest UserDesignsFileNames from memory: drops what unloaded mods defined"}
+            result["functions"]["CEmpireDesignDatabase_SaveDesign"] = {
+                "rva": got["save"], "linux": "CEmpireDesignDatabase::SaveDesign(CEmpireDesign&)",
+                "signature": "void (*)(void* db, void* design)  -- copies it over the user design with its key, or adds a copy; then SaveUserFile"}
+            result["functions"]["CEmpireDesignDatabase_DeleteUserDesign"] = {
+                "rva": got["delete"], "linux": "CEmpireDesignDatabase::DeleteUserDesign(CEmpireDesign const*)",
+                "signature": "void (*)(void* db, const void* design)  -- removes and deletes it; then SaveUserFile"}
+            result["functions"]["CEmpireDesign_PostReadInit"] = {
+                "rva": got["post_read"], "linux": "CEmpireDesign::PostReadInit()",
+                "signature": "bool (*)(void* design)  -- the fix-ups the game runs on every design after reading; true when it changed one"}
+            result["slots"]["CEmpireDesign_Delete"] = got["delete_slot"]
+            print("design saving:", {k: hex(v) for k, v in got.items()})
+
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
     cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])

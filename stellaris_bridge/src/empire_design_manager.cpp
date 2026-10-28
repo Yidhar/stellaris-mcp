@@ -114,6 +114,57 @@ void CallValid(void* p, void* reason) {
     x->result = ((uint8_t(*)(uint8_t, void*, void*, void*))x->fn)(3, x->design, x->country, reason);
 }
 
+struct ReadFileCtx {
+    uintptr_t fn;
+    void* db;
+    const char* path;
+};
+
+void CallInitFromFile(void* p, void*) {
+    auto* x = (ReadFileCtx*)p;
+    ((void (*)(void*, const char*, bool))x->fn)(x->db, x->path, true);
+}
+
+// the design's deleting destructor (vtable slot, flag 1 = free), as DeleteUserDesign deletes one
+void CallDeleteDesign(void* p, void*) {
+    void** vt = *(void***)p;
+    ((void (*)(void*, int))vt[sdk::vt::CEmpireDesign_Delete])(p, 1);
+}
+
+// a CPdxArray<T*> edited in place (the game's own DeleteUserDesign compacts it the same way):
+// drop the element at `index`, or put `with` there instead
+bool ArrayRemoveAt(uintptr_t arr, int32_t index) {
+    __try {
+        void** data = *(void***)(arr + kArrayData);
+        int32_t& n = *(int32_t*)(arr + kArraySize);
+        if (index < 0 || index >= n) return false;
+        memmove(&data[index], &data[index + 1], (size_t)(n - index - 1) * sizeof(void*));
+        --n;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ArraySet(uintptr_t arr, int32_t index, void* with) {
+    __try {
+        void** data = *(void***)(arr + kArrayData);
+        if (index < 0 || index >= *(int32_t*)(arr + kArraySize)) return false;
+        data[index] = with;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+int32_t ArrayIndexOf(uintptr_t arr, void* e) {
+    const std::vector<void*> all = Array(arr);
+    for (size_t i = 0; i < all.size(); ++i) {
+        if (all[i] == e) return (int32_t)i;
+    }
+    return -1;
+}
+
 }  // namespace
 
 EmpireDesignManager& EmpireDesignManager::Get() {
@@ -179,7 +230,7 @@ nlohmann::json EmpireDesignManager::ListJson() {
             if (valid[i] >= 0) out[i]["valid"] = valid[i] != 0;
         }
     }
-    return { {"designs", out}, {"count", out.size()},
+    return { {"designs", out}, {"count", out.size()}, {"user_file", UserFile()},
              {"note", std::string("playable: the design's own playable condition; ") +
                       (menu ? "valid: the game's validation for playing it (why not: stellaris_get_empire_design). " :
                               "valid is checked on the main menu. ") +
@@ -296,6 +347,114 @@ nlohmann::json EmpireDesignManager::DetailJson(const std::string& key) {
         out["validation_note"] = "Validation runs on the main menu (it builds a scratch country, as the empire list does)";
     }
     return out;
+}
+
+std::string EmpireDesignManager::UserFile() {
+    // UserDesignsFileNames: CPdxArray<CString> (0x30 each, text at +0x10); the game writes the last
+    const std::vector<std::string> names = [&] {
+        std::vector<std::string> v;
+        void* data = nullptr;
+        int32_t n = 0;
+        const uintptr_t arr = base_address_ + sdk::glob::UserDesignsFileNames;
+        if (ReadVal(arr + kArrayData, &data) && data && ReadVal(arr + kArraySize, &n) && n > 0 && n < 16) {
+            for (int32_t i = 0; i < n; ++i) v.push_back(Text((uintptr_t)data + i * 0x30 + 0x10));
+        }
+        return v;
+    }();
+    return names.empty() ? "" : names.back();
+}
+
+nlohmann::json EmpireDesignManager::SaveFromFile(const std::string& vfs_file, bool validate_only, bool overwrite) {
+    if (MenuManager::Get().Screen() != "main_menu") {
+        return { {"error", "Empire designs are edited on the main menu (screen: " + MenuManager::Get().Screen() + ")"} };
+    }
+    void* db = nullptr;
+    if (!ReadVal(base_address_ + sdk::glob::CEmpireDesignDatabase_pInstance, &db) || !db) {
+        return { {"error", "The empire design database is not loaded"} };
+    }
+    // only the designs in memory change here; the caller keeps the user design file (the game's
+    // SaveUserFile would rewrite every user design and drop what unloaded mods defined)
+    const uintptr_t user = (uintptr_t)db + sdk::rt::CEmpireDesignDatabase_user;
+    const std::vector<void*> before = Array(user);
+    auto drop = [&](void* d) {
+        if (ArrayRemoveAt(user, ArrayIndexOf(user, d))) CommandBuilder::Get().CallGuarded(&CallDeleteDesign, d);
+    };
+
+    // InitFromFile(db, path, user = true) appends every design in the file to the user designs
+    ReadFileCtx read{ base_address_ + sdk::fn::CEmpireDesignDatabase_InitFromFile, db, vfs_file.c_str() };
+    if (!CommandBuilder::Get().CallGuarded(&CallInitFromFile, &read)) {
+        return { {"error", "The game's design reader raised an exception on " + vfs_file} };
+    }
+    std::vector<void*> added = Array(user);
+    added.erase(added.begin(), added.begin() + (std::min)(added.size(), before.size()));
+    if (added.size() != 1) {
+        for (void* d : added) drop(d);
+        return { {"error", added.empty() ? "The game read no design from the text (check its syntax: the game's error.log "
+                                           "names the line)"
+                                         : "The text holds " + std::to_string(added.size()) + " designs; save one at a time"} };
+    }
+    void* design = added[0];
+    const std::string key = Text((uintptr_t)design + ed::key);
+    Call1 fix{ base_address_ + sdk::fn::CEmpireDesign_PostReadInit, design, 0 };
+    CommandBuilder::Get().CallGuarded(&CallBool1, &fix);
+
+    for (void* d : Array((uintptr_t)db + sdk::rt::CEmpireDesignDatabase_prescripted)) {
+        if (Text((uintptr_t)d + ed::key) == key) {
+            drop(design);
+            return { {"error", "\"" + key + "\" is a prescripted empire's key; give the design another key"} };
+        }
+    }
+    void* old = nullptr;
+    for (void* d : before) {
+        if (Text((uintptr_t)d + ed::key) == key) old = d;
+    }
+    if (old && !overwrite && !validate_only) {
+        drop(design);
+        return { {"error", "A user design with key \"" + key + "\" exists; pass overwrite to replace it"} };
+    }
+
+    nlohmann::json out = Summary(design, "user");
+    bool valid = false;
+    std::string reason;
+    if (!Validate(design, &valid, &reason)) {
+        drop(design);
+        return { {"error", "The game's validation raised an exception on \"" + key + "\""} };
+    }
+    out["valid"] = valid;
+    if (!valid) out["invalid_reason"] = reason;
+    if (validate_only || !valid) {
+        drop(design);
+        out["saved"] = false;
+        if (!validate_only) out["note"] = "Not saved: the game refuses this design (invalid_reason)";
+        return out;
+    }
+    if (old) {
+        // the new design takes the old one's place in the list; the old one is deleted
+        const int32_t at = ArrayIndexOf(user, old);
+        if (!ArrayRemoveAt(user, ArrayIndexOf(user, design)) || !ArraySet(user, at, design)) {
+            return { {"error", "Could not replace the user design \"" + key + "\" in memory"} };
+        }
+        CommandBuilder::Get().CallGuarded(&CallDeleteDesign, old);
+        out["replaced"] = true;
+    }
+    out["saved"] = true;
+    return out;
+}
+
+nlohmann::json EmpireDesignManager::Delete(const std::string& key) {
+    if (MenuManager::Get().Screen() != "main_menu") {
+        return { {"error", "Empire designs are edited on the main menu (screen: " + MenuManager::Get().Screen() + ")"} };
+    }
+    std::string type;
+    void* design = Find(key, &type);
+    if (!design) return { {"error", "No empire design with key " + key + " (stellaris_list_empire_designs)"} };
+    if (type != "user") return { {"error", "\"" + key + "\" is a prescripted empire; only user designs can be deleted"} };
+    void* db = nullptr;
+    ReadVal(base_address_ + sdk::glob::CEmpireDesignDatabase_pInstance, &db);
+    const uintptr_t user = (uintptr_t)db + sdk::rt::CEmpireDesignDatabase_user;
+    if (!ArrayRemoveAt(user, ArrayIndexOf(user, design))) return { {"error", "Could not remove \"" + key + "\" in memory"} };
+    CommandBuilder::Get().CallGuarded(&CallDeleteDesign, design);
+    return { {"deleted", key} };
 }
 
 }  // namespace bridge

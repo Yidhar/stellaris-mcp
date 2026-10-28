@@ -279,6 +279,7 @@ namespace glob {
     inline constexpr uintptr_t TPdxRef_CWaystationNetwork_pDatabase = 0x3114CE8;  // TPdxRef<CWaystationNetwork>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CZone_pDatabase = 0x3114D18;  // TPdxRef<CZone>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t UpdateShipParallel_GrainClamp = 0x252BEA;  // UpdateShipParallel_GrainClamp  score=anchor live=anchor
+    inline constexpr uintptr_t UserDesignsFileNames = 0x3116230;  // UserDesignsFileNames  score=anchor live=anchor
     inline constexpr uintptr_t g_AllowGetPlayer = 0x28077C0;  // g_AllowGetPlayer  score=1.0 live=static
     inline constexpr uintptr_t g_AllowGlobalGameStateAccess = 0x3114DEC;  // g_AllowGlobalGameStateAccess  score=0.949 live=static
     inline constexpr uintptr_t g_CurrentFrontEndIdler = 0x3114E78;  // g_CurrentFrontEndIdler  score=0.875 live=static
@@ -527,6 +528,7 @@ namespace vt {
     inline constexpr int CBuildableBase_CalcProgressionSpeed = 10;
     inline constexpr int CBuildableBase_CalcProgressionTimeNeeded = 11;
     inline constexpr int CBuildableBase_GetToken = 16;
+    inline constexpr int CEmpireDesign_Delete = 0;
     inline constexpr int CFleet_GetCoordinate = 1;
     inline constexpr int CGuiView_Hide = 7;
     inline constexpr int CShipDesignImplementation_Destroy = 0;
@@ -573,8 +575,18 @@ namespace fn {
     inline constexpr uintptr_t CCountry_HasSurveyedDepositHolder = 0x71B910;
     // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
     inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1D07210;
+    // CEmpireDesignDatabase::DeleteUserDesign(CEmpireDesign const*)  --  void (*)(void* db, const void* design)  -- removes and deletes it; then SaveUserFile
+    inline constexpr uintptr_t CEmpireDesignDatabase_DeleteUserDesign = 0x522140;
+    // CEmpireDesignDatabase::InitFromFile(char const*, bool)  --  void (*)(void* db, const char* vfs_path, bool user)  -- appends each design in the file
+    inline constexpr uintptr_t CEmpireDesignDatabase_InitFromFile = 0x5219B0;
+    // CEmpireDesignDatabase::SaveDesign(CEmpireDesign&)  --  void (*)(void* db, void* design)  -- copies it over the user design with its key, or adds a copy; then SaveUserFile
+    inline constexpr uintptr_t CEmpireDesignDatabase_SaveDesign = 0x522200;
+    // CEmpireDesignDatabase::SaveUserFile()  --  void (*)(void* db)  -- rewrites the whole newest UserDesignsFileNames from memory: drops what unloaded mods defined
+    inline constexpr uintptr_t CEmpireDesignDatabase_SaveUserFile = 0x522300;
     // CEmpireDesign::IsPlayable() const  --  bool (*)(const void* design)  -- the design's playable trigger
     inline constexpr uintptr_t CEmpireDesign_IsPlayable = 0x520AE0;
+    // CEmpireDesign::PostReadInit()  --  bool (*)(void* design)  -- the fix-ups the game runs on every design after reading; true when it changed one
+    inline constexpr uintptr_t CEmpireDesign_PostReadInit = 0x520280;
     // CEventOption::FindMatchingPotentialExclusiveOptionIndex(CEventScope const&, bool, CPdxArray<...> const&)  --  int (*)(const void* scope, bool flag, const void* options)
     inline constexpr uintptr_t CEventOption_FindMatchingPotentialExclusiveOptionIndex = 0xA234F0;
     // CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)  --  void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)

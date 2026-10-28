@@ -20,6 +20,16 @@ public:
     // country in the game state, as the empire list does)
     nlohmann::json DetailJson(const std::string& key);
 
+    // L2 write (main menu): read the one design in a file the way the game reads its user designs
+    // (a bare file name is a VFS path: the user folder), run the game's fix-ups and validation, and
+    // keep it as a user design (overwrite: in place of the user design with its key). validate_only,
+    // or an invalid design: checked, then dropped. Memory only: the caller writes the design file
+    nlohmann::json SaveFromFile(const std::string& vfs_file, bool validate_only, bool overwrite);
+    // remove a user design from memory (the caller removes it from the design file)
+    nlohmann::json Delete(const std::string& key);
+    // the user design file the game reads and writes (VFS path in the user folder)
+    std::string UserFile();
+
     // the design with that key (prescripted first, then user, as the game looks them up); with
     // its type "prescripted" / "user"
     void* Find(const std::string& key, std::string* type = nullptr);

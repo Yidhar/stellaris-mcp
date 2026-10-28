@@ -133,6 +133,16 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     } else if (method == "get_empire_design") {
         std::string key = params.value("key", std::string());
         fut = TaskQueue::Get().Enqueue([key]() { return EmpireDesignManager::Get().DetailJson(key); });
+    } else if (method == "save_empire_design") {
+        std::string file = params.value("file", std::string());
+        bool validate_only = params.value("validate_only", false);
+        bool overwrite = params.value("overwrite", false);
+        fut = TaskQueue::Get().Enqueue([file, validate_only, overwrite]() {
+            return EmpireDesignManager::Get().SaveFromFile(file, validate_only, overwrite);
+        });
+    } else if (method == "delete_empire_design") {
+        std::string key = params.value("key", std::string());
+        fut = TaskQueue::Get().Enqueue([key]() { return EmpireDesignManager::Get().Delete(key); });
     } else if (method == "finish_load") {
         fut = TaskQueue::Get().Enqueue([]() { return MenuManager::Get().FinishLoad(); });
     } else if (method == "exit_to_main_menu") {
