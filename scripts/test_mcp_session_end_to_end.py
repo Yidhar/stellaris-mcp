@@ -59,12 +59,11 @@ class Mcp:
         self.p.terminate()
 
 
-def main():
+def run(m):
     ap = argparse.ArgumentParser()
     ap.add_argument("--campaign")
     ap.add_argument("--file", default=None)
     args = ap.parse_args()
-    m = Mcp()
     ok, listing = m.tool("stellaris_list_saves")
     record("list_saves lists campaigns", ok and isinstance(listing, dict) and listing.get("campaigns"),
            f"{len(listing.get('campaigns', [])) if ok else listing}")
@@ -113,10 +112,17 @@ def main():
 
     ok, r = m.tool("stellaris_load_game", {"campaign": campaign, "file": "mcp_test_save"})
     record("load_game loads the new save back", ok and r.get("screen") == "in_game" and r.get("date") == want_date, str(r)[:200])
-    m.close()
     fails = [x for x in RESULTS if x[1] == "FAIL"]
     print(f"\n{len(RESULTS) - len(fails)} passed, {len(fails)} failed")
     return 1 if fails else 0
+
+
+def main():
+    m = Mcp()
+    try:
+        return run(m)
+    finally:
+        m.close()
 
 
 if __name__ == "__main__":

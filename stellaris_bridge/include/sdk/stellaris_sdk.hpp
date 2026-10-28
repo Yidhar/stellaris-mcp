@@ -28,6 +28,7 @@ namespace glob {
     inline constexpr uintptr_t CConsole_pInstance = 0x3159310;  // CConsole::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CDesignerDatabase_pInstance = 0x3153FD8;  // CDesignerDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CDiploPhraseDatabase_pInstance = 0x3152CB8;  // CDiploPhraseDatabase::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t CEmpireDesignDatabase_pInstance = 0x3154600;  // CEmpireDesignDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CFallenEmpiresDatabase_pInstance = 0x3153E28;  // CFallenEmpiresDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CModifier_Definitions = 0x2814390;  // CModifier::_Definitions  score=anchor live=anchor
     inline constexpr uintptr_t COnActionDatabase_pInstance = 0x3152CB0;  // COnActionDatabase::_pInstance  score=anchor live=anchor
@@ -375,6 +376,8 @@ namespace rt {
     inline constexpr std::ptrdiff_t CDebris_id = 0x20;
     inline constexpr std::ptrdiff_t CDeposit_id = 0x10;
     inline constexpr std::ptrdiff_t CDistrict_id = 0x8;
+    inline constexpr std::ptrdiff_t CEmpireDesignDatabase_prescripted = 0xC78;
+    inline constexpr std::ptrdiff_t CEmpireDesignDatabase_user = 0xC90;
     inline constexpr std::ptrdiff_t CEspionageAsset_id = 0x8;
     inline constexpr std::ptrdiff_t CEspionageOperation_id = 0x8;
     inline constexpr std::ptrdiff_t CEventOption_name = 0x4F0;
@@ -570,6 +573,8 @@ namespace fn {
     inline constexpr uintptr_t CCountry_HasSurveyedDepositHolder = 0x71B910;
     // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
     inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1D07210;
+    // CEmpireDesign::IsPlayable() const  --  bool (*)(const void* design)  -- the design's playable trigger
+    inline constexpr uintptr_t CEmpireDesign_IsPlayable = 0x520AE0;
     // CEventOption::FindMatchingPotentialExclusiveOptionIndex(CEventScope const&, bool, CPdxArray<...> const&)  --  int (*)(const void* scope, bool flag, const void* options)
     inline constexpr uintptr_t CEventOption_FindMatchingPotentialExclusiveOptionIndex = 0xA234F0;
     // CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)  --  void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)
@@ -724,6 +729,8 @@ namespace fn {
     inline constexpr uintptr_t GetLocalizedLeaderName = 0x3E9520;
     // GetPlayerCountry()  --  void* (*)()
     inline constexpr uintptr_t GetPlayerCountry = 0x14AAD10;
+    // IsEmpireDesignValid(EEmpireDesignValidationReason, CEmpireDesign const&, CCountry const*, CString*)  --  bool (*)(uint8_t reason /*3 = game setup*/, const void* design, const void* country, void* reason_cstring)
+    inline constexpr uintptr_t IsEmpireDesignValid = 0x523510;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&, SColonizationData const&)  --  void** (*)(void** out, const void* orbitable, const void* impl, const void* colonization)
     inline constexpr uintptr_t NConstruction_CreateColonyShipBuildable = 0xAB5E10;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&)  --  void** (*)(void** out, const void* orbitable, const void* impl)
@@ -748,6 +755,12 @@ namespace fn {
     inline constexpr uintptr_t SEthicGovernmentConfiguration_ctor_country = 0xA1C280;
     // SEthicGovernmentConfiguration::~SEthicGovernmentConfiguration()  --  void (*)(void* config)
     inline constexpr uintptr_t SEthicGovernmentConfiguration_dtor = 0x3E4020;
+    // NGameUtil::SScopedFakeCountry::SScopedFakeCountry (creates the country)  --  void (*)(void* fake_country)  -- country id at +0
+    inline constexpr uintptr_t SScopedFakeCountry_Create = 0xA1D7C0;
+    // NGameUtil::SScopedFakeCountry::~SScopedFakeCountry  --  void (*)(void* fake_country)
+    inline constexpr uintptr_t SScopedFakeCountry_Destroy = 0xA1D9A0;
+    // NGameUtil::SScopedFakeCountry: regenerate the country from a design  --  void (*)(void* fake_country, const void* design, bool)
+    inline constexpr uintptr_t SScopedFakeCountry_SetDesign = 0xA1DC40;
 }  // namespace fn
 
 // ============================== entities ==============================

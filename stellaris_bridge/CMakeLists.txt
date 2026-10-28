@@ -2,6 +2,7 @@ add_library(stellaris_bridge SHARED
     src/dll_main.cpp
     src/plugin.cpp
     src/menu_manager.cpp
+    src/empire_design_manager.cpp
     src/hook_manager.cpp
     src/task_queue.cpp
     src/ipc_server.cpp

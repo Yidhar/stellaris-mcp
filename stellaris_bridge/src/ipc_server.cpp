@@ -20,6 +20,7 @@
 #include "contacts_manager.hpp"
 #include "outliner_manager.hpp"
 #include "menu_manager.hpp"
+#include "empire_design_manager.hpp"
 
 namespace bridge {
 
@@ -127,6 +128,11 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         std::string campaign = params.value("campaign", std::string());
         std::string file = params.value("file", std::string());
         fut = TaskQueue::Get().Enqueue([campaign, file]() { return MenuManager::Get().LoadSave(campaign, file); });
+    } else if (method == "list_empire_designs") {
+        fut = TaskQueue::Get().Enqueue([]() { return EmpireDesignManager::Get().ListJson(); });
+    } else if (method == "get_empire_design") {
+        std::string key = params.value("key", std::string());
+        fut = TaskQueue::Get().Enqueue([key]() { return EmpireDesignManager::Get().DetailJson(key); });
     } else if (method == "finish_load") {
         fut = TaskQueue::Get().Enqueue([]() { return MenuManager::Get().FinishLoad(); });
     } else if (method == "exit_to_main_menu") {

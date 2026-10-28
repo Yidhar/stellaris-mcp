@@ -1539,6 +1539,94 @@ def main():
         result["fields"]["CInGameIdler_save_manager"] = manager
         print(f"SaveGame 0x{wrapper:X} -> Start 0x{start:X} -> StartSaveToPath 0x{to_path[0]:X}; manager +0x{manager:X}")
 
+    # Empire designs. CEmpireDesignDatabase::CreateInstance references "default" (the database is
+    # itself the default design): `mov rcx, [rip + G]` first (the old instance), then it builds the
+    # design arrays (prescripted, user, ... in that order: each `mov [rbx + X], rcx` of the array
+    # vtable) and stores `mov [rip + G], rbx`. The empire list (CSelectEmpireDesignView::RefreshList,
+    # it reads "empire_list_width_min_max") validates every prescripted design the way the game
+    # does: SScopedFakeCountry built once (`lea rcx, [rbp + fc]; call ctor`), per design
+    # IsPlayable (`mov rcx, [rax + rsi*8]; call`), the fake country rebuilt from the design
+    # (`mov r8b, 1; ... lea rcx, [rbp + fc]; call`), IsEmpireDesignValid(3, design, country, reason)
+    # (`mov cl, 3; call`), and the fake country destroyed after the loop (`lea rcx, [rbp + fc]; call`)
+    design_db = arrays = None
+    for f in sorted(fns_with_strings("default")):
+        ins = im.disasm_fn(f, 0x200)[:60]
+        ret = next((n for n, i in enumerate(ins) if i.mnemonic == "ret"), len(ins))
+        body = ins[:ret]
+        first = next((i for i in body[:4] if i.mnemonic == "mov" and i.op_str.startswith("rcx, qword ptr [rip + ")), None)
+        store = next((i for i in body if i.mnemonic == "mov" and re.match(r"^qword ptr \[rip \+ 0x[0-9a-f]+\], rbx$", i.op_str)), None)
+        if not first or not store or rip_target(im, first) != rip_target(im, store):
+            continue
+        vt_stores = [int(m.group(1), 16) for i in body
+                     for m in [re.match(r"^qword ptr \[rbx \+ (0x[0-9a-f]+)\], rcx$", i.op_str)] if i.mnemonic == "mov" and m]
+        if len(vt_stores) >= 2:
+            design_db, arrays = rip_target(im, store), sorted(vt_stores)
+            break
+    if design_db is None:
+        failures.append("CEmpireDesignDatabase: no CreateInstance")
+    else:
+        result["globals"]["CEmpireDesignDatabase::_pInstance"] = design_db
+        result["fields"]["CEmpireDesignDatabase_prescripted"] = arrays[0]
+        result["fields"]["CEmpireDesignDatabase_user"] = arrays[1]
+        print(f"CEmpireDesignDatabase 0x{design_db:X}: arrays {[hex(a) for a in arrays]}")
+
+    # the list: among the functions that load the design database, the one with that sequence
+    refresh, got = [], {}
+    if design_db is not None:
+        text = im.img[im.text0:im.text1]
+        for m in re.finditer(rb"\x48\x8B(.)(....)", text, re.S):
+            at = im.text0 + m.start()
+            if (m.group(1)[0] & 0xC7) == 0x05 and at + 7 + struct.unpack("<i", m.group(2))[0] == design_db:
+                f = im.fn_of(at)
+                if f is not None and f not in refresh:
+                    refresh.append(f)
+    for f in sorted(refresh):
+        got = {}
+        ins = im.disasm_fn(f, 0x4000)
+        calls = [(n, i) for n, i in enumerate(ins) if i.mnemonic == "call" and i.op_str.startswith("0x")]
+        tgt = lambda i: int(i.op_str, 16) - im.ib
+        for n, i in calls:
+            prev = ins[n - 1].op_str if n else ""
+            if prev == "cl, 3" and "valid" not in got:
+                got["valid"] = (tgt(i), n)
+        if "valid" in got:
+            vn = got["valid"][1]
+            regen = next(((tgt(i), n) for n, i in reversed(calls) if n < vn
+                          and any(ins[k].op_str == "r8b, 1" for k in range(max(0, n - 6), n))), None)
+            if regen:
+                fc = re.match(r"^rcx, \[rbp \+ (0x[0-9a-f]+)\]$", ins[regen[1] - 1].op_str)
+                got["regen"] = regen
+                lea_fc = ins[regen[1] - 1].op_str
+                ctor = next(((tgt(i), n) for n, i in calls if n < regen[1] and ins[n - 1].op_str == lea_fc), None)
+                dtor = next(((tgt(i), n) for n, i in calls if n > vn and ins[n - 1].op_str == lea_fc
+                             and tgt(i) not in (regen[0], ctor[0] if ctor else None)), None)
+                playable = next(((tgt(i), n) for n, i in reversed(calls) if n < regen[1]
+                                 and re.match(r"^rcx, qword ptr \[rax \+ r\w+\*8\]$", ins[n - 1].op_str)), None)
+                if ctor: got["ctor"] = ctor
+                if dtor: got["dtor"] = dtor
+                if playable: got["playable"] = playable
+        if set(got) == {"valid", "regen", "ctor", "dtor", "playable"}:
+            break
+    if set(got) != {"valid", "regen", "ctor", "dtor", "playable"}:
+        failures.append(f"empire design validation: {sorted(got)} from {len(refresh)} functions")
+    else:
+        result["functions"]["IsEmpireDesignValid"] = {
+            "rva": got["valid"][0], "linux": "IsEmpireDesignValid(EEmpireDesignValidationReason, CEmpireDesign const&, CCountry const*, CString*)",
+            "signature": "bool (*)(uint8_t reason /*3 = game setup*/, const void* design, const void* country, void* reason_cstring)"}
+        result["functions"]["CEmpireDesign_IsPlayable"] = {
+            "rva": got["playable"][0], "linux": "CEmpireDesign::IsPlayable() const",
+            "signature": "bool (*)(const void* design)  -- the design's playable trigger"}
+        result["functions"]["SScopedFakeCountry_Create"] = {
+            "rva": got["ctor"][0], "linux": "NGameUtil::SScopedFakeCountry::SScopedFakeCountry (creates the country)",
+            "signature": "void (*)(void* fake_country)  -- country id at +0"}
+        result["functions"]["SScopedFakeCountry_SetDesign"] = {
+            "rva": got["regen"][0], "linux": "NGameUtil::SScopedFakeCountry: regenerate the country from a design",
+            "signature": "void (*)(void* fake_country, const void* design, bool)"}
+        result["functions"]["SScopedFakeCountry_Destroy"] = {
+            "rva": got["dtor"][0], "linux": "NGameUtil::SScopedFakeCountry::~SScopedFakeCountry",
+            "signature": "void (*)(void* fake_country)"}
+        print("design validation:", {k: hex(v[0]) for k, v in got.items()})
+
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
     cmds = json.loads((OUT / "sdk.json").read_text(encoding="utf-8")).get("commands", [])
