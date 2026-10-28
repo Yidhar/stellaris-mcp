@@ -11,6 +11,7 @@
 #include "discoveries_manager.hpp"
 #include "contacts_manager.hpp"
 #include "outliner_manager.hpp"
+#include "menu_manager.hpp"
 #include <cmath>
 
 namespace bridge {
@@ -573,10 +574,12 @@ nlohmann::json GameState::GetStatusJson() {
     }
 
     nlohmann::json root = {
+        {"screen", MenuManager::Get().Screen()},
         {"in_game", status.in_game},
         {"is_paused", status.is_paused},
         {"speed", status.speed}
     };
+    if (MenuManager::Get().QuickStartPending()) root["quick_start_pending"] = true;  // a load still requested
 
     if (status.in_game) {
         if (!status.date.formatted.empty()) {

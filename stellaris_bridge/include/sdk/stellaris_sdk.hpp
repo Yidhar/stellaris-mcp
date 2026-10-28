@@ -284,7 +284,10 @@ namespace glob {
     inline constexpr uintptr_t g_CurrentGameState = 0x3114700;  // g_CurrentGameState  score=0.771 live=static
     inline constexpr uintptr_t g_CurrentIdler = 0x31578B0;  // g_CurrentIdler  score=0.6 live=static
     inline constexpr uintptr_t g_CurrentInGameIdler = 0x3114E68;  // g_CurrentInGameIdler  score=0.773 live=static
+    inline constexpr uintptr_t g_QuickStartSave = 0x2814260;  // g_QuickStartSave  score=anchor live=anchor
     inline constexpr uintptr_t g_bFrameSmoothing = 0x2807830;  // g_bFrameSmoothing  score=anchor live=anchor
+    inline constexpr uintptr_t g_bQuickStart = 0x311123A;  // g_bQuickStart  score=anchor live=anchor
+    inline constexpr uintptr_t s_pLoadGameProgress = 0x3114E18;  // s_pLoadGameProgress  score=anchor live=anchor
 }  // namespace glob
 // TPdxRefDatabase<T>*: arr at +0x18 (16-byte slots, object at +8), capacity at +0x20; invalid id 0xFFFFFFFF
 namespace db {
@@ -407,7 +410,11 @@ namespace rt {
     inline constexpr std::ptrdiff_t CInGameIdler_CAnomalyWindow = 0xB08;
     inline constexpr std::ptrdiff_t CInGameIdler_CFirstContactView = 0xC90;
     inline constexpr std::ptrdiff_t CInGameIdler_CStartScreenWindow = 0xBE8;
+    inline constexpr std::ptrdiff_t CInGameIdler_busy = 0x5D0;
     inline constexpr std::ptrdiff_t CInGameIdler_paused = 0x594;
+    inline constexpr std::ptrdiff_t CInGameIdler_resign_pending = 0xA61;
+    inline constexpr std::ptrdiff_t CInGameIdler_resigned = 0xA60;
+    inline constexpr std::ptrdiff_t CInGameIdler_save_manager = 0xF90;
     inline constexpr std::ptrdiff_t CInGameIdler_speed = 0x590;
     inline constexpr std::ptrdiff_t CLeader_id = 0x20;
     inline constexpr std::ptrdiff_t CMegaStructureType_build_type = 0x2188;
@@ -617,6 +624,10 @@ namespace fn {
     inline constexpr uintptr_t CGovernmentCivicType_IsPossible = 0x533C50;
     // CHasFlagTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* trigger, void* scope)
     inline constexpr uintptr_t CHasFlagTrigger_ActualEvaluate = 0x195A7A0;
+    // CInGameIdler::DoResign()  --  void (*)(void* in_game_idler)  -- leaves for the main menu (the resign dialog's accept)
+    inline constexpr uintptr_t CInGameIdler_DoResign = 0x9348D0;
+    // CInGameIdler::SaveGame(CString const&, bool, bool)  --  int (*)(void* in_game_idler, const void* name_cstring, bool cloud, bool overwrite)
+    inline constexpr uintptr_t CInGameIdler_SaveGame = 0x934240;
     // CInGameIdler::SetGameSpeed(int)  --  void (*)(void* idler, int speed)
     inline constexpr uintptr_t CInGameIdler_SetGameSpeed = 0x934C50;
     // CInGameIdler::SetPaused(SPauseGameSettings const&)  --  void (*)(void* idler, const void* settings)
@@ -659,6 +670,10 @@ namespace fn {
     inline constexpr uintptr_t CRT_purecall = 0x20239C0;
     // CRandomLog::Get() (the random-number log whose config the flush ORs with 2)  --  void* (*)()
     inline constexpr uintptr_t CRandomLog_Get = 0x1B481F0;
+    // CSaveGameTaskManager::Start(CString const&, bool, bool)  --  int (*)(void* manager, const void* name_cstring, bool cloud, bool overwrite)  -- 0 queued, 1 exists, 2 too many saves
+    inline constexpr uintptr_t CSaveGameTaskManager_Start = 0xA88E60;
+    // CSaveGameTaskManager::StartSaveToPath(CString const&, bool, bool, bool)  --  int (*)(void* manager, const void* path_cstring, bool cloud, bool overwrite, bool dump)
+    inline constexpr uintptr_t CSaveGameTaskManager_StartSaveToPath = 0xA890D0;
     // CScriptedRule::Evaluate(CEventScope&, CString*, CScriptedRule::EShowTooltip, bool) const  --  bool (*)(const void* rule, void* scope, void* reason, uint8_t show_tooltip, bool flag)
     inline constexpr uintptr_t CScriptedRule_Evaluate = 0x5B7430;
     // CShipDesignImplementation::CShipDesignImplementation(TPdxRef<CShipDesign>, int)  --  void* (*)(void* impl, uint32_t design_id, int growth_stage)

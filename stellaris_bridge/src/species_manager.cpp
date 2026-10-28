@@ -13,7 +13,8 @@ namespace bridge {
 //                                 +0x24 live objects
 //   TGameDatabase<T> (script types): +0x50 T* array, +0x5C count
 //   CPdxArray<T>: +0x8 data, +0x10 capacity, +0x14 size
-//   CString: its std::string text at +0x10 (what CString_Assign / CString_Free work on)
+//   CString: a 16-byte header, then its std::string text at +0x10; CString_Assign / CString_Free
+//            take the CString itself
 //   CPdxUnorderedMap (Robin Hood): +0 entries, +0xC index mask, +0x10 overflow slots; an entry is
 //                                  {+4 probe distance (0 = empty), +8 key, +0x10 value}
 constexpr std::ptrdiff_t kRefDbSlots = 0x18, kRefDbSlotCount = 0x20, kRefDbLive = 0x24;

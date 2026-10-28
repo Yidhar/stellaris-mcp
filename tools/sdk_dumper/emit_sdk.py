@@ -317,6 +317,8 @@ def main():
         w("")
     fpath = OUT / "functions.json"
     funcs = json.loads(fpath.read_text(encoding="utf-8")) if fpath.exists() else {}
+    # plus the functions anchors.py follows from located code (call chains, thin wrappers)
+    funcs.update(anchors.get("functions", {}))
     if funcs:
         w("// ============================== functions =============================")
         w("// Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).")

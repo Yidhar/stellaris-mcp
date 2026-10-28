@@ -19,6 +19,7 @@
 #include "discoveries_manager.hpp"
 #include "contacts_manager.hpp"
 #include "outliner_manager.hpp"
+#include "menu_manager.hpp"
 
 namespace bridge {
 
@@ -73,6 +74,17 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
     std::string method = req.value("method", "");
     nlohmann::json params = req.value("params", nlohmann::json::object());
 
+    // answered here, not on the main thread: memory reads only, and they must work while the game
+    // loads (no tasks run then)
+    if (method == "get_screen") {
+        return { {"jsonrpc", "2.0"}, {"result", MenuManager::Get().ScreenJson()}, {"id", id} };
+    }
+    if (method == "get_status" && MenuManager::Get().Screen() != "in_game") {
+        nlohmann::json r = MenuManager::Get().ScreenJson();
+        r["in_game"] = false;
+        return { {"jsonrpc", "2.0"}, {"result", r}, {"id", id} };
+    }
+
     if (method == "ping") {
         return {
             {"jsonrpc", "2.0"},
@@ -111,6 +123,18 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([speed]() {
             return Commands::Get().SetSpeed(speed);
         });
+    } else if (method == "load_save") {
+        std::string campaign = params.value("campaign", std::string());
+        std::string file = params.value("file", std::string());
+        fut = TaskQueue::Get().Enqueue([campaign, file]() { return MenuManager::Get().LoadSave(campaign, file); });
+    } else if (method == "finish_load") {
+        fut = TaskQueue::Get().Enqueue([]() { return MenuManager::Get().FinishLoad(); });
+    } else if (method == "exit_to_main_menu") {
+        fut = TaskQueue::Get().Enqueue([]() { return MenuManager::Get().ExitToMainMenu(); });
+    } else if (method == "save_game") {
+        std::string name = params.value("name", std::string());
+        bool overwrite = params.value("overwrite", false);
+        fut = TaskQueue::Get().Enqueue([name, overwrite]() { return MenuManager::Get().SaveGame(name, overwrite); });
     } else if (method == "get_active_events") {
         fut = TaskQueue::Get().Enqueue([]() {
             return EventManager::Get().GetActiveEventsJson();

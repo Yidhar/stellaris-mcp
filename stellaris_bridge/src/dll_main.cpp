@@ -21,6 +21,7 @@
 #include "outliner_manager.hpp"
 #include "ipc_server.hpp"
 #include "plugin.hpp"
+#include "menu_manager.hpp"
 
 namespace bridge {
 
@@ -57,6 +58,7 @@ DWORD WINAPI MainInitThread(LPVOID lpParam) {
     DiscoveriesManager::Get().Init(base_address);
     ContactsManager::Get().Init(base_address);
     OutlinerManager::Get().Init(base_address);
+    MenuManager::Get().Init(base_address);
 
     if (!HookManager::Get().Init()) {
         LOG("[INIT_FATAL] Failed to hook DXGI Present. Aborting.");

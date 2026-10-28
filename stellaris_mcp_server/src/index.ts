@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { PipeClient } from "./pipe_client.js";
 import { registerTools } from "./tools.js";
+import { registerSessionTools } from "./session_tools.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,7 @@ async function main() {
 
   // Register all Stellaris tools
   registerTools(server, client);
+  registerSessionTools(server, client);
   log("Tools registered.");
 
   // Connect over standard stdio transport for MCP client

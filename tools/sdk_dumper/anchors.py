@@ -340,7 +340,7 @@ def main():
     globs = json.loads(((OUT / "globals_verified.json") if (OUT / "globals_verified.json").exists()
                         else (OUT / "globals.json")).read_text(encoding="utf-8"))
     funcs = json.loads((OUT / "functions.json").read_text(encoding="utf-8"))
-    result = {"vtables": {}, "slots": {}, "globals": {}, "fields": {}}
+    result = {"vtables": {}, "slots": {}, "globals": {}, "fields": {}, "functions": {}}
     failures = []
 
     try:
@@ -1410,6 +1410,134 @@ def main():
             print(f"define {define} 0x{result['globals'][f'NDefines::{define}']:X}")
         else:
             failures.append(f"define {define}: {[hex(v) for v in found]}")
+
+    # Saves, loading and the main menu. All from code located by its strings and by the calls
+    # between them:
+    #  - the main menu's update (it reads both "latest" and "save games") copies the save to
+    #    continue into the CString g_QuickStartSave (`lea rcx, [rip + G]; call CString_Assign`) and raises
+    #    g_bQuickStart (`mov byte ptr [rip + flag], 1`); the same update then loads that save
+    #  - both load paths ("LOAD_SAVE_GAME") set and clear s_pLoadGameProgress besides rebuilding
+    #    g_CurrentGameState: non-null while a save or a new galaxy is loading
+    #  - CInGameIdler::DoResign: the function that clears g_bQuickStart and starts with
+    #    `cmp byte ptr [rcx + resigned], 0`; while the idler is busy (`cmp byte ptr [rdi + busy], 0`)
+    #    it only sets `[rdi + pending] = 1`, which the idler's update turns into a resign
+    #  - saving: StartSaveToPath references "save games" and ".sav"; CSaveGameTaskManager::Start
+    #    calls it; CInGameIdler::SaveGame is `mov rcx, [rcx + manager]; jmp Start`
+    def fns_with_strings(*strings):
+        lea = im.lea_index()
+        sets = []
+        for s in strings:
+            got, start = set(), im.rdata0
+            while True:
+                at = im.img.find(s.encode() + b"\x00", start, im.rdata1)
+                if at == -1:
+                    break
+                if im.img[at - 1] == 0:
+                    got |= {im.fn_of(r) for r in lea.get(at, [])}
+                start = at + 1
+            sets.append(got - {None})
+        return set.intersection(*sets) if sets else set()
+
+    def direct_callers(target):
+        text = im.img[im.text0:im.text1]
+        out = []
+        for m in re.finditer(rb"[\xe8\xe9]", text):
+            i = m.start()
+            if im.text0 + i + 5 + struct.unpack_from("<i", text, i + 1)[0] == target:
+                out.append((im.text0 + i, text[i] == 0xE9))
+        return out
+
+    assign = funcs.get("CString_Assign", {}).get("rva")
+    front = sorted(fns_with_strings("latest", "save games"))
+    qs_text = qs_flag = None
+    if len(front) == 1 and assign is not None:
+        ins = im.disasm_fn(front[0], 0x8000)
+        for n, i in enumerate(ins[:-2]):
+            if (i.mnemonic == "lea" and i.op_str.startswith("rcx, [rip + ") and ins[n + 1].mnemonic == "call"
+                    and ins[n + 1].op_str.startswith("0x") and int(ins[n + 1].op_str, 16) - im.ib == assign
+                    and ins[n + 2].mnemonic == "mov" and re.match(r"^byte ptr \[rip \+ 0x[0-9a-f]+\], 1$", ins[n + 2].op_str)):
+                qs_text, qs_flag = rip_target(im, i), rip_target(im, ins[n + 2])
+                break
+    if qs_text is None:
+        failures.append(f"g_QuickStartSave / g_bQuickStart: main menu update {[hex(f) for f in front]}")
+    else:
+        result["globals"]["g_QuickStartSave"] = qs_text
+        result["globals"]["g_bQuickStart"] = qs_flag
+        print(f"g_QuickStartSave 0x{qs_text:X}, g_bQuickStart 0x{qs_flag:X}")
+
+    gs = globs.get("g_CurrentGameState", {}).get("rva")
+    loaders = sorted(fns_with_strings("LOAD_SAVE_GAME"))
+    per_fn = []
+    for f in loaders:
+        stored = {rip_target(im, i) for i in im.disasm_fn(f, 0x4000)
+                  if i.mnemonic == "mov" and i.op_str.startswith("qword ptr [rip + ")}
+        if gs in stored:
+            per_fn.append(stored - {gs})
+    common = set.intersection(*per_fn) if len(per_fn) >= 2 else set()
+    if len(common) != 1:
+        failures.append(f"s_pLoadGameProgress: {[hex(x) for x in common]} from {[hex(f) for f in loaders]}")
+    else:
+        result["globals"]["s_pLoadGameProgress"] = common.pop()
+        print(f"s_pLoadGameProgress 0x{result['globals']['s_pLoadGameProgress']:X}")
+
+    resign = []
+    if qs_flag is not None:
+        text = im.img[im.text0:im.text1]
+        clearers = set()
+        for m in re.finditer(rb"\xC6\x05(....)\x00", text, re.S):
+            at = im.text0 + m.start()
+            if at + 7 + struct.unpack("<i", m.group(1))[0] == qs_flag:
+                clearers.add(im.fn_of(at))
+        for f in sorted(clearers - {None}):
+            ins = im.disasm_fn(f, 0x800)[:200]
+            first = next((i for i in ins[:16] if i.mnemonic == "cmp" and re.match(r"^byte ptr \[rcx \+ 0x[0-9a-f]+\], \w+$", i.op_str)), None)
+            if first is None:
+                continue
+            for n, i in enumerate(ins[:-3]):
+                mb = re.match(r"^byte ptr \[(r\w+) \+ (0x[0-9a-f]+)\], 0$", i.op_str) if i.mnemonic == "cmp" else None
+                if not mb:
+                    continue
+                st = next((j for j in ins[n + 1:n + 4] if j.mnemonic == "mov"
+                           and re.match(r"^byte ptr \[" + mb.group(1) + r" \+ 0x[0-9a-f]+\], 1$", j.op_str)), None)
+                if st:
+                    resign.append((f, int(first.op_str.split("+ ")[1].split("]")[0], 16), int(mb.group(2), 16),
+                                   int(st.op_str.split("+ ")[1].split("]")[0], 16)))
+                    break
+    if len(resign) != 1:
+        failures.append(f"CInGameIdler::DoResign: {[(hex(r[0]),) for r in resign]}")
+    else:
+        f, resigned, busy, pending = resign[0]
+        result["functions"]["CInGameIdler_DoResign"] = {
+            "rva": f, "linux": "CInGameIdler::DoResign()",
+            "signature": "void (*)(void* in_game_idler)  -- leaves for the main menu (the resign dialog's accept)"}
+        result["fields"]["CInGameIdler_resigned"] = resigned
+        result["fields"]["CInGameIdler_busy"] = busy
+        result["fields"]["CInGameIdler_resign_pending"] = pending
+        print(f"DoResign 0x{f:X}: resigned +0x{resigned:X}, busy +0x{busy:X}, pending +0x{pending:X}")
+
+    to_path = sorted(fns_with_strings("save games", ".sav"))
+    start = wrapper = manager = None
+    if len(to_path) == 1:
+        for at, _ in direct_callers(to_path[0]):
+            f = im.fn_of(at)
+            for at2, is_jmp in direct_callers(f) if f is not None else []:
+                back = list(im.md.disasm(im.img[at2 - 7:at2 + 5], im.ib + at2 - 7))
+                if is_jmp and len(back) == 2 and back[0].mnemonic == "mov" and re.match(r"^rcx, qword ptr \[rcx \+ 0x[0-9a-f]+\]$", back[0].op_str):
+                    start, wrapper, manager = f, at2 - 7, int(back[0].op_str.split("+ ")[1].rstrip("]"), 16)
+    if wrapper is None:
+        failures.append(f"CInGameIdler::SaveGame: StartSaveToPath {[hex(f) for f in to_path]}")
+    else:
+        result["functions"]["CSaveGameTaskManager_StartSaveToPath"] = {
+            "rva": to_path[0], "linux": "CSaveGameTaskManager::StartSaveToPath(CString const&, bool, bool, bool)",
+            "signature": "int (*)(void* manager, const void* path_cstring, bool cloud, bool overwrite, bool dump)"}
+        result["functions"]["CSaveGameTaskManager_Start"] = {
+            "rva": start, "linux": "CSaveGameTaskManager::Start(CString const&, bool, bool)",
+            "signature": "int (*)(void* manager, const void* name_cstring, bool cloud, bool overwrite)  -- 0 queued, 1 exists, 2 too many saves"}
+        result["functions"]["CInGameIdler_SaveGame"] = {
+            "rva": wrapper, "linux": "CInGameIdler::SaveGame(CString const&, bool, bool)",
+            "signature": "int (*)(void* in_game_idler, const void* name_cstring, bool cloud, bool overwrite)"}
+        result["fields"]["CInGameIdler_save_manager"] = manager
+        print(f"SaveGame 0x{wrapper:X} -> Start 0x{start:X} -> StartSaveToPath 0x{to_path[0]:X}; manager +0x{manager:X}")
 
     # Species rights and modification, from the code that uses them.
     layouts = json.loads((OUT / "win_layouts.json").read_text(encoding="utf-8"))["layouts"]
