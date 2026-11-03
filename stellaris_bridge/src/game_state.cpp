@@ -542,9 +542,10 @@ GameStatus GameState::ReadStatus() {
         return status;
     }
 
+    status.date = ReadDate();  // the galaxy's date: an observer has one too
     void* country = GetPlayerCountry();
+    status.observer = country == nullptr;
     if (country) {
-        status.date = ReadDate();
         status.stats = ReadEmpireStats(country);
         status.resources = ReadResources(country);
 
@@ -610,6 +611,7 @@ nlohmann::json GameState::GetStatusJson() {
         {"is_paused", status.is_paused},
         {"speed", status.speed}
     };
+    if (status.in_game && status.observer) root["observer"] = true;  // no country of its own (`observe`)
     if (status.in_game) {
         // what waits for the player: why the game is paused, the event windows (details:
         // get_active_events)

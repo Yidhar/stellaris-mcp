@@ -35,6 +35,7 @@ struct EmpireStats {
 
 struct GameStatus {
     bool in_game{ false };
+    bool observer{ false };  // in a game with no country of the local player's own (`observe`)
     bool is_paused{ false };
     uint32_t speed{ 0 };
     GameDate date;

@@ -56,8 +56,9 @@ static bool CallNativeSetGameSpeed(Commands::FnSetGameSpeed fn, void* idler, int
 }
 
 nlohmann::json Commands::SetPaused(bool paused) {
+    // the idler's clock needs no country: an observer pauses and speeds up the game too
     auto status = GameState::Get().ReadStatus();
-    if (!status.in_game || !GameState::Get().GetPlayerCountry()) {
+    if (!status.in_game) {
         return {
             {"success", false},
             {"error", "Game is not currently loaded in an active session."}
@@ -106,8 +107,9 @@ nlohmann::json Commands::SetSpeed(uint32_t target_speed) {
         target_speed = 4;
     }
 
+    // the idler's clock needs no country: an observer pauses and speeds up the game too
     auto status = GameState::Get().ReadStatus();
-    if (!status.in_game || !GameState::Get().GetPlayerCountry()) {
+    if (!status.in_game) {
         return {
             {"success", false},
             {"error", "Game is not currently loaded in an active session."}
