@@ -57,7 +57,10 @@ def main():
             print(f"    - Design ID: {d.get('design_id')}, Name: '{d.get('design_name')}', Actual: {d.get('actual_count')}, Quota: {d.get('target_quota')}, Deficit: {d.get('deficit')}")
 
         assert len(designs) > 0, "No ship designs in primary fleet template!"
-        target_design = designs[0]
+        ids = [d.get("design_id") for d in designs]
+        assert len(set(ids)) == len(ids), f"A template's designs have distinct ids, got {ids}"
+        # the last row: an id matching the wrong row would change another one
+        target_design = designs[-1]
         target_design_id = target_design.get("design_id")
         original_quota = target_design.get("target_quota")
 
@@ -70,8 +73,8 @@ def main():
         assert len(all_fleets) > len(fleets_list), "Civilian fleets were not included!"
         print("[+] Layer 2 PASSED")
 
-        # 3. Layer 3: set_fleet_template_quota (Increase quota by 1)
-        new_quota = original_quota + 1
+        # 3. Layer 3: set_fleet_template_quota (one more than the ships there are)
+        new_quota = target_design.get("actual_count") + 1
         print(f"\n--- 3. Testing Layer 3: set_fleet_template_quota ({original_quota} -> {new_quota}) ---")
         quota_resp = send_ipc(pipe, {
             "jsonrpc": "2.0",
@@ -95,6 +98,8 @@ def main():
         assert v_design.get("target_quota") == new_quota, f"Quota expected {new_quota}, got {v_design.get('target_quota')}"
         assert v_design.get("deficit") == 1, f"Deficit expected 1, got {v_design.get('deficit')}"
         assert v_fleet.get("can_reinforce") is True, "Fleet should now be reinforceable"
+        others = [(d.get("design_id"), d.get("target_quota")) for d in v_fleet.get("designs", []) if d.get("design_id") != target_design_id]
+        assert others == [(d.get("design_id"), d.get("target_quota")) for d in designs[:-1]], f"Other rows changed: {others}"
         print("[+] Template Quota Modification PASSED")
 
         # 4. Layer 3: reinforce_fleet

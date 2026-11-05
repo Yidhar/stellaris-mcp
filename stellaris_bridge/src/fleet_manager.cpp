@@ -9,6 +9,9 @@
 
 namespace bridge {
 
+// a CFleetTemplateDesign (0x560 bytes): the object holding the name shown for its row
+constexpr std::ptrdiff_t kTemplateDesignNamed = 0x40;
+
 static bool SafeReadPtr(const void* addr, void** out) {
     if (!addr || !out) return false;
     __try {
@@ -29,6 +32,14 @@ static bool SafeReadU32(const void* addr, uint32_t* out) {
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// a template row's design: the TPdxRef<CShipDesign> (the id) in its CShipDesignImplementation
+static uint32_t TemplateDesignId(uintptr_t entry) {
+    uint32_t id = 0xFFFFFFFF;
+    SafeReadU32((const void*)(entry + sdk::ent::CFleetTemplateDesign::ship_design_implementation +
+                              sdk::rt::CShipDesignImplementation_design), &id);
+    return id;
 }
 
 static bool SafeWriteU32(void* addr, uint32_t val) {
@@ -234,7 +245,7 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
                 uintptr_t d_entry = (uintptr_t)designs_arr + d * 0x560;
                 ShipDesignQuotaInfo d_info{};
 
-                SafeReadU32((const void*)(d_entry + 0x28), &d_info.design_id);
+                d_info.design_id = TemplateDesignId(d_entry);
                 
                 // Read actual count of ships of this design
                 uint32_t actual = 0;
@@ -250,7 +261,7 @@ std::vector<FleetInfo> FleetManager::GetFleets(bool include_civilian, uint32_t s
                 }
 
                 void* ship_design_ptr = nullptr;
-                if (SafeReadPtr((const void*)(d_entry + 0x40), &ship_design_ptr) && ship_design_ptr) {
+                if (SafeReadPtr((const void*)(d_entry + kTemplateDesignNamed), &ship_design_ptr) && ship_design_ptr) {
                     std::string d_name;
                     if (SafeReadPdxString((const void*)((uintptr_t)ship_design_ptr + 0x20), d_name) && !d_name.empty()) {
                         d_info.design_name = d_name;
@@ -393,8 +404,7 @@ bool FleetManager::SetFleetTemplateQuota(uint32_t fleet_id, uint32_t design_id, 
     uintptr_t target_entry = 0;
     for (uint32_t d = 0; d < designs_cnt; ++d) {
         uintptr_t entry = (uintptr_t)designs_arr + d * 0x560;
-        uint32_t did = 0;
-        if (SafeReadU32((const void*)(entry + 0x28), &did) && did == design_id) {
+        if (TemplateDesignId(entry) == design_id) {
             target_entry = entry;
             break;
         }
