@@ -2,6 +2,16 @@
 
 每次改 `tools/sdk_dumper` 的规则（新增指纹、改启发式、改输出）都在这里记一笔：改了什么、为什么、怎么验证的、生成的头文件有什么变化。游戏补丁后单纯重新 dump 不用记。最新的在最上面。
 
+## 2026-11-05：4.5.3 的地址表（Stellaris 4.5.3，exe 时间戳 `0x6AE49C1B`）
+
+规则没有改：游戏更新后的单纯重新 dump，`functions.py` 里所有指纹（包括引擎自带 ImGui 的和 `CGameText_ProcessWithScope`）在新 exe 上各自唯一命中，`anchors.py` 也全部找到，`sdk::rt` 里
+ImGui 的布局常量和 4.5.2 完全一样。记这一笔是因为 `validate.py` 的 `ADDRESS_TRUTH` 多了 4.5.3 的一张表（18 项：引擎 ImGui 的入口和全局、作用域本地化、`PostCommand`、速度和暂停的 setter、
+turn tick 的钩子、控制台、`GetPlayerCountry`、`PdxLocalize`）。这张表不是重新反汇编出来的，而是 stellaris-guiexpand 0.1.1 在 4.5.3 的游戏里实际用过这些地址：引擎的 ImGui 经两个钩子启动并绘制，
+`[Root.GetName]` 求出国家名，按钮 effect 被拒绝 / 入队 / 执行，速度和暂停设置后读回一致，tick 钩子在跑，控制台一行执行成功。`validate.py --addresses`：18 个全部吻合。
+
+注意：仓库主检出里的 dump 用的是不含这些规则的版本，所以它生成的头文件没有 `GImGui`、`ImGui_NewFrame`、`NImGuiWrapper_ImGuiInit`、`CGameText_ProcessWithScope` 等；
+stellaris-guiexpand 的 `tools/extract_sdk.py` 需要用带这些规则的分支（本分支）生成的头文件。
+
 ## 2026-10-08：作用域本地化的定位规则（Stellaris 4.5.2，exe 时间戳 `0x6ABEAA3F`）
 
 ### 为什么

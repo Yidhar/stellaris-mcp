@@ -58,6 +58,19 @@ ADDRESS_TRUTH = {
         "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,
                    "ImGuiIO_ImeWindowHandle": 0x118, "ImGuiIO_BackendPlatformUserData": 0xE0},
     },
+    # Stellaris 4.5.3. Not disassembled again: every entry was exercised in a running game by stellaris-guiexpand 0.1.1 (the engine's ImGui started
+    # through the two hooks and drew, `[Root.GetName]` evaluated, a button effect was refused / posted / executed, speed and pause were set and read
+    # back, the turn-tick hook ran, a console line ran). The ImGui layout constants are the same as in 4.5.2.
+    0x6AE49C1B: {
+        "functions": {"ImGui_NewFrame": 0x1EA1D10, "NImGuiWrapper_ImGuiInit": 0x1B15C50, "CGameText_ProcessWithScope": 0x5EA4C0,
+                      "PostCommand": 0x5F9A10, "CInGameIdler_SetGameSpeed": 0x9368E0, "CInGameIdler_SetPaused": 0x936FD0,
+                      "CGameState_HandleTurnTick": 0x2518C0, "CConsole_RunCommandNow": 0x1B17CE0, "PdxLocalize": 0x16D4B0,
+                      "GetPlayerCountry": 0x14B16F0},
+        "globals": {"GImGui": 0x28E7D58, "GImAllocatorAllocFunc": 0x2802320, "GImAllocatorFreeFunc": 0x2802328,
+                    "GImAllocatorUserData": 0x28E7D68},
+        "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,
+                   "ImGuiIO_ImeWindowHandle": 0x118, "ImGuiIO_BackendPlatformUserData": 0xE0},
+    },
 }
 
 
