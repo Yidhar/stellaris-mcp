@@ -5,7 +5,7 @@
   "version": "0.6.1",
   "description": "Lets AI agents read and play the game over MCP: reads engine state and posts the game's own commands. The MCP server is in mcp-server\\.",
   "dll": "stellaris_bridge.dll",
-  "game": { "exe_timestamps": ["0x6ABEAA3F"] },
+  "game": { "exe_timestamps": ["0x6AE49C1B"] },
   "load": { "wait": "window", "delay_ms": 1500 },
   "config": [
     { "file": "stellaris_mcp.ini", "default": "defaults/stellaris_mcp.ini", "title": "Stellaris MCP", "substitute": false }
