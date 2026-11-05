@@ -31,7 +31,8 @@ def run(m):
 
     ok, r = m.tool("stellaris_run_until", {"days": 30, "speed": 4})
     record("run_until stops at the date or an event, game paused", ok and r.get("stopped_because") in ("date", "event") and r.get("paused") is True
-           and (r["stopped_because"] != "date" or r.get("days_passed") == 30), str(r)[:200])
+           # it checks the date every 250 ms, so the fastest speed can pass the date by a day or two
+           and (r["stopped_because"] != "date" or 30 <= r.get("days_passed", 0) <= 33), str(r)[:200])
 
     event = r.get("pending_events") if ok else None
     for _ in range(6):
