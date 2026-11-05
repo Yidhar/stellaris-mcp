@@ -199,3 +199,13 @@ flowchart TD
 - `CInGameIdler`：速度 `sdk::rt::CInGameIdler_speed`（0x590）、暂停 `CInGameIdler_paused`（0x594）、`+0x595` 外来暂停锁、`CInGameIdler_auto_paused_by_popup`（0x5C8，`SetAutoPausedWithPopup` 置位）。暂停且 0x5C8 置位 = 被弹窗（事件窗口、设置为暂停的消息）暂停；游戏内 `UpdateInternal` 在没有弹窗再按住时（`IsAutoPausedByMessagePopup`，Windows 上内联）、非多人且 `CSettings::auto_unpause` 时发 `CPauseGame(false)` 自动恢复。
 - 实测：事件窗口不一定暂停游戏（看玩家的消息设置），时间会带着打开的事件窗口继续走，所以要主动轮询待处理窗口，不能只看暂停状态。
 - 待处理窗口：开局画面、异常点、首次接触三个视图（`ShownView`），加 `idler+0x170/+0x17C` 的事件窗口数组（窗口 id 在 +0x98，`COpenPlayerEvent` 给出脚本 id 和标题）。回答一个事件可能马上打开事件链的下一个。
+
+## 16. 修正节点图 (Modifier nodes, verified 4.5.2 live)
+
+详见 `source/better_stellaris/research/modifier_cascade.md`（研究笔记，git-ignored）。
+
+- `CModifierNodeBase`（嵌在所有者对象里）：+0 节点类型描述（+8 = 类别 EModifierNodeCategory，0..34），+8 节点 id（-1 = 未注册），+0xC 所有者 id，+0x10..+0x50 `std::function` 重算委托（impl 指针在 +0x48，impl 虚表槽 2 = `_Do_call(impl, node)`，impl +8 所有者、+0x10 成员函数指针、+0x18 this 调整），+0x50 `CPdxModifier`（虚表 0x23449C8，槽 16 = 0x36DD30 清空；条目数组 +0x38/+0x44，parent 记录 +0x90/+0x9C，每条 0x20：+0 克隆、+8 倍率、+0x10 `CPdxModifierName*`（虚表槽 5 `CalcHash`，空名字是静态 `_EmptyName` 0x28077A0）、+0x18 类别），+0xFC 类别过滤掩码，+0x108 脏字节，+0x110 SRW 锁，+0x124 子集合自旋锁，+0x130 子节点 id 的 robin-hood 集合。
+- `Update` 0x238300：脏且已注册才重建（清空 → 委托）；`InvalidateChildren(node, mask)` 0x238430：对每个子节点调 0x239740（过滤掩码检查、置脏、递归、`AddInvalid` 0x2396C0），并把被置脏的子节点**从子集合移除**（子节点重建时经 `AddModifierNode`/`AddExplicitDependency` 重新登记）；节点析构 0x2367D0 也级联。
+- `CModifierNodeManager::Update`（flush）0x29D9D0：busy +0x900、has_invalid +0x901、掩码模式 +0x948（flush 内清零：重算走不带掩码的 `AddModifierInternal`；按需重建时每个来源 `InvalidateChildren(来源涉及的类别 & +0xFC)`）、批处理 +0x949；`CPdxGraphJob` 按类别依赖序，每类 `CollectInvalid` 合并各线程失效集后并行重建（不经过 0x238300，内联清空 + 委托）。
+- 类别（Windows 编号 = Linux 枚举从 3 起减 1）：0 中继网络（calc 0xAD41D0）、1 国家（0x709BF0；节点在 `CCountry+0x3150`，另两个 +0x3180 和虚调用；`CCountry::InvalidateModifier` 0x23EFA0）、2–7 星系、8/19 领袖、13 间谍网、16 行星（0xE04060，节点 `CPlanet+0x700`）、17 殖民地（0xDAD840，`CColony+0x120`）、20 巨构、22 人口组（0x67B980）、23 舰队（0xC78E10）、24–29 星港、30 军队（0x810FA0）、31 舰船（0xCB3DF0）。
+- 国家节点的每日失效源：国家日更 0x6F1530（`[country+0x1268]` 派系支持/认可度变化标志 → 失效 + 中继节点 0x574DE0（`+0x2CF0`）→ 立刻 `Update` 两者）、`UpdateRelayNetwork` 0x752D60（并行任务；网络内星系集合变了才失效）、`AssignPopsToJobs` 末尾、0xD80760 等。修正类型表 `CModifier::_Definitions` 0x2814390（指针 +0、数量 +0xC、每项 0xB0、键名 Clausewitz 字符串在 +0x10：16 字节内联/堆指针、size u64、capacity u64）。

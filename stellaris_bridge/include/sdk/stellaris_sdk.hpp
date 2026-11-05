@@ -574,22 +574,42 @@ namespace enums {
 // ============================== functions =============================
 // Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).
 namespace fn {
+    // the frame's engine-side update (task scheduler, audio, ...; it builds a parallel-for descriptor)  --  void (*)(void* app, ...)
+    inline constexpr uintptr_t Application_Update = 0x1A520F0;
     // CAlertManager::Click(CGuiObject*)  --  void (*)(void* alert_window, void* banner)
     inline constexpr uintptr_t CAlertIconsWindow_Click = 0x9E4110;
     // CArmyType::CalcMorale(CModifier const*) const  --  int64_t* (*)(const void* army_type, int64_t* out, const void* modifier)
     inline constexpr uintptr_t CArmyType_CalcMorale = 0x42FDA0;
     // CArmy::CalcMilitaryPower() const  --  int64_t* (*)(const void* army, int64_t* out)
     inline constexpr uintptr_t CArmy_CalcMilitaryPower = 0x813200;
+    // CColony::AddSizeToPopGroup (finds or creates the pop group, adds the size; a new group's node is refreshed at once)  --  void* (*)(void* colony, const void* key, int amount, void* extra)
+    inline constexpr uintptr_t CColony_AddSizeToPopGroup = 0xDB5F40;
     // CColony::CalcColonizationProgressPerc() const  --  int64_t* (*)(const void* colony, int64_t* out)
     inline constexpr uintptr_t CColony_CalcColonizationProgressPerc = 0xDC2880;
     // CColony::CalcMaxBuildings(CZone const&, EPlanetBuildingOwnerType, CCountry const&) const  --  int (*)(const void* colony, const void* zone, int owner_type, const void* country)
     inline constexpr uintptr_t CColony_CalcMaxBuildings = 0xDB0C70;
+    // CColony::CalculateModifier(CModifier*) (the colony node's rebuild delegate: only referenced by address)  --  void (*)(void* colony, void* modifier)
+    inline constexpr uintptr_t CColony_CalculateModifier = 0xDB2BD0;
+    // CColony::InvalidateModifier()  --  void (*)(void* colony)
+    inline constexpr uintptr_t CColony_InvalidateModifier = 0xDB2280;
+    // CColony::MicroUpdateCachedValues(CModifier*)  --  bool (*)(void* colony, void* modifier)
+    inline constexpr uintptr_t CColony_MicroUpdateCachedValues = 0xDDBE80;
+    // CColony::MonthlyUpdateSerial(CColonyDemographyCalculator::SDemographySafePrivate const&, int const*)  --  void (*)(void* colony, const void* demography, const int* counts)
+    inline constexpr uintptr_t CColony_MonthlyUpdateSerial = 0xDC90D0;
+    // CColony::MoveSizeToPopGroup (finds or creates the destination group, moves the size; both nodes are refreshed for a new group)  --  void* (*)(void* colony, const void* key, void* src, int amount, void* extra)
+    inline constexpr uintptr_t CColony_MoveSizeToPopGroup = 0xDB5FF0;
+    // CColony::OnAddPops(...) (the lower-addressed of the two colony callbacks of CPopGroup::AddSize, as in the source order; both refresh the node, recompute the cached values and invalidate)  --  void (*)(void* colony, ...)
+    inline constexpr uintptr_t CColony_OnAddPops = 0xDB4BF0;
+    // CColony::OnRemovePops(...) (the higher-addressed of the two colony callbacks of CPopGroup::AddSize)  --  void (*)(void* colony, ...)
+    inline constexpr uintptr_t CColony_OnRemovePops = 0xDB4EA0;
     // CComponentTemplate::CanBeBuiltBy(CCountry const&, EDesignOwner) const  --  bool (*)(const void* component, const void* country, uint32_t owner)
     inline constexpr uintptr_t CComponentTemplate_CanBeBuiltBy = 0x3BAA90;
     // CConsole::RunCommandNow(CString const&)  --  void (*)(void* console, const void* command_cstring)
     inline constexpr uintptr_t CConsole_RunCommandNow = 0x1B17CE0;
     // CCouncilAgenda::GetCost(CCountry const*, CString*) const  --  int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason)
     inline constexpr uintptr_t CCouncilAgenda_GetCost = 0x4ACF00;
+    // CCountryRelayNetworkManager::UpdateRelayNetwork() (MSVC passes the country itself)  --  void (*)(void* country)
+    inline constexpr uintptr_t CCountryRelayNetworkManager_UpdateRelayNetwork = 0x753E30;
     // CCountry::CalcAllPops() const  --  int (*)(const void* country)
     inline constexpr uintptr_t CCountry_CalcAllPops = 0x73D410;
     // CCountry::CalcGovernmentReformCost() const  --  int64_t* (*)(const void* country, int64_t* out)
@@ -610,6 +630,10 @@ namespace fn {
     inline constexpr uintptr_t CCountry_HasPotentiallyBuildableMegaStructureForPlanet = 0x714580;
     // CCountry::_HasSurveyedDepositHolder(CDepositHolder const*) const  --  bool (*)(const void* country, const void* deposit_holder)
     inline constexpr uintptr_t CCountry_HasSurveyedDepositHolder = 0x71C8C0;
+    // CCountry::InvalidateModifier()  --  void (*)(void* country)
+    inline constexpr uintptr_t CCountry_InvalidateModifier = 0x23EEB0;
+    // the relay network node's InvalidateModifier (the node UpdateRelayNetwork invalidates inline)  --  void (*)(void* country)
+    inline constexpr uintptr_t CCountry_InvalidateRelayNetworkModifier = 0x5756A0;
     // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
     inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1D0BDA0;
     // CEmpireDesignDatabase::DeleteUserDesign(CEmpireDesign const*)  --  void (*)(void* db, const void* design)  -- removes and deletes it; then SaveUserFile
@@ -648,6 +672,8 @@ namespace fn {
     inline constexpr uintptr_t CEventWindow_Setup = 0x107F200;
     // CEvent::GetTitle(CEventScope const&) const  --  void* (*)(void* event, void* out_cstring, void* scope)
     inline constexpr uintptr_t CEvent_GetTitle = 0x8E6950;
+    // CFile::Write(char const*) (vtable slot 6: strlen, then WriteData)  --  void (*)(void* file, const char* s)
+    inline constexpr uintptr_t CFile_WriteCStr = 0x1B4EA50;
     // CFleetManagerTemplateGridController::Update(CPdxArray<TPdxRef<CFleetTemplate>> const&, CContainerWindow*, CStandardGridBox*)  --  int (*)(void* controller, const void* templates, void* window, void* grid)
     inline constexpr uintptr_t CFleetManagerTemplateGridController_Update = 0x14A4870;
     // CFleetManagerView::Update()  --  void (*)(void* view)
@@ -668,16 +694,30 @@ namespace fn {
     inline constexpr uintptr_t CGalacticObject_CalcFTLPointWith = 0x86F230;
     // CGalacticObject::GetClaimsBy(CCountry const*) const  --  void* (*)(const void* system, void* out_claim, const void* country)
     inline constexpr uintptr_t CGalacticObject_GetClaimsBy = 0x866B10;
+    // CGameIdler draw step (vtable slot Idle + 10): one frame's GUI and world draw  --  void (*)(void* idler)
+    inline constexpr uintptr_t CGameIdler_DrawStep = 0x334B50;
+    // CGameIdler::Idle(bool)  --  void (*)(void* idler, bool)
+    inline constexpr uintptr_t CGameIdler_Idle = 0x3338E0;
     // CGameState::AccessLocalHuman()  --  void* (*)(void* game_state)  -- the local CHuman
     inline constexpr uintptr_t CGameState_AccessLocalHuman = 0x24C640;
+    // CGameState::DailyUpdate()  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_DailyUpdate = 0x25C3C0;
     // CGameState::HandleTurnTick(CPdxArray<CCommand*, int>&)  --  void (*)(void* game_state, void* commands)
     inline constexpr uintptr_t CGameState_HandleTurnTick = 0x2518C0;
+    // CGameState::MicroUpdate()  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_MicroUpdate = 0x252D80;
+    // CGameState::MonthlyUpdate()  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_MonthlyUpdate = 0x260BF0;
     // CGameState::OnNewGameStarted()  --  void (*)(void* game_state)
     inline constexpr uintptr_t CGameState_OnNewGameStarted = 0x271580;
     // CGameState::OnSavedGameStarted()  --  void (*)(void* game_state)
     inline constexpr uintptr_t CGameState_OnSavedGameStarted = 0x271E00;
+    // CGameState::ProcessAI() (inlined into HandleTurnTick on Linux)  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_ProcessAI = 0x263C10;
     // CGameState::MicroUpdate() -- the fleet parallel-for (CFleet::MicroUpdateParallel), split out on Windows  --  void (*)(void* game_state)
     inline constexpr uintptr_t CGameState_UpdateShipParallel = 0x252A80;
+    // CGameState::YearlyUpdate() (inlined into HandleTurnTick on Linux)  --  void (*)(void* game_state)
+    inline constexpr uintptr_t CGameState_YearlyUpdate = 0x2624B0;
     // CGovernmentCivicType::IsPossible(SEthicGovernmentConfiguration const&, EModdableCivicCondition, CCountry const*, CString*) const  --  bool (*)(const void* civic, const void* config, uint16_t flags, const void* country, void* reason)
     inline constexpr uintptr_t CGovernmentCivicType_IsPossible = 0x534300;
     // CHasFlagTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* trigger, void* scope)
@@ -692,8 +732,14 @@ namespace fn {
     inline constexpr uintptr_t CInGameIdler_SetGameSpeed = 0x9368E0;
     // CInGameIdler::SetPaused(SPauseGameSettings const&)  --  void (*)(void* idler, const void* settings)
     inline constexpr uintptr_t CInGameIdler_SetPaused = 0x936FD0;
+    // CInGameIdler::Update()  --  void (*)(void* in_game_idler)
+    inline constexpr uintptr_t CInGameIdler_Update = 0x92B030;
+    // CInGameIdler virtual after Update: `mov rcx, [this + save_manager]; jmp CSaveGameTaskManager::Update`  --  void (*)(void* in_game_idler)
+    inline constexpr uintptr_t CInGameIdler_UpdateSaveGame = 0x92AD60;
     // CIsMultiplayerTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* scope)
     inline constexpr uintptr_t CIsMultiplayerTrigger_ActualEvaluate = 0x197FFD0;
+    // CMeanTimeToHappen::GetRawFactor(CFixedPoint*, CEventScope const&) const  --  int64_t* (*)(const void* mtth, int64_t* out, const void* scope)
+    inline constexpr uintptr_t CMeanTimeToHappen_GetRawFactor = 0x342F30;
     // CEconomicUnit<CStandardEconomicUnit<CMegaStructureType, CCountry, CEconomicUnitScopeRef<CCountry, void>>>::CalcTable<0>(CResourceTable&, CFixedPoint, bool) const  --  void (*)(const void* unit, void* cost, int64_t multiplier, bool flag)
     inline constexpr uintptr_t CMegaStructureType_CalcCostTable = 0x6D4C60;
     // CMegaStructureType::CanAfford(CCountry const&, CString*) const  --  bool (*)(const void* type, const void* country, void* reason)
@@ -704,36 +750,72 @@ namespace fn {
     inline constexpr uintptr_t CMegaStructureType_IsPotentiallyBuildable = 0xD50440;
     // CMegaStructureType::IsPotentiallyUpgradableFrom(CCountry const*, CMegaStructure const*) const  --  bool (*)(const void* type, const void* country, const void* megastructure)
     inline constexpr uintptr_t CMegaStructureType_IsPotentiallyUpgradableFrom = 0xD50DB0;
+    // CMemoryFile::GetSize() (vtable slot 16: the blob's size when there is a blob)  --  int (*)(void* file)
+    inline constexpr uintptr_t CMemoryFile_GetSize = 0x1B4E9D0;
+    // CMemoryFile::WriteData(void const*, int) (vtable slot 9)  --  void (*)(void* file, const void* data, int n)
+    inline constexpr uintptr_t CMemoryFile_WriteData = 0x1B4EAB0;
     // CMessage::LeftClick()  --  void (*)(void* message)
     inline constexpr uintptr_t CMessage_LeftClick = 0x322170;
+    // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Clear()  --  void (*)(void* node)
+    inline constexpr uintptr_t CModifierNodeBase_Clear = 0x30F390;
+    // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Invalidate(unsigned int) (InvalidateChildren's per-child step)  --  bool (*)(void* node, uint32_t mask)
+    inline constexpr uintptr_t CModifierNodeBase_Invalidate = 0x239650;
+    // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::InvalidateChildren(unsigned int)  --  void (*)(void* node, uint32_t mask)
+    inline constexpr uintptr_t CModifierNodeBase_InvalidateChildren = 0x238340;
     // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Update()  --  void (*)(void* node)
     inline constexpr uintptr_t CModifierNodeBase_Update = 0x238210;
     // (inlined) CModifierNodeBase::Invalidate -> per-thread invalid-id set insert  --  void (*)(void* mgr, uint32_t node_id, uint32_t category)
     inline constexpr uintptr_t CModifierNodeManager_AddInvalid = 0x2395D0;
     // NModifierNode::CModifierNodeManager<CModifier, EModifierNodeCategory>::Update()  --  void (*)(void* mgr)
     inline constexpr uintptr_t CModifierNodeManager_Update = 0x29E3A0;
+    // CModifier's virtual Clear (the node modifier's vtable slot 16; the first step of every rebuild)  --  void (*)(void* modifier)
+    inline constexpr uintptr_t CModifier_ClearEntries = 0x36E740;
     // COutlinerPlanetStatusController::ShouldShowStatusFrame(EOutlinerPlanetStatusFrame, CColony const&, TPdxRef<CCountry>, EPlanetBuildingOwnerType)  --  bool (*)(void* controller, int frame, void* colony, uint32_t country, int owner_type)
     inline constexpr uintptr_t COutlinerPlanetStatusController_ShouldShowStatusFrame = 0x14E0DF0;
     // CPdxIntegerFlags::UpdateFlags()  --  void (*)(void* flags)
     inline constexpr uintptr_t CPdxIntegerFlags_UpdateFlags = 0x1A824B0;
     // CPdxModifier<...>::AddModifierInternal(CModifier const&, CPdxPooledModifierAllocator<CModifier>&, CFixedPoint, ModifierCategory, ModifierCategory, CPdxModifierName const*)  --  void (*)(void* dst, const void* src, void* alloc, int64_t mult, uint32_t incl, uint32_t excl, const void* const* name)
     inline constexpr uintptr_t CPdxModifier_AddModifierInternal = 0x2317B0;
+    // CPdxModifier<CModifier, ...>::Clear()  --  void (*)(void* modifier)
+    inline constexpr uintptr_t CPdxModifier_Clear = 0x36E6A0;
+    // CPdxParallelForDescriptor::CPdxParallelForDescriptor(int, int, int, int, std::pair<CPdxTaskScheduler*, int>*)  --  void* (*)(void* descriptor, int begin, int end, int job_type, int max_tasks, const void* scheduler_priority)
+    inline constexpr uintptr_t CPdxParallelForDescriptor_Ctor = 0x1B54BD0;
     // CPersistentName::BuildString() const  --  void* (*)(const void* persistent_name, void* out_cstring)
     inline constexpr uintptr_t CPersistentName_BuildString = 0x33C3A0;
     // CPlacementRules::IsPossible(CPlanet const*, CCountry const*, CString*) const  --  bool (*)(const void* rules, const void* planet, const void* country, void* reason)
     inline constexpr uintptr_t CPlacementRules_IsPossible = 0xAFCB50;
+    // CPlanet::CalculateModifier(CModifier*) (the planet node's rebuild delegate: only referenced by address)  --  void (*)(void* planet, void* modifier)
+    inline constexpr uintptr_t CPlanet_CalculateModifier = 0xE099A0;
     // CPlanet::CanColonize(CCountry const*, CString*) const  --  bool (*)(const void* planet, const void* country, void* reason)
     inline constexpr uintptr_t CPlanet_CanColonize = 0xE07030;
+    // CPopFaction::UpdateSupportAndApproval()  --  void (*)(void* faction)
+    inline constexpr uintptr_t CPopFaction_UpdateSupportAndApproval = 0x69ABF0;
+    // CPopGroup::AddSize(int, ...)  --  void (*)(void* pop_group, int amount, void* extra)
+    inline constexpr uintptr_t CPopGroup_AddSize = 0x67F3B0;
+    // CPopGroup::MoveSizeFrom(CPopGroup&, int, ...)  --  void (*)(void* dst, void* src, int amount, void* extra)
+    inline constexpr uintptr_t CPopGroup_MoveSizeFrom = 0x67F4B0;
     // operator delete(void*)  --  void (*)(void* p)
     inline constexpr uintptr_t CRT_operator_delete = 0x2026374;
     // __cxa_pure_virtual (MSVC: _purecall)  --  void (*)()  -- calls the registered purecall handler, then abort()
     inline constexpr uintptr_t CRT_purecall = 0x2028490;
+    // snprintf(char*, size_t, char const*, ...) (the UCRT inline: _vsnprintf_l with the standard snprintf option)  --  int (*)(char* buf, size_t n, const char* fmt, ...)
+    inline constexpr uintptr_t CRT_snprintf = 0x1B671F0;
+    // sprintf(char*, char const*, ...) (the UCRT inline: _vsprintf_l with the legacy null-termination option)  --  int (*)(char* buf, const char* fmt, ...)
+    inline constexpr uintptr_t CRT_sprintf = 0xD3DE30;
+    // __stdio_common_vsprintf(unsigned __int64, char*, size_t, char const*, __crt_locale_pointers*, char*) (the jump thunk)  --  int (*)(uint64_t options, char* buf, size_t count, const char* fmt, void* locale, va_list args)
+    inline constexpr uintptr_t CRT_stdio_common_vsprintf = 0x2039EA4;
+    // __local_stdio_printf_options()  --  uint64_t* (*)()
+    inline constexpr uintptr_t CRT_stdio_printf_options = 0x15B590;
     // CRandomLog::Get() (the random-number log whose config the flush ORs with 2)  --  void* (*)()
     inline constexpr uintptr_t CRandomLog_Get = 0x1B4CD60;
     // CSaveGameTaskManager::Start(CString const&, bool, bool)  --  int (*)(void* manager, const void* name_cstring, bool cloud, bool overwrite)  -- 0 queued, 1 exists, 2 too many saves
     inline constexpr uintptr_t CSaveGameTaskManager_Start = 0xA8DE70;
     // CSaveGameTaskManager::StartSaveToPath(CString const&, bool, bool, bool)  --  int (*)(void* manager, const void* path_cstring, bool cloud, bool overwrite, bool dump)
     inline constexpr uintptr_t CSaveGameTaskManager_StartSaveToPath = 0xA8E0E0;
+    // CSaveGameTaskManager::Update(bool)  --  void (*)(void* manager, bool wait)
+    inline constexpr uintptr_t CSaveGameTaskManager_Update = 0xA8EAE0;
+    // CSaveGameTaskManager::Update(bool)::$_0 (zips and writes the gamestate and meta files)  --  void (*)(void* manager)
+    inline constexpr uintptr_t CSaveGameTaskManager_WriteSaveFiles = 0xA8F200;
     // CScriptedRule::Evaluate(CEventScope&, CString*, CScriptedRule::EShowTooltip, bool) const  --  bool (*)(const void* rule, void* scope, void* reason, uint8_t show_tooltip, bool flag)
     inline constexpr uintptr_t CScriptedRule_Evaluate = 0x5B8420;
     // CShipDesignImplementation::CShipDesignImplementation(TPdxRef<CShipDesign>, int)  --  void* (*)(void* impl, uint32_t design_id, int growth_stage)
@@ -766,6 +848,10 @@ namespace fn {
     inline constexpr uintptr_t CStarbase_GetShipsBuildQueueRef = 0x7D1E80;
     // CStartScreenWindow::Close()  --  void (*)(void* window)
     inline constexpr uintptr_t CStartScreenWindow_Close = 0x12DA470;
+    // rebuilds the token table's strings when its counts differ  --  void (*)()
+    inline constexpr uintptr_t CStaticLexer_RebuildTable = 0x1BBA6A0;
+    // CStaticLexer's token table accessor (a thread-safe static: strings +0x70, count +0x7c, built count +0x80)  --  void* (*)()
+    inline constexpr uintptr_t CStaticLexer_Table = 0x1BBA630;
     // CStrategicResource::GetMaximumForCountry(CCountry const&) const  --  int64_t* (*)(const void* resource, int64_t* out, const void* country)
     inline constexpr uintptr_t CStrategicResource_GetMaximumForCountry = 0x3AEBD0;
     // CString::assign(char const*, size_t) (std::basic_string assign)  --  void* (*)(void* cstring, const char* chars, size_t length)
@@ -776,6 +862,14 @@ namespace fn {
     inline constexpr uintptr_t CTraitSet_SetTraits = 0x3D9F80;
     // CTrait::GetCost(CCountry const*) const  --  int (*)(const void* trait, const void* country)
     inline constexpr uintptr_t CTrait_GetCost = 0x4F7C60;
+    // CWriter::Write(CToken(CString const&)) (a string token built from a CString)  --  void (*)(void* writer, const void* cstring)
+    inline constexpr uintptr_t CWriter_WriteCString = 0x1BBA370;
+    // CWriter::WriteIndent() (the first call of the token writer; in text mode: depth indent tokens, token 0x11)  --  void (*)(void* writer)
+    inline constexpr uintptr_t CWriter_WriteIndent = 0x1BB9080;
+    // CWriter::WriteString(char const*, bool, bool)  --  void (*)(void* writer, const char* s, bool no_eol, bool unquoted)
+    inline constexpr uintptr_t CWriter_WriteString = 0x1BB8B60;
+    // CWriter::Write(CToken(id, CStaticLexer::GetString(id))) (the text-mode token write; the token writer's second call)  --  void (*)(void* writer, int token_id)
+    inline constexpr uintptr_t CWriter_WriteTokenText = 0x16A980;
     // DrawMovementDebugLines()  --  void (*)()
     inline constexpr uintptr_t DrawMovementDebugLines = 0x9216D0;
     // GetDynamicFlag(CEventScope&, CEventTarget const&, CString const&, CString const&, bool)  --  uint16_t* (*)(uint16_t* out, void* scope, const void* target, const void* base, const void* where, bool log)
@@ -784,8 +878,16 @@ namespace fn {
     inline constexpr uintptr_t GetLocalizedLeaderName = 0x3E9F50;
     // GetPlayerCountry()  --  void* (*)()
     inline constexpr uintptr_t GetPlayerCountry = 0x14B16F0;
+    // the GUI update (mouse deltas from the input's virtual position getter, then the window tree's update)  --  void (*)(void* gui, void* input, void*, void*)
+    inline constexpr uintptr_t Gui_Update = 0x1C0F330;
     // IsEmpireDesignValid(EEmpireDesignValidationReason, CEmpireDesign const&, CCountry const*, CString*)  --  bool (*)(uint8_t reason /*3 = game setup*/, const void* design, const void* country, void* reason_cstring)
     inline constexpr uintptr_t IsEmpireDesignValid = 0x523BC0;
+    // NColonyUpdate's daily pop-job passes (the cheat-mode variant: both passes of UpdatePopJobs, nothing else)  --  void (*)(void* data)
+    inline constexpr uintptr_t NColonyUpdate_DailyUpdatePopJobs = 0xE45D30;
+    // NColonyUpdate::MonthlyOrDailyUpdatePopJobsInColony(SPopJobsUpdateData&, CColony&)  --  void (*)(void* data, void* colony)
+    inline constexpr uintptr_t NColonyUpdate_MonthlyOrDailyUpdatePopJobsInColony = 0xB2B4B0;
+    // NColonyUpdate::MonthlyUpdate()  --  void (*)(void* data)
+    inline constexpr uintptr_t NColonyUpdate_MonthlyUpdate = 0xE45DB0;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&, SColonizationData const&)  --  void** (*)(void** out, const void* orbitable, const void* impl, const void* colonization)
     inline constexpr uintptr_t NConstruction_CreateColonyShipBuildable = 0xABAE20;
     // NConstruction::CreateBuildable(CRefObjectOrbitableRef<CFleetOrbitableEnumType>, CShipDesignImplementation const&)  --  void** (*)(void** out, const void* orbitable, const void* impl)
@@ -794,6 +896,10 @@ namespace fn {
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x107DDD0;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
     inline constexpr uintptr_t NHabitability_CalcHabitability = 0xA25E80;
+    // NPlanetJobs::AssignPopsToJobs(SPopJobAssignmentUpdateData&)  --  void (*)(void* data)
+    inline constexpr uintptr_t NPlanetJobs_AssignPopsToJobs = 0xB3AF40;
+    // NPlanetJobs::UpdatePopJobs(SPopJobsUpdateData&, CPdxArray<TPdxRef<CColony>> const&)  --  void (*)(void* data, const void* colonies)
+    inline constexpr uintptr_t NPlanetJobs_UpdatePopJobs = 0xB2AE00;
     // NShipDesignUtil::CanBuildComponent(CComponentTemplate const*, EDesignOwner, CShipGrowthStage const&, CComponentSlot const*, CString*)  --  bool (*)(const void* component, uint32_t owner, const void* stage, const void* slot, void* reason)
     inline constexpr uintptr_t NShipDesignUtil_CanBuildComponent = 0xE82C30;
     // NSpeciesModification::CalcFreeTraitPoints(CCountry const*, int, int, CSpeciesClass const*, CPdxArray<CTrait const*> const&, int*, int*)  --  void (*)(const void* country, int extra_points, int extra_picks, const void* species_class, const void* traits, int* points, int* picks)
@@ -816,7 +922,51 @@ namespace fn {
     inline constexpr uintptr_t SScopedFakeCountry_Destroy = 0xA219D0;
     // NGameUtil::SScopedFakeCountry: regenerate the country from a design  --  void (*)(void* fake_country, const void* design, bool)
     inline constexpr uintptr_t SScopedFakeCountry_SetDesign = 0xA21C70;
+    // UpdateAIParallel(CCountryAI* const*, int)  --  void (*)(void* const* country_ais, int count)
+    inline constexpr uintptr_t UpdateAIParallel = 0xB8C6B0;
 }  // namespace fn
+
+// ============================== call sites ============================
+// RVAs of `call rel32` instructions inside located functions (tools/sdk_dumper/functions.py `site`
+// rules). A return address is the site + 5; a site is patched by rewriting its rel32.
+namespace site {
+    // the new pop group's node Update in CColony::AddSizeToPopGroup  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t CColony_AddSizeToPopGroup_NodeUpdate = 0xDB5FC4;
+    // the source group's node Update in CColony::MoveSizeToPopGroup  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t CColony_MoveSizeToPopGroup_NodeUpdate_0 = 0xDB6080;
+    // the new group's node Update in CColony::MoveSizeToPopGroup  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t CColony_MoveSizeToPopGroup_NodeUpdate_1 = 0xDB6089;
+    // the MicroUpdateCachedValues call in OnAddPops  --  call CColony_MicroUpdateCachedValues
+    inline constexpr uintptr_t CColony_OnAddPops_CachedValues = 0xDB4E72;
+    // the colony node's Update in OnAddPops  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t CColony_OnAddPops_NodeUpdate = 0xDB4E63;
+    // the MicroUpdateCachedValues call in OnRemovePops  --  call CColony_MicroUpdateCachedValues
+    inline constexpr uintptr_t CColony_OnRemovePops_CachedValues = 0xDB4EF4;
+    // the colony node's Update in OnRemovePops  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t CColony_OnRemovePops_NodeUpdate = 0xDB4EE5;
+    // the relay node's inlined InvalidateChildren call in UpdateRelayNetwork  --  call CModifierNodeBase_InvalidateChildren
+    inline constexpr uintptr_t CCountryRelayNetworkManager_UpdateRelayNetwork_InvalidateChildren = 0x753FC8;
+    // the main node's InvalidateChildren call in CCountry::InvalidateModifier  --  call CModifierNodeBase_InvalidateChildren
+    inline constexpr uintptr_t CCountry_InvalidateModifier_InvalidateChildren = 0x23EEE7;
+    // the InvalidateChildren call of the relay node's InvalidateModifier  --  call CModifierNodeBase_InvalidateChildren
+    inline constexpr uintptr_t CCountry_InvalidateRelayNetworkModifier_InvalidateChildren = 0x5756C6;
+    // the AddInvalid call inside CModifierNodeBase::Invalidate (its return address marks a cascaded invalidation)  --  call CModifierNodeManager_AddInvalid
+    inline constexpr uintptr_t CModifierNodeBase_Invalidate_AddInvalid = 0x23969E;
+    // the first pop-job pass of the daily (cheat-mode) variant  --  call NPlanetJobs_UpdatePopJobs
+    inline constexpr uintptr_t NColonyUpdate_DailyUpdatePopJobs_UpdatePopJobs_0 = 0xE45D6E;
+    // the second pop-job pass of the daily (cheat-mode) variant  --  call NPlanetJobs_UpdatePopJobs
+    inline constexpr uintptr_t NColonyUpdate_DailyUpdatePopJobs_UpdatePopJobs_1 = 0xE45D96;
+    // the first pop-job pass of NColonyUpdate::MonthlyUpdate  --  call NPlanetJobs_UpdatePopJobs
+    inline constexpr uintptr_t NColonyUpdate_MonthlyUpdate_UpdatePopJobs_0 = 0xE45F99;
+    // the second pop-job pass of NColonyUpdate::MonthlyUpdate  --  call NPlanetJobs_UpdatePopJobs
+    inline constexpr uintptr_t NColonyUpdate_MonthlyUpdate_UpdatePopJobs_1 = 0xE45FBE;
+    // the source group's node Update after a promotion's MoveSizeFrom in AssignPopsToJobs  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t NPlanetJobs_AssignPopsToJobs_NodeUpdate_0 = 0xB3B4D1;
+    // the new group's node Update after a promotion's MoveSizeFrom in AssignPopsToJobs  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t NPlanetJobs_AssignPopsToJobs_NodeUpdate_1 = 0xB3B4DA;
+    // the colony node refresh in UpdatePopJobs' opening loop over the colonies  --  call CModifierNodeBase_Update
+    inline constexpr uintptr_t NPlanetJobs_UpdatePopJobs_ColonyNodeUpdate = 0xB2AEAD;
+}  // namespace site
 
 // ============================== entities ==============================
 namespace ent {

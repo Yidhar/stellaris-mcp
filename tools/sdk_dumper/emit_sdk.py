@@ -327,6 +327,9 @@ def main():
     funcs = json.loads(fpath.read_text(encoding="utf-8")) if fpath.exists() else {}
     # plus the functions anchors.py follows from located code (call chains, thin wrappers)
     funcs.update(anchors.get("functions", {}))
+    funcs = {k: v for k, v in funcs.items() if v.get("emit", True)}  # helper rules stay in functions.json only
+    sites = {k: v for k, v in funcs.items() if v.get("kind") == "site"}
+    funcs = {k: v for k, v in funcs.items() if v.get("kind") != "site"}
     if funcs:
         w("// ============================== functions =============================")
         w("// Engine functions located by structural fingerprint (tools/sdk_dumper/functions.py).")
@@ -335,6 +338,16 @@ def main():
             w(f"    // {f['linux']}  --  {f['signature']}")
             w(f"    inline constexpr uintptr_t {ident(name)} = 0x{f['rva']:X};")
         w("}  // namespace fn")
+        w("")
+    if sites:
+        w("// ============================== call sites ============================")
+        w("// RVAs of `call rel32` instructions inside located functions (tools/sdk_dumper/functions.py `site`")
+        w("// rules). A return address is the site + 5; a site is patched by rewriting its rel32.")
+        w("namespace site {")
+        for name, f in sorted(sites.items()):
+            w(f"    // {f['linux']}  --  {f['signature']}")
+            w(f"    inline constexpr uintptr_t {ident(name)} = 0x{f['rva']:X};")
+        w("}  // namespace site")
         w("")
     w("// ============================== entities ==============================")
     w("namespace ent {")

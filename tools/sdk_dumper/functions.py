@@ -1,13 +1,49 @@
-"""Stage 2c: locate engine functions that the bridge calls directly, by structural fingerprint.
+"""Stage 2c: locate engine functions that the bridge calls directly and the stellaris-perf plugin
+hooks, by structural fingerprint.
 
 Some values are computed rather than stored (e.g. an agenda's cost scales with empire size), so
 the bridge has to call the engine function. Each entry below describes the function the way the
-Linux decompile shows it: an ordered list of instruction patterns that must appear within the
-first `window` instructions of a 16-byte-aligned function. A fingerprint must match exactly one
-function, otherwise the stage fails instead of guessing.
+Linux decompile shows it. A fingerprint must match exactly one function, otherwise the stage fails
+instead of guessing. Rule kinds (one per entry):
+
+  * pattern / prefilter / prefilter_bytes / window: an ordered list of (regex, endswith-needle) over
+    the first `window` instructions of a 16-byte-aligned function containing the prefilter
+    immediates / bytes; `max_len` bounds the straight-line length, `reject` drops look-alikes,
+    `identical_ok` accepts byte-identical linker copies, `follow_call` returns the first (or "last")
+    call instead. Needles and prefilters may use ${Name} (a located function's absolute address)
+    and ${ent:Class::field} (an entity offset from sdk.json). `filters` (below) narrow the matches.
+  * strings (+ require): the function referencing every given C string.
+  * mnemonics + min_rdata_refs: the first mnemonics of a function referenced that often from .rdata.
+  * call_near: the call next to an anchor inside the function that references the given strings.
+  * call_in: the call next to an anchor inside a located function ("from"; "helper:<name>" names a
+    helper from sdk.json; or a command's vtable slot), or its "call_index"-th direct call;
+    "preceded_by" skips calls whose previous three instructions (joined by " | ") do not match
+    that regex.
+  * vtable_call / vtable_ref: through a command's or a serializer class's vtable.
+  * caller_of: the one function calling (with via_jmp: tail-jumping to) a located one; the dict
+    form takes filters.
+  * callee_of: the one direct callee of a located function that passes the filters; `pick`
+    (lowest / highest / largest) chooses among several.
+  * common_callee: the one function called by every function listed in `of`.
+  * tail_target: the function a located one tail-jumps to.
+  * vtable_sibling: the function `delta` slots from a located one in every vtable holding it
+    (filters and `pick` apply when the vtables disagree).
+  * call_seq: the function at position `capture` of the sequence of consecutive calls (named or
+    null) that follows every call to the first one within `within` instructions.
+  * node_invalidator: the small InvalidateModifier-shaped function working on the node whose offset
+    a located function uses before its own InvalidateChildren call.
+  * site: the index-th call instruction to a located target inside a located function (emitted in
+    sdk::site, not sdk::fn; a return address is the site + 5).
+
+Filters: exclude, min_instr / max_instr, calls ({name: exact count} or [names] each called at least
+once), calls_total, calls_distinct, called_from, min_callers / max_callers, min_lea_refs,
+min_rdata_refs, tail_call, require. A rule may reference the rules above it only; "emit": False
+keeps a helper rule out of the header. Function bodies are chunk-aware (every .pdata entry chained to
+the function).
 
 Usage: python tools/sdk_dumper/functions.py   -> out/functions.json
 """
+import collections
 import json
 import re
 import runpy
@@ -30,6 +66,8 @@ FUNCTIONS = {
         "pattern": [(r"^imul ", "0x186a0"), (r"^cmp ", "0x13b"), (r"^cmp ", "0x13c")],
         "prefilter": [0x186A0, 0x13B, 0x13C],
         "window": 60,
+        # a GUI controller (a virtual, never called directly) inlines the same computation
+        "filters": {"min_callers": 2},
     },
     "GetPlayerCountry": {
         "linux": "GetPlayerCountry()",
@@ -973,6 +1011,510 @@ FUNCTIONS = {
         "mnemonics": ["sub", "call", "test", "je", "call", "call"],
         "min_rdata_refs": 100,
     },
+    # ------------------------------------------------------------------ stellaris-perf plugin targets
+    # The functions and call sites the perf plugin hooks or patches. Each is related to functions located
+    # above (callers, callees, call sites, vtable slots, call sequences), so a game patch needs a new dump
+    # and no new addresses.
+    "CGameState_MicroUpdate": {
+        "linux": "CGameState::MicroUpdate()",
+        # rcx = game state: the sub-day tick (movement, combat); the tick callee running UpdateShipParallel
+        "signature": "void (*)(void* game_state)",
+        "callee_of": {"from": "CGameState_HandleTurnTick", "calls": ["CGameState_UpdateShipParallel"]},
+    },
+    "CGameState_DailyUpdate": {
+        "linux": "CGameState::DailyUpdate()",
+        # rcx = game state; its random-number log is scoped "DailyUpdate"
+        "signature": "void (*)(void* game_state)",
+        "strings": ["DailyUpdate"],
+    },
+    "CGameState_MonthlyUpdate": {
+        "linux": "CGameState::MonthlyUpdate()",
+        "signature": "void (*)(void* game_state)",
+        "strings": ["CGameState::MonthlyUpdate generated %i random numbers, last one is %i"],
+    },
+    "CGameState_YearlyUpdate": {
+        "linux": "CGameState::YearlyUpdate() (inlined into HandleTurnTick on Linux)",
+        # in the tick, the first call after MonthlyUpdate's whose game-state argument follows a
+        # profiler-scope call (`lea rcx, [scope]; call; mov rcx, rsi; call YearlyUpdate`)
+        "signature": "void (*)(void* game_state)",
+        "call_in": {"from": "CGameState_HandleTurnTick", "anchor": r"^call ${CGameState_MonthlyUpdate}$",
+                    "pick": "first_call_after", "preceded_by": r"call 0x[0-9a-f]+ \| mov rcx, r\w+$"},
+    },
+    "CGameState_ProcessAI": {
+        "linux": "CGameState::ProcessAI() (inlined into HandleTurnTick on Linux)",
+        # the game-state call after MicroUpdate in the tick (`cmp r14d, 4; jne; mov rcx, rsi; call`)
+        "signature": "void (*)(void* game_state)",
+        "call_in": {"from": "CGameState_HandleTurnTick", "anchor": r"^call ${CGameState_MicroUpdate}$",
+                    "pick": "first_call_after", "preceded_by": r"mov rcx, r\w+$"},
+    },
+    "UpdateAIParallel": {
+        "linux": "UpdateAIParallel(CCountryAI* const*, int)",
+        # rcx = the countries' AIs, edx = count: the per-tick parallel-for over them; the one ProcessAI
+        # callee that logs random numbers
+        "signature": "void (*)(void* const* country_ais, int count)",
+        "callee_of": {"from": "CGameState_ProcessAI", "calls": ["CRandomLog_Get"]},
+    },
+    "CPdxParallelForDescriptor_Ctor": {
+        "linux": "CPdxParallelForDescriptor::CPdxParallelForDescriptor(int, int, int, int, std::pair<CPdxTaskScheduler*, int>*)",
+        # rcx = descriptor (+0x14 task count, +0x18 chunk size), edx = begin, r8d = end, r9d = job type,
+        # [rsp+0x28] = max tasks (unused on Windows), [rsp+0x30] = scheduler / priority pair: the task
+        # count is the priority's thread count + 1, the chunk the range divided by it
+        "signature": "void* (*)(void* descriptor, int begin, int end, int job_type, int max_tasks, const void* scheduler_priority)",
+        "pattern": [(r"^mov r11, rcx$", ""), (r"^mov r10, qword ptr \[rsp \+ 0x30\]$", ""), (r"^mov edi, r8d$", ""),
+                    (r"^mov esi, r9d$", ""), (r"^cmovne rbx, rax$", ""), (r"^cdq", ""), (r"^idiv ecx$", "")],
+        "prefilter_bytes": [b"\x48\x0F\x45\xD8"],  # cmovne rbx, rax
+        "window": 50,
+    },
+    # --- saving: CInGameIdler::Update's successor slot tail-calls CSaveGameTaskManager::Update every frame
+    "CSaveGameTaskManager_WriteSaveFiles": {
+        "linux": "CSaveGameTaskManager::Update(bool)::$_0 (zips and writes the gamestate and meta files)",
+        "signature": "void (*)(void* manager)",
+        "strings": ["Failed to write save file!, Failed Zipping Gamestate!", "Failed to write save file!, Failed Zipping Meta Data!"],
+    },
+    "CSaveGameTaskManager_FinishWrite": {
+        "linux": "the write step's small caller inside CSaveGameTaskManager::Update (waits for the dump task, then writes the files)",
+        "signature": "void (*)(void* manager)",
+        "caller_of": {"of": "CSaveGameTaskManager_WriteSaveFiles", "max_instr": 20, "min_callers": 1},
+        "emit": False,
+    },
+    "CSaveGameTaskManager_Update": {
+        "linux": "CSaveGameTaskManager::Update(bool)",
+        # rcx = manager, dl = wait: runs the queued save's dump task on the main thread (the in-game idler
+        # tail-calls it every frame; the OOS dump calls it with wait = false)
+        "signature": "void (*)(void* manager, bool wait)",
+        "caller_of": "CSaveGameTaskManager_FinishWrite",
+    },
+    "CInGameIdler_UpdateSaveGame": {
+        "linux": "CInGameIdler virtual after Update: `mov rcx, [this + save_manager]; jmp CSaveGameTaskManager::Update`",
+        "signature": "void (*)(void* in_game_idler)",
+        "caller_of": {"of": "CSaveGameTaskManager_Update", "via_jmp": True},
+    },
+    "CInGameIdler_Update": {
+        "linux": "CInGameIdler::Update()",
+        # rcx = in-game idler: the per-frame in-game update (input, views, alerts, the tick's trigger).
+        # A second idler class shares the vtable layout (21 of 30 slots) with a much smaller Update
+        "signature": "void (*)(void* in_game_idler)",
+        "vtable_sibling": {"of": "CInGameIdler_UpdateSaveGame", "delta": -1, "pick": "largest"},
+    },
+    # --- the frame
+    "CGameIdler_Idle": {
+        "linux": "CGameIdler::Idle(bool)",
+        # rcx = idler: one frame (input, the GUI update, the simulation tick, the GUI draw; the screenshot
+        # key writes to screenshots/)
+        "signature": "void (*)(void* idler, bool)",
+        "strings": ["screenshots/"],
+    },
+    "CGameIdler_DrawStep": {
+        "linux": "CGameIdler draw step (vtable slot Idle + 10): one frame's GUI and world draw",
+        "signature": "void (*)(void* idler)",
+        "vtable_sibling": {"of": "CGameIdler_Idle", "delta": 10},
+    },
+    "Application_Update": {
+        "linux": "the frame's engine-side update (task scheduler, audio, ...; it builds a parallel-for descriptor)",
+        "signature": "void (*)(void* app, ...)",
+        "callee_of": {"from": "CGameIdler_Idle", "calls": ["CPdxParallelForDescriptor_Ctor"]},
+    },
+    "Application_Update_OtherCaller": {
+        "linux": "the second caller of Application_Update (frames without an idler)",
+        "signature": "void (*)(void*)",
+        "caller_of": {"of": "Application_Update", "exclude": ["CGameIdler_Idle"]},
+        "emit": False,
+    },
+    "Gui_Update": {
+        "linux": "the GUI update (mouse deltas from the input's virtual position getter, then the window tree's update)",
+        "signature": "void (*)(void* gui, void* input, void*, void*)",
+        "common_callee": {"of": ["CGameIdler_Idle", "Application_Update_OtherCaller"], "exclude": ["Application_Update"], "min_instr": 300},
+    },
+    # --- the CRT's formatting (the save writer's number formatting goes through these)
+    "CRT_sprintf": {
+        "linux": "sprintf(char*, char const*, ...) (the UCRT inline: _vsprintf_l with the legacy null-termination option)",
+        "signature": "int (*)(char* buf, const char* fmt, ...)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 0x10\], rdx$", ""), (r"^mov qword ptr \[rsp \+ 0x18\], r8$", ""),
+                    (r"^mov qword ptr \[rsp \+ 0x20\], r9$", ""), (r"^mov rbx, rdx$", ""), (r"^mov rdi, rcx$", ""), (r"^call 0x", ""),
+                    (r"^mov r9, rbx$", ""), (r"^or rcx, 1$", ""), (r"^call 0x", ""), (r"^test eax, eax$", ""), (r"^cmovs eax, ebx$", "")],
+        "prefilter_bytes": [b"\x48\x83\xC9\x01"],  # or rcx, 1
+        "window": 24,
+        "max_len": 30,
+        "filters": {"min_callers": 20},
+    },
+    "CRT_snprintf": {
+        "linux": "snprintf(char*, size_t, char const*, ...) (the UCRT inline: _vsnprintf_l with the standard snprintf option)",
+        "signature": "int (*)(char* buf, size_t n, const char* fmt, ...)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 0x18\], r8$", ""), (r"^mov qword ptr \[rsp \+ 0x20\], r9$", ""), (r"^mov rbx, r8$", ""),
+                    (r"^test rdx, rdx$", ""), (r"^je ", ""), (r"^call 0x", ""), (r"^cmp eax, esi$", ""), (r"^jne ", ""), (r"^call 0x", ""),
+                    (r"^or rcx, 2$", ""), (r"^call 0x", ""), (r"^cmovs eax, esi$", "")],
+        "prefilter_bytes": [b"\x48\x83\xC9\x02"],  # or rcx, 2
+        "window": 30,
+        "max_len": 34,
+    },
+    "CRT_stdio_printf_options": {
+        "linux": "__local_stdio_printf_options()",
+        "signature": "uint64_t* (*)()",
+        "call_in": {"from": "CRT_sprintf", "call_index": 0},
+    },
+    "CRT_stdio_common_vsprintf": {
+        "linux": "__stdio_common_vsprintf(unsigned __int64, char*, size_t, char const*, __crt_locale_pointers*, char*) (the jump thunk)",
+        "signature": "int (*)(uint64_t options, char* buf, size_t count, const char* fmt, void* locale, va_list args)",
+        "call_in": {"from": "CRT_sprintf", "call_index": 1},
+    },
+    "CMeanTimeToHappen_GetRawFactor": {
+        "linux": "CMeanTimeToHappen::GetRawFactor(CFixedPoint*, CEventScope const&) const",
+        # rcx = MTTH {base factor +0x10, modifier array data +0x20 / size +0x2c}, rdx = CFixedPoint* out
+        # (returned), r8 = scope: the base, then every modifier's virtual Apply(out, scope) (slot 2)
+        "signature": "int64_t* (*)(const void* mtth, int64_t* out, const void* scope)",
+        "pattern": [(r"^mov rax, qword ptr \[rcx \+ 0x10\]$", ""), (r"^mov rbp, r8$", ""), (r"^mov qword ptr \[rdx\], rax$", ""),
+                    (r"^mov rdi, rdx$", ""), (r"^mov rbx, qword ptr \[rcx \+ 0x20\]$", ""), (r"^movsxd rax, dword ptr \[rcx \+ 0x2c\]$", ""),
+                    (r"^lea rsi, \[rbx \+ rax\*8\]$", ""), (r"^call qword ptr \[rax \+ 0x10\]$", "")],
+        "prefilter_bytes": [b"\x48\x8B\x41\x10\x49\x8B\xE8"],  # mov rax, [rcx + 0x10]; mov rbp, r8
+        "window": 24,
+    },
+    # --- the save writer (CWriter over a CMemoryFile)
+    "CWriter_WriteIndent": {
+        "linux": "CWriter::WriteIndent() (the first call of the token writer; in text mode: depth indent tokens, token 0x11)",
+        "signature": "void (*)(void* writer)",
+        "call_in": {"from": "helper:write_token", "call_index": 0},
+    },
+    "CWriter_WriteTokenText": {
+        "linux": "CWriter::Write(CToken(id, CStaticLexer::GetString(id))) (the text-mode token write; the token writer's second call)",
+        "signature": "void (*)(void* writer, int token_id)",
+        "call_in": {"from": "helper:write_token", "call_index": 1},
+    },
+    "CStaticLexer_Table": {
+        "linux": "CStaticLexer's token table accessor (a thread-safe static: strings +0x70, count +0x7c, built count +0x80)",
+        "signature": "void* (*)()",
+        "call_in": {"from": "CWriter_WriteIndent", "call_index": 0},
+    },
+    "CStaticLexer_RebuildTable": {
+        "linux": "rebuilds the token table's strings when its counts differ",
+        "signature": "void (*)()",
+        "call_in": {"from": "CWriter_WriteIndent", "call_index": 1},
+    },
+    "CWriter_WriteString": {
+        "linux": "CWriter::WriteString(char const*, bool, bool)",
+        # rcx = writer, rdx = chars, r8b = no_eol, r9b = unquoted: quotes the string, escaping backslashes
+        # and quotes
+        "signature": "void (*)(void* writer, const char* s, bool no_eol, bool unquoted)",
+        "pattern": [(r"^movzx r14d, r8b$", ""), (r"^mov rbx, rdx$", ""), (r"^mov r13, rcx$", ""), (r"^cmp byte ptr \[rcx \+ 0x18\], 0$", ""),
+                    (r"^test r9b, r9b$", ""), (r"^call ", "${CString_Assign}"), (r"^mov edx, 0x5c$", ""), (r"^cmp byte ptr \[rax\], 0x5c$", "")],
+        "prefilter_bytes": [b"\xBA\x5C\x00\x00\x00"],  # mov edx, 0x5c
+        "window": 80,
+    },
+    "CWriter_WriteCString": {
+        "linux": "CWriter::Write(CToken(CString const&)) (a string token built from a CString)",
+        "signature": "void (*)(void* writer, const void* cstring)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 0x38\], 0x100$", ""), (r"^mov ebp, dword ptr \[rdx \+ 0x20\]$", ""), (r"^lea rdi, \[rdx \+ 0x10\]$", ""),
+                    (r"^cmp qword ptr \[rdi \+ 0x18\], 0x10$", ""), (r"^mov dword ptr \[rsp \+ 0x20\], 0xf$", "")],
+        "prefilter_bytes": [b"\xC7\x44\x24\x20\x0F\x00\x00\x00"],  # mov dword ptr [rsp + 0x20], 0xf
+        "window": 30,
+    },
+    "CMemoryFile_WriteData": {
+        "linux": "CMemoryFile::WriteData(void const*, int) (vtable slot 9)",
+        # rcx = file, rdx = bytes, r8d = count: into the blob (+0x80) past the position (+0x94), growing it,
+        # or into the fixed buffer (overflow flag +0x9c)
+        "signature": "void (*)(void* file, const void* data, int n)",
+        "pattern": [(r"^cmp qword ptr \[rcx \+ 0x[0-9a-f]+\], 0$", ""), (r"^mov rbp, rdx$", ""), (r"^mov edi, r8d$", ""), (r"^mov rbx, rcx$", ""),
+                    (r"^call qword ptr \[rax \+ 0x[0-9a-f]+\]$", ""), (r"^movsxd rcx, dword ptr \[rbx \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^lea esi, \[rcx \+ rdi\]$", ""), (r"^cmp eax, esi$", ""), (r"^cmovl esi, eax$", ""), (r"^sub esi, ecx$", "")],
+        "prefilter_bytes": [b"\x0F\x4C\xF0"],  # cmovl esi, eax
+        "window": 24,
+        "filters": {"min_rdata_refs": 1},
+    },
+    "CFile_WriteCStr": {
+        "linux": "CFile::Write(char const*) (vtable slot 6: strlen, then WriteData)",
+        "signature": "void (*)(void* file, const char* s)",
+        "vtable_sibling": {"of": "CMemoryFile_WriteData", "delta": -3},
+    },
+    "CMemoryFile_GetSize": {
+        "linux": "CMemoryFile::GetSize() (vtable slot 16: the blob's size when there is a blob)",
+        "signature": "int (*)(void* file)",
+        "vtable_sibling": {"of": "CMemoryFile_WriteData", "delta": 7},
+    },
+    # --- factions, pop jobs, colonies and pop groups
+    "CPopFaction_UpdateSupportAndApproval": {
+        "linux": "CPopFaction::UpdateSupportAndApproval()",
+        # rcx = faction: recomputes support (+0x40) and approval (+0x48); when either changed, invalidates
+        # the nodes of its countries and flags the country
+        "signature": "void (*)(void* faction)",
+        "pattern": [(r"^mov rbp, rcx$", ""), (r"^call 0x", ""), (r"^test al, al$", ""), (r"^lea rdx, \[rsp \+ 0x20\]$", ""),
+                    (r"^xor r8d, r8d$", ""), (r"^mov rdi, qword ptr \[rbp \+ 0x48\]$", ""), (r"^call 0x", ""),
+                    (r"^mov rbx, qword ptr \[rbp \+ 0x50\]$", ""), (r"^movups xmm0, xmmword ptr \[rax\]$", ""),
+                    (r"^movups xmmword ptr \[rbp \+ 0x40\], xmm0$", "")],
+        "prefilter_bytes": [b"\x0F\x11\x45\x40"],  # movups xmmword ptr [rbp + 0x40], xmm0
+        "window": 30,
+    },
+    "NColonyUpdate_DailyUpdatePopJobs": {
+        "linux": "NColonyUpdate's daily pop-job passes (the cheat-mode variant: both passes of UpdatePopJobs, nothing else)",
+        "signature": "void (*)(void* data)",
+        "callee_of": {"from": "CGameState_DailyUpdate", "max_instr": 40, "calls_total": 2, "calls_distinct": 1},
+    },
+    "NPlanetJobs_UpdatePopJobs": {
+        "linux": "NPlanetJobs::UpdatePopJobs(SPopJobsUpdateData&, CPdxArray<TPdxRef<CColony>> const&)",
+        # rcx = data, rdx = colony array {begin, end}: refreshes each colony's node, then assigns pops to jobs
+        "signature": "void (*)(void* data, const void* colonies)",
+        "call_in": {"from": "NColonyUpdate_DailyUpdatePopJobs", "call_index": 0},
+    },
+    # --- the modifier node graph: Clear, InvalidateChildren, the cascade, the country's nodes
+    "CModifierNodeBase_Clear": {
+        "linux": "NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Clear()",
+        # rcx = node: clears its modifier (+0x50) and, if registered, marks it dirty, invalidates the children
+        # (mask -1) and registers it (AddInvalid)
+        "signature": "void (*)(void* node)",
+        "pattern": [(r"^push rbx$", ""), (r"^sub rsp, 0x20$", ""), (r"^mov rbx, rcx$", ""), (r"^add rcx, 0x[0-9a-f]+$", ""), (r"^call 0x", ""),
+                    (r"^cmp dword ptr \[rbx \+ 8\], -1$", ""), (r"^je ", ""), (r"^mov eax, 1$", ""), (r"^mov edx, 0xffffffff$", ""),
+                    (r"^xchg byte ptr \[rbx \+ 0x[0-9a-f]+\], al$", ""), (r"^mov rcx, rbx$", ""), (r"^call 0x", ""),
+                    (r"^jmp ", "${CModifierNodeManager_AddInvalid}")],
+        "prefilter_bytes": [b"\x83\x7B\x08\xFF"],  # cmp dword ptr [rbx + 8], -1
+        "window": 24,
+        "max_len": 24,
+        # other node types have Clear functions of the same shape; this one is what the pop-job pass calls
+        "filters": {"called_from": "NPlanetJobs_UpdatePopJobs"},
+    },
+    "CPdxModifier_Clear": {
+        "linux": "CPdxModifier<CModifier, ...>::Clear()",
+        # rcx = modifier: detaches the entries through the virtual slot 16 and returns them to the pool
+        "signature": "void (*)(void* modifier)",
+        "call_in": {"from": "CModifierNodeBase_Clear", "call_index": 0},
+    },
+    "CModifierNodeBase_InvalidateChildren": {
+        "linux": "NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::InvalidateChildren(unsigned int)",
+        # rcx = node, edx = category mask (-1 = all): marks every child dirty (Invalidate) and unlinks it
+        "signature": "void (*)(void* node, uint32_t mask)",
+        "call_in": {"from": "CModifierNodeBase_Clear", "call_index": 1},
+    },
+    "CModifier_ClearEntries": {
+        "linux": "CModifier's virtual Clear (the node modifier's vtable slot 16; the first step of every rebuild)",
+        # rcx = modifier: clears the pool allocator (+0x88) and both entry counts
+        "signature": "void (*)(void* modifier)",
+        "pattern": [(r"^push rbx$", ""), (r"^sub rsp, 0x20$", ""), (r"^mov rbx, rcx$", ""), (r"^add rcx, 0x[0-9a-f]+$", ""), (r"^call 0x", ""),
+                    (r"^xor eax, eax$", ""), (r"^mov dword ptr \[rbx \+ 0x1c\], eax$", ""), (r"^mov dword ptr \[rbx \+ 0x44\], eax$", "")],
+        "prefilter_bytes": [b"\x89\x43\x1C\x89\x43\x44"],  # mov [rbx + 0x1c], eax; mov [rbx + 0x44], eax
+        "window": 12,
+        "max_len": 14,
+        "filters": {"min_rdata_refs": 2},
+    },
+    "CModifierNodeBase_Invalidate": {
+        "linux": "NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Invalidate(unsigned int) (InvalidateChildren's per-child step)",
+        # rcx = child, edx = mask: when the child's category filter (+0xfc) accepts the mask, marks it dirty,
+        # cascades to its children and registers it (AddInvalid); returns whether it did
+        "signature": "bool (*)(void* node, uint32_t mask)",
+        "call_in": {"from": "CModifierNodeBase_InvalidateChildren", "call_index": 0},
+    },
+    "CModifierNodeBase_Invalidate_AddInvalid": {
+        "linux": "the AddInvalid call inside CModifierNodeBase::Invalidate (its return address marks a cascaded invalidation)",
+        "signature": "call CModifierNodeManager_AddInvalid",
+        "site": {"in": "CModifierNodeBase_Invalidate", "target": "CModifierNodeManager_AddInvalid", "index": 0, "count": 1},
+    },
+    "CCountry_InvalidateModifier": {
+        "linux": "CCountry::InvalidateModifier()",
+        # rcx = country: invalidates its three modifier nodes (the main one first); called wherever a
+        # country's modifiers may change
+        "signature": "void (*)(void* country)",
+        "caller_of": {"of": "CModifierNodeBase_InvalidateChildren",
+                      "calls": {"CModifierNodeBase_InvalidateChildren": 3, "CModifierNodeManager_AddInvalid": 3}, "min_callers": 20},
+    },
+    "CCountryRelayNetworkManager_UpdateRelayNetwork": {
+        "linux": "CCountryRelayNetworkManager::UpdateRelayNetwork() (MSVC passes the country itself)",
+        # rcx = country: recomputes the relay network's systems; when they changed, invalidates the country's
+        # modifier and the relay network node
+        "signature": "void (*)(void* country)",
+        "caller_of": {"of": "CCountry_InvalidateModifier",
+                      "calls": {"CModifierNodeBase_InvalidateChildren": 1, "CModifierNodeManager_AddInvalid": 1}, "max_instr": 200},
+    },
+    "CCountry_InvalidateRelayNetworkModifier": {
+        "linux": "the relay network node's InvalidateModifier (the node UpdateRelayNetwork invalidates inline)",
+        "signature": "void (*)(void* country)",
+        "node_invalidator": {"offset_from": "CCountryRelayNetworkManager_UpdateRelayNetwork", "before_call": "CModifierNodeBase_InvalidateChildren"},
+    },
+    "CCountry_InvalidateModifier_InvalidateChildren": {
+        "linux": "the main node's InvalidateChildren call in CCountry::InvalidateModifier",
+        "signature": "call CModifierNodeBase_InvalidateChildren",
+        "site": {"in": "CCountry_InvalidateModifier", "target": "CModifierNodeBase_InvalidateChildren", "index": 0, "count": 3},
+    },
+    "CCountryRelayNetworkManager_UpdateRelayNetwork_InvalidateChildren": {
+        "linux": "the relay node's inlined InvalidateChildren call in UpdateRelayNetwork",
+        "signature": "call CModifierNodeBase_InvalidateChildren",
+        "site": {"in": "CCountryRelayNetworkManager_UpdateRelayNetwork", "target": "CModifierNodeBase_InvalidateChildren", "index": 0, "count": 1},
+    },
+    "CCountry_InvalidateRelayNetworkModifier_InvalidateChildren": {
+        "linux": "the InvalidateChildren call of the relay node's InvalidateModifier",
+        "signature": "call CModifierNodeBase_InvalidateChildren",
+        "site": {"in": "CCountry_InvalidateRelayNetworkModifier", "target": "CModifierNodeBase_InvalidateChildren", "index": 0, "count": 1},
+    },
+    "NColonyUpdate_MonthlyUpdate": {
+        "linux": "NColonyUpdate::MonthlyUpdate()",
+        # growth, migration, decline, assembly and the two pop-job passes over every colony
+        "signature": "void (*)(void* data)",
+        "caller_of": {"of": "NPlanetJobs_UpdatePopJobs", "calls": {"NPlanetJobs_UpdatePopJobs": 2}, "called_from": "CGameState_MonthlyUpdate"},
+    },
+    "NColonyUpdate_MonthlyUpdate_UpdatePopJobs_0": {
+        "linux": "the first pop-job pass of NColonyUpdate::MonthlyUpdate",
+        "signature": "call NPlanetJobs_UpdatePopJobs",
+        "site": {"in": "NColonyUpdate_MonthlyUpdate", "target": "NPlanetJobs_UpdatePopJobs", "index": 0, "count": 2},
+    },
+    "NColonyUpdate_MonthlyUpdate_UpdatePopJobs_1": {
+        "linux": "the second pop-job pass of NColonyUpdate::MonthlyUpdate",
+        "signature": "call NPlanetJobs_UpdatePopJobs",
+        "site": {"in": "NColonyUpdate_MonthlyUpdate", "target": "NPlanetJobs_UpdatePopJobs", "index": 1, "count": 2},
+    },
+    "NColonyUpdate_DailyUpdatePopJobs_UpdatePopJobs_0": {
+        "linux": "the first pop-job pass of the daily (cheat-mode) variant",
+        "signature": "call NPlanetJobs_UpdatePopJobs",
+        "site": {"in": "NColonyUpdate_DailyUpdatePopJobs", "target": "NPlanetJobs_UpdatePopJobs", "index": 0, "count": 2},
+    },
+    "NColonyUpdate_DailyUpdatePopJobs_UpdatePopJobs_1": {
+        "linux": "the second pop-job pass of the daily (cheat-mode) variant",
+        "signature": "call NPlanetJobs_UpdatePopJobs",
+        "site": {"in": "NColonyUpdate_DailyUpdatePopJobs", "target": "NPlanetJobs_UpdatePopJobs", "index": 1, "count": 2},
+    },
+    "NPlanetJobs_UpdatePopJobs_ColonyNodeUpdate": {
+        "linux": "the colony node refresh in UpdatePopJobs' opening loop over the colonies",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "NPlanetJobs_UpdatePopJobs", "target": "CModifierNodeBase_Update", "index": 0},
+    },
+    "NColonyUpdate_MonthlyOrDailyUpdatePopJobsInColony": {
+        "linux": "NColonyUpdate::MonthlyOrDailyUpdatePopJobsInColony(SPopJobsUpdateData&, CColony&)",
+        # rcx = data, rdx = colony: one colony's pop-job pass (its node refreshed, then UpdatePopJobs)
+        "signature": "void (*)(void* data, void* colony)",
+        "caller_of": {"of": "NPlanetJobs_UpdatePopJobs", "calls": {"NPlanetJobs_UpdatePopJobs": 1}},
+    },
+    "CColony_MonthlyUpdateSerial": {
+        "linux": "CColony::MonthlyUpdateSerial(CColonyDemographyCalculator::SDemographySafePrivate const&, int const*)",
+        # rcx = colony, rdx = the demography pass's private data, r8 = counts: the serial part of a colony's
+        # monthly update (the modifier invalidation, the pop-job pass, the demography results)
+        "signature": "void (*)(void* colony, const void* demography, const int* counts)",
+        "caller_of": {"of": "NColonyUpdate_MonthlyOrDailyUpdatePopJobsInColony", "min_instr": 150},
+    },
+    "CColony_InvalidateModifier": {
+        "linux": "CColony::InvalidateModifier()",
+        # rcx = colony: marks the colony node dirty and registers it (its first use in MonthlyUpdateSerial)
+        "signature": "void (*)(void* colony)",
+        "call_in": {"from": "CColony_MonthlyUpdateSerial", "call_index": 0},
+    },
+    "CColony_MicroUpdateCachedValues": {
+        "linux": "CColony::MicroUpdateCachedValues(CModifier*)",
+        # rcx = colony, rdx = the colony's cached-values modifier: true when the values changed. The call
+        # between the colony node's Update and CColony::InvalidateModifier wherever pops are added or removed
+        "signature": "bool (*)(void* colony, void* modifier)",
+        "call_seq": {"seq": ["CModifierNodeBase_Update", None, "CColony_InvalidateModifier"], "within": 8, "capture": 1},
+    },
+    "CPopGroup_AddSize": {
+        "linux": "CPopGroup::AddSize(int, ...)",
+        # rcx = pop group, edx = amount (clamped so the size stays >= 0), r8 = extra: size += amount, then the
+        # colony's OnAddPops / OnRemovePops
+        "signature": "void (*)(void* pop_group, int amount, void* extra)",
+        "pattern": [(r"^mov rbx, rcx$", ""), (r"^mov ecx, dword ptr \[rcx \+ ${ent:CPopGroup::size}\]$", ""), (r"^mov rbp, r8$", ""),
+                    (r"^mov edi, edx$", ""), (r"^test edx, edx$", ""), (r"^jns ", ""), (r"^neg eax$", ""), (r"^cmovl edi, eax$", ""),
+                    (r"^lea eax, \[rcx \+ rdi\]$", ""), (r"^mov dword ptr \[rbx \+ ${ent:CPopGroup::size}\], eax$", "")],
+        "prefilter": ["${ent:CPopGroup::size}"],
+        "window": 20,
+    },
+    "CPopGroup_MoveSizeFrom": {
+        "linux": "CPopGroup::MoveSizeFrom(CPopGroup&, int, ...)",
+        # rcx = destination group, rdx = source group, r8d = amount, r9 = extra
+        "signature": "void (*)(void* dst, void* src, int amount, void* extra)",
+        "pattern": [(r"^mov esi, r8d$", ""), (r"^mov rdi, rdx$", ""), (r"^mov r14, rcx$", ""), (r"^mov ecx, r8d$", ""), (r"^neg ecx$", ""),
+                    (r"^mov edx, dword ptr \[rdx \+ ${ent:CPopGroup::size}\]$", ""), (r"^cmovl ebx, eax$", ""),
+                    (r"^lea eax, \[rdx \+ rbx\]$", ""), (r"^mov dword ptr \[rdi \+ ${ent:CPopGroup::size}\], eax$", "")],
+        "prefilter": ["${ent:CPopGroup::size}"],
+        "window": 30,
+    },
+    "CColony_OnAddPops": {
+        "linux": "CColony::OnAddPops(...) (the lower-addressed of the two colony callbacks of CPopGroup::AddSize, as in the source order; both refresh the node, recompute the cached values and invalidate)",
+        "signature": "void (*)(void* colony, ...)",
+        "callee_of": {"from": "CPopGroup_AddSize", "calls": ["CColony_MicroUpdateCachedValues", "CColony_InvalidateModifier"], "pick": "lowest"},
+    },
+    "CColony_OnRemovePops": {
+        "linux": "CColony::OnRemovePops(...) (the higher-addressed of the two colony callbacks of CPopGroup::AddSize)",
+        "signature": "void (*)(void* colony, ...)",
+        "callee_of": {"from": "CPopGroup_AddSize", "calls": ["CColony_MicroUpdateCachedValues", "CColony_InvalidateModifier"], "pick": "highest"},
+    },
+    "CColony_OnAddPops_NodeUpdate": {
+        "linux": "the colony node's Update in OnAddPops",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "CColony_OnAddPops", "target": "CModifierNodeBase_Update", "index": 0, "count": 1},
+    },
+    "CColony_OnAddPops_CachedValues": {
+        "linux": "the MicroUpdateCachedValues call in OnAddPops",
+        "signature": "call CColony_MicroUpdateCachedValues",
+        "site": {"in": "CColony_OnAddPops", "target": "CColony_MicroUpdateCachedValues", "index": 0, "count": 1},
+    },
+    "CColony_OnRemovePops_NodeUpdate": {
+        "linux": "the colony node's Update in OnRemovePops",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "CColony_OnRemovePops", "target": "CModifierNodeBase_Update", "index": 0, "count": 1},
+    },
+    "CColony_OnRemovePops_CachedValues": {
+        "linux": "the MicroUpdateCachedValues call in OnRemovePops",
+        "signature": "call CColony_MicroUpdateCachedValues",
+        "site": {"in": "CColony_OnRemovePops", "target": "CColony_MicroUpdateCachedValues", "index": 0, "count": 1},
+    },
+    "CColony_AddSizeToPopGroup": {
+        "linux": "CColony::AddSizeToPopGroup (finds or creates the pop group, adds the size; a new group's node is refreshed at once)",
+        "signature": "void* (*)(void* colony, const void* key, int amount, void* extra)",
+        "caller_of": {"of": "CPopGroup_AddSize", "calls": {"CPopGroup_AddSize": 2, "CModifierNodeBase_Update": 1}, "max_instr": 80},
+    },
+    "CColony_MoveSizeToPopGroup": {
+        "linux": "CColony::MoveSizeToPopGroup (finds or creates the destination group, moves the size; both nodes are refreshed for a new group)",
+        "signature": "void* (*)(void* colony, const void* key, void* src, int amount, void* extra)",
+        "caller_of": {"of": "CPopGroup_MoveSizeFrom", "calls": {"CPopGroup_MoveSizeFrom": 2, "CModifierNodeBase_Update": 2}, "max_instr": 80},
+    },
+    "CColony_AddSizeToPopGroup_NodeUpdate": {
+        "linux": "the new pop group's node Update in CColony::AddSizeToPopGroup",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "CColony_AddSizeToPopGroup", "target": "CModifierNodeBase_Update", "index": 0, "count": 1},
+    },
+    "CColony_MoveSizeToPopGroup_NodeUpdate_0": {
+        "linux": "the source group's node Update in CColony::MoveSizeToPopGroup",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "CColony_MoveSizeToPopGroup", "target": "CModifierNodeBase_Update", "index": 0, "count": 2},
+    },
+    "CColony_MoveSizeToPopGroup_NodeUpdate_1": {
+        "linux": "the new group's node Update in CColony::MoveSizeToPopGroup",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "CColony_MoveSizeToPopGroup", "target": "CModifierNodeBase_Update", "index": 1, "count": 2},
+    },
+    "NPlanetJobs_AssignPopsToJobsColony": {
+        "linux": "NPlanetJobs::AssignPopsToJobs(CColony&) (prepares the assignment data, then tail-calls the data overload)",
+        "signature": "void (*)(void* colony)",
+        "callee_of": {"from": "NPlanetJobs_UpdatePopJobs", "tail_call": True, "min_instr": 40, "max_instr": 200},
+        "emit": False,
+    },
+    "NPlanetJobs_AssignPopsToJobs": {
+        "linux": "NPlanetJobs::AssignPopsToJobs(SPopJobAssignmentUpdateData&)",
+        # the tail of every UpdatePopJobs pass; promotions move pops between groups (MoveSizeFrom) here
+        "signature": "void (*)(void* data)",
+        "tail_target": {"from": "NPlanetJobs_AssignPopsToJobsColony"},
+    },
+    "NPlanetJobs_AssignPopsToJobs_NodeUpdate_0": {
+        "linux": "the source group's node Update after a promotion's MoveSizeFrom in AssignPopsToJobs",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "NPlanetJobs_AssignPopsToJobs", "target": "CModifierNodeBase_Update", "index": 0, "count": 2},
+    },
+    "NPlanetJobs_AssignPopsToJobs_NodeUpdate_1": {
+        "linux": "the new group's node Update after a promotion's MoveSizeFrom in AssignPopsToJobs",
+        "signature": "call CModifierNodeBase_Update",
+        "site": {"in": "NPlanetJobs_AssignPopsToJobs", "target": "CModifierNodeBase_Update", "index": 1, "count": 2},
+    },
+    "CColony_CalculateModifier": {
+        "linux": "CColony::CalculateModifier(CModifier*) (the colony node's rebuild delegate: only referenced by address)",
+        "signature": "void (*)(void* colony, void* modifier)",
+        "pattern": [(r"^mov rax, qword ptr \[rcx \+ 8\]$", ""), (r"^add rcx, 8$", ""), (r"^call qword ptr \[rax \+ 8\]$", ""),
+                    (r"^test al, al$", ""), (r"^je ", ""), (r"^mov eax, dword ptr \[r\w+ \+ 0x[0-9a-f]+\]$", ""), (r"^shr eax, 2$", ""),
+                    (r"^test al, 1$", ""), (r"^jne ", ""), (r"^mov rcx, qword ptr \[r\w+ \+ 0x[0-9a-f]+\]$", "")],
+        "prefilter_bytes": [b"\xC1\xE8\x02\xA8\x01"],  # shr eax, 2; test al, 1
+        "window": 24,
+        "filters": {"max_callers": 0, "min_lea_refs": 1},
+    },
+    "CPlanet_CalculateModifier": {
+        "linux": "CPlanet::CalculateModifier(CModifier*) (the planet node's rebuild delegate: only referenced by address)",
+        "signature": "void (*)(void* planet, void* modifier)",
+        "pattern": [(r"^mov rax, qword ptr \[rcx\]$", ""), (r"^call qword ptr \[rax \+ 0x20\]$", ""), (r"^test al, al$", ""), (r"^je ", ""),
+                    (r"^mov rax, qword ptr \[rip \+ 0x[0-9a-f]+\]$", ""), (r"^mov r8d, 0x186a0$", ""), (r"^mov r\w+, 0xffffffff$", ""),
+                    (r"^mov r9d, r\w+$", ""), (r"^mov rdx, qword ptr \[rax \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", "")],
+        "prefilter": [0x186A0],
+        "window": 30,
+        "filters": {"max_callers": 0, "min_lea_refs": 1, "calls": ["CModifierNodeBase_InvalidateChildren"]},
+    },
 }
 
 
@@ -1017,6 +1559,7 @@ def match_by_strings(im, spec):
         entry = aligned_entry(im, f)
         if entry is None:
             continue
+        entry = im.primary(entry)  # a reference inside a chained chunk belongs to the parent function
         if spec.get("require"):
             text = " | ".join(f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(entry, 0x800))
             if not all(re.search(rx, text) for rx in spec["require"]):
@@ -1082,7 +1625,18 @@ def command_slot(im, token_name, slot):
     return im.q(vts.pop() + slot * 8) - im.ib
 
 
-def call_near_in(im, fn, cn):
+def call_near_in(im, fn, cn, ctx=None):
+    """The call picked relative to an anchor (or by index) inside fn. "call_index": the n-th direct
+    call of the function (every chunk, address order). Otherwise "anchor" is a regex over
+    'mnemonic op_str' lines (plus a '; "string"' annotation for rip-relative C strings; ${Name} in
+    it is a located function's absolute address) and "pick" walks from it to the first direct call
+    after / the last one before, skipping "skip" calls and, with "preceded_by", every call whose
+    previous three instructions (joined by " | ", so `$` anchors right before the call) do not
+    match that regex."""
+    if "call_index" in cn:
+        calls = fn_calls(im, fn)
+        return [calls[cn["call_index"]][1]] if cn["call_index"] < len(calls) else []
+    anchor = subst(cn["anchor"], ctx) if ctx else cn["anchor"]
     lines = []
     for i in im.disasm_fn(fn, 0x4000):
         text = f"{i.mnemonic} {i.op_str}"
@@ -1092,7 +1646,7 @@ def call_near_in(im, fn, cn):
             if im.rdata0 <= addr < im.rdata1:
                 text += f' ; "{im.cstr(addr, 80)}"'
         lines.append((i, text))
-    idx = [k for k, (_, t) in enumerate(lines) if re.search(cn["anchor"], t)]
+    idx = [k for k, (_, t) in enumerate(lines) if re.search(anchor, t)]
     # The linear sweep can run past the function into its neighbours; "occurrence" picks the
     # n-th hit (the function's own one comes first), otherwise the anchor must be unique.
     if "occurrence" in cn:
@@ -1105,9 +1659,12 @@ def call_near_in(im, fn, cn):
         k = idx[0]
     order = range(k + 1, len(lines)) if cn["pick"] == "first_call_after" else range(k - 1, -1, -1)
     skip = cn.get("skip", 0)
+    pre = cn.get("preceded_by")
     for j in order:
         i, _ = lines[j]
         if i.mnemonic == "call" and i.op_str.startswith("0x"):
+            if pre and not re.search(pre, " | ".join(t for _, t in lines[max(0, j - 3):j])):
+                continue
             if skip:
                 skip -= 1
                 continue
@@ -1165,119 +1722,440 @@ def match_vtable_ref(im, spec):
     return sorted(set(out))
 
 
+# ---------------------------------------------------------------- relations between functions
+# Indexes over the image, built once and cached on it: every `call rel32` / `jmp rel32` by target,
+# the chunks (.pdata entries) of each function, and function bodies.
+
+def call_index(im):
+    """target -> [rva of each `call rel32` (E8) / `jmp rel32` (E9) to it] over .text. An E8 byte inside
+    another instruction yields a false site; call_sites_to filters those."""
+    if not hasattr(im, "_calls"):
+        calls, jmps = collections.defaultdict(list), collections.defaultdict(list)
+        text = im.img[im.text0:im.text1]
+        for m in re.finditer(rb"[\xe8\xe9]", text):
+            i = m.start()
+            if i + 5 > len(text):
+                break
+            t = im.text0 + i + 5 + struct.unpack_from("<i", text, i + 1)[0]
+            if im.text0 <= t < im.text1:
+                (calls if text[i] == 0xE8 else jmps)[t].append(im.text0 + i)
+        im._calls, im._jmps = calls, jmps
+    return im._calls, im._jmps
+
+
+def chunk_map(im):
+    """primary function -> its .pdata entries (MSVC splits a function into chained chunks)."""
+    if not hasattr(im, "_chunks"):
+        m = collections.defaultdict(list)
+        for g in im.fstarts:
+            m[im.primary(g)].append(g)
+        im._chunks = m
+    return im._chunks
+
+
+def fn_body(im, f):
+    """Every instruction of f: its own .pdata range and the chunks chained to it, in address order
+    (the sweep restarts after a `ret` so a switch's later blocks are included)."""
+    cache = im.__dict__.setdefault("_bodies", {})
+    if f not in cache:
+        out = []
+        for g in sorted(chunk_map(im).get(f) or [f]):
+            end = im.fend.get(g)
+            if end is None:
+                out.extend(im.disasm_fn(g, 0x400))
+                continue
+            pos = g
+            while pos < end:
+                ins = [i for i in im.disasm_fn(pos, end - pos + 16) if i.address - im.ib < end]
+                if not ins:
+                    break
+                out.extend(ins)
+                pos = ins[-1].address - im.ib + ins[-1].size
+                while pos < end and im.img[pos] == 0xCC:
+                    pos += 1
+        cache[f] = out
+    return cache[f]
+
+
+def fn_calls(im, f):
+    """[(site rva, target rva)] of the direct calls in f, in address order."""
+    return [(i.address - im.ib, int(i.op_str, 16) - im.ib) for i in fn_body(im, f)
+            if i.mnemonic == "call" and i.op_str.startswith("0x")]
+
+
+def fn_tail_targets(im, f):
+    """The functions f tail-jumps to (`jmp rel32` to another function's start)."""
+    own = set(chunk_map(im).get(f) or [f])
+    out = []
+    for i in fn_body(im, f):
+        if i.mnemonic == "jmp" and i.op_str.startswith("0x"):
+            t = int(i.op_str, 16) - im.ib
+            if t in im.fend and im.primary(t) not in own:
+                out.append(t)
+    return out
+
+
+def call_sites_to(im, target, via_jmp=False):
+    """[(site, caller)]: the real `call rel32` (or `jmp rel32`) instructions targeting `target`, each
+    with the (primary) function it sits in."""
+    idx = call_index(im)[1 if via_jmp else 0]
+    out = []
+    for s in idx.get(target, []):
+        g = im.fn_of(s)
+        if g is None:
+            continue
+        p = im.primary(g)
+        if any(i.address - im.ib == s for i in fn_body(im, p)):
+            out.append((s, p))
+    return out
+
+
+def rdata_slots(im, f):
+    """The .rdata offsets holding f's absolute address (its vtable slots)."""
+    import numpy as np
+    arr = im.__dict__.get("_rdata_q")
+    if arr is None:
+        rd = im.img[im.rdata0:im.rdata1]
+        arr = im._rdata_q = np.frombuffer(rd[:len(rd) & ~7], dtype="<u8")
+    return [im.rdata0 + int(k) * 8 for k in np.nonzero(arr == im.ib + f)[0]]
+
+
+def resolve(name, ctx):
+    """A located rule's RVA, or 'helper:<name>' from sdk.json (e.g. helper:write_token)."""
+    if isinstance(name, int):
+        return name
+    if name.startswith("helper:"):
+        return ctx["sdk"]["helpers"].get(name[7:])
+    return ctx["result"].get(name, {}).get("rva")
+
+
+def subst(text, ctx):
+    """${Name} -> a located function's absolute address as capstone prints it; ${ent:Class::field} ->
+    that entity field's offset (sdk.json); ${helper:x} -> that helper's absolute address. An unknown
+    or not yet located name raises KeyError (the rule fails)."""
+    def one(m):
+        key = m.group(1)
+        if key.startswith("ent:"):
+            cls, field = key[4:].split("::")
+            rows = ctx["sdk"]["entities"].get(cls, {}).get("fields", [])
+            off = next((r["abs"] for r in rows if r["name"] == field), None)
+            if off is None:
+                raise KeyError(key)
+            return hex(off)
+        rva = resolve(key, ctx)
+        if rva is None:
+            raise KeyError(key)
+        return hex(ctx["im"].ib + rva)
+    return re.sub(r"\$\{([^}]+)\}", one, text)
+
+
+def passes(im, f, filt, ctx):
+    """Whether candidate f satisfies the rule's structural filters (module docstring)."""
+    if f in {resolve(n, ctx) for n in filt.get("exclude", [])}:
+        return False
+    body = fn_body(im, f)
+    if "min_instr" in filt and len(body) < filt["min_instr"]:
+        return False
+    if "max_instr" in filt and len(body) > filt["max_instr"]:
+        return False
+    calls = [t for _, t in fn_calls(im, f)]
+    want = filt.get("calls", {})
+    if isinstance(want, list):
+        want = {n: None for n in want}
+    for n, cnt in want.items():
+        t = resolve(n, ctx)
+        if t is None:
+            raise KeyError(n)
+        c = calls.count(t)
+        if (cnt is None and c == 0) or (cnt is not None and c != cnt):
+            return False
+    if "calls_total" in filt and len(calls) != filt["calls_total"]:
+        return False
+    if "calls_distinct" in filt and len(set(calls)) != filt["calls_distinct"]:
+        return False
+    if "called_from" in filt:
+        src = resolve(filt["called_from"], ctx)
+        if src is None:
+            raise KeyError(filt["called_from"])
+        if f not in {t for _, t in fn_calls(im, src)}:
+            return False
+    raw = len(call_index(im)[0].get(f, []))
+    if "min_callers" in filt and raw < filt["min_callers"]:
+        return False
+    if "max_callers" in filt and (raw if raw > 16 else len(call_sites_to(im, f))) > filt["max_callers"]:
+        return False
+    if "min_lea_refs" in filt and len(im.lea_index().get(f, [])) < filt["min_lea_refs"]:
+        return False
+    if "min_rdata_refs" in filt and len(rdata_slots(im, f)) < filt["min_rdata_refs"]:
+        return False
+    if "tail_call" in filt and bool(fn_tail_targets(im, f)) != filt["tail_call"]:
+        return False
+    if filt.get("require"):
+        text = " | ".join(f"{i.mnemonic} {i.op_str}" for i in body)
+        if not all(re.search(subst(rx, ctx), text) for rx in filt["require"]):
+            return False
+    return True
+
+
+def pick(im, cands, spec):
+    """`pick`: lowest / highest address or the largest body among several candidates."""
+    how = spec.get("pick")
+    if not how or len(cands) <= 1:
+        return cands
+    if how == "lowest":
+        return [min(cands)]
+    if how == "highest":
+        return [max(cands)]
+    if how == "largest":
+        sizes = sorted((len(fn_body(im, f)), f) for f in cands)
+        return [sizes[-1][1]] if sizes[-1][0] > sizes[-2][0] else cands
+    raise ValueError(how)
+
+
+def match_caller_of(im, spec, ctx):
+    """The one function calling (or, with via_jmp, tail-jumping to) a located one, after filters."""
+    co = spec["caller_of"]
+    if isinstance(co, str):
+        co = {"of": co}
+    target = resolve(co["of"], ctx)
+    if target is None:
+        raise KeyError(co["of"])
+    cands = sorted({p for _, p in call_sites_to(im, target, co.get("via_jmp", False))})
+    return pick(im, [f for f in cands if passes(im, f, co, ctx)], co)
+
+
+def match_callee_of(im, spec, ctx):
+    """The one direct callee of a located function that passes the filters."""
+    ce = spec["callee_of"]
+    src = resolve(ce["from"], ctx)
+    if src is None:
+        raise KeyError(ce["from"])
+    cands = sorted({t for _, t in fn_calls(im, src)} & set(im.fend))
+    return pick(im, [f for f in cands if passes(im, f, ce, ctx)], ce)
+
+
+def match_common_callee(im, spec, ctx):
+    """The one function every listed function calls, after filters."""
+    cc = spec["common_callee"]
+    sets = []
+    for n in cc["of"]:
+        src = resolve(n, ctx)
+        if src is None:
+            raise KeyError(n)
+        sets.append({t for _, t in fn_calls(im, src)})
+    cands = sorted(set.intersection(*sets) & set(im.fend))
+    return pick(im, [f for f in cands if passes(im, f, cc, ctx)], cc)
+
+
+def match_tail_target(im, spec, ctx):
+    src = resolve(spec["tail_target"]["from"], ctx)
+    if src is None:
+        raise KeyError(spec["tail_target"]["from"])
+    return sorted(set(fn_tail_targets(im, src)))
+
+
+def match_vtable_sibling(im, spec, ctx):
+    """The function `delta` slots away from a located one in every vtable (.rdata slot) holding it;
+    the vtables must agree."""
+    vs = spec["vtable_sibling"]
+    f = resolve(vs["of"], ctx)
+    if f is None:
+        raise KeyError(vs["of"])
+    out = set()
+    for slot in rdata_slots(im, f):
+        p = slot + vs["delta"] * 8
+        if im.rdata0 <= p <= im.rdata1 - 8:
+            v = im.q(p) - im.ib
+            if im.text0 <= v < im.text1:
+                out.add(v)
+    return pick(im, [v for v in sorted(out) if passes(im, v, vs, ctx)], vs)
+
+
+def match_call_seq(im, spec, ctx):
+    """After every call to seq[0], the next calls (within `within` instructions) must be seq[1:] in
+    order (None = any target); the target at `capture` must be the same everywhere."""
+    cs = spec["call_seq"]
+    first = resolve(cs["seq"][0], ctx)
+    if first is None:
+        raise KeyError(cs["seq"][0])
+    rest = [None if n is None else resolve(n, ctx) for n in cs["seq"][1:]]
+    if any(n is not None and r is None for n, r in zip(cs["seq"][1:], rest)):
+        raise KeyError([n for n, r in zip(cs["seq"][1:], rest) if n is not None and r is None][0])
+    caps = set()
+    for site, _ in call_sites_to(im, first):
+        ins = list(im.md.disasm(im.img[site:site + 16 * (cs["within"] + 1)], im.ib + site))[1:cs["within"] + 1]
+        calls = [int(i.op_str, 16) - im.ib for i in ins if i.mnemonic == "call" and i.op_str.startswith("0x")]
+        if len(calls) >= len(rest) and all(w is None or w == g for w, g in zip(rest, calls)):
+            caps.add(calls[cs["capture"] - 1])
+    return sorted(caps)
+
+
+def match_site(im, spec, ctx):
+    """The index-th call to a located target inside a located function (optionally exactly `count`
+    such calls)."""
+    st = spec["site"]
+    fn, target = resolve(st["in"], ctx), resolve(st["target"], ctx)
+    if fn is None or target is None:
+        raise KeyError(st["in"] if fn is None else st["target"])
+    sites = [s for s, t in fn_calls(im, fn) if t == target]
+    if "count" in st and len(sites) != st["count"]:
+        return []
+    return [sites[st["index"]]] if st["index"] < len(sites) else []
+
+
+def match_node_invalidator(im, spec, ctx):
+    """The small function `lea rbx, [rcx + X]; ...; call InvalidateChildren; ... AddInvalid` working on
+    the node at offset X, where X is the lea before the located function's own (last) call to
+    `before_call`."""
+    ni = spec["node_invalidator"]
+    src, inv = resolve(ni["offset_from"], ctx), resolve(ni["before_call"], ctx)
+    if src is None or inv is None:
+        raise KeyError(ni["offset_from"] if src is None else ni["before_call"])
+    body = fn_body(im, src)
+    off = None
+    for k, i in enumerate(body):
+        if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - im.ib == inv:
+            for j in range(k - 1, max(k - 12, -1), -1):
+                m = re.match(r"^r\w+, \[r\w+ \+ (0x[0-9a-f]+)\]$", body[j].op_str) if body[j].mnemonic == "lea" else None
+                if m:
+                    off = int(m.group(1), 16)
+                    break
+    if off is None:
+        return []
+    out = set()
+    for _, f in call_sites_to(im, inv):
+        b = fn_body(im, f)
+        if len(b) <= ni.get("max_instr", 40) and any(i.mnemonic == "lea" and re.match(rf"^r\w+, \[rcx \+ {off:#x}\]$", i.op_str) for i in b):
+            out.add(f)
+    return sorted(out)
+
+
+def match_pattern(im, spec, ctx):
+    """Functions containing every prefilter constant / byte string as an immediate whose first `window`
+    instructions match the pattern in order (module docstring)."""
+    text = im.img[im.text0:im.text1]
+    needles = []
+    for x in spec.get("prefilter", []):
+        needles.append(struct.pack("<I", int(subst(x, ctx), 16) if isinstance(x, str) else x))
+    needles += spec.get("prefilter_bytes", [])
+    sets = []
+    for needle in needles:
+        fns = {entry_of(im, im.text0 + m.start()) for m in re.finditer(re.escape(needle), text)}
+        sets.append({im.primary(f) for f in fns - {None}})  # a hit inside a chained chunk belongs to the parent
+    cands = set.intersection(*sets)
+    pattern = [(subst(rx, ctx) if "${" in rx else rx, subst(needle, ctx) if "${" in needle else needle) for rx, needle in spec["pattern"]]
+    matches = []
+    for f in sorted(cands):
+        if f % 16:
+            continue  # MSVC function entries are 16-byte aligned; others are split fragments
+        if "max_len" in spec:
+            body = im.disasm_fn(f, 0x800)
+            ret = next((n for n, i in enumerate(body) if i.mnemonic in ("ret", "jmp")), len(body))
+            if ret > spec["max_len"]:
+                continue
+        ins = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(f, 0x800)[:spec["window"]]]
+        if any(re.match(rx, s) for rx in spec.get("reject", []) for s in ins):
+            continue  # a sibling with the same shape plus this instruction
+        k = 0
+        for s in ins:
+            rx, needle = pattern[k]
+            if re.match(rx, s) and s.endswith(needle):
+                k += 1
+                if k == len(pattern):
+                    matches.append(f)
+                    break
+    if spec.get("filters"):
+        matches = [f for f in matches if passes(im, f, spec["filters"], ctx)]
+    if spec.get("identical_ok") and len(matches) > 1:
+        # the linker kept byte-identical copies (same instructions, same call targets): any one is it
+        def body(f):
+            out = []
+            for i in im.disasm_fn(f, 0x200):
+                op = i.op_str
+                if i.mnemonic.startswith("j") and op.startswith("0x") and 0 <= int(op, 16) - im.ib - f < 0x200:
+                    op = f"+{int(op, 16) - im.ib - f:#x}"  # branch inside the function
+                out.append(f"{i.mnemonic} {op}")
+            return tuple(out)
+        bodies = {body(f) for f in matches}
+        if len(bodies) == 1:
+            matches = [min(matches)]
+    if spec.get("follow_call"):
+        # the fingerprint matched a thin wrapper; the function wanted is what it calls (the first direct
+        # call, however far in; "last" for the last one)
+        targets = set()
+        for f in matches:
+            calls = [int(i.op_str, 16) for i in im.disasm_fn(f, 0x200) if i.mnemonic == "call" and i.op_str.startswith("0x")]
+            if calls:
+                t = calls[-1] if spec["follow_call"] == "last" else calls[0]
+                targets.add(t - im.ib if t > im.ib else t)
+        matches = sorted(targets)
+    return matches
+
+
+def locate(im, spec, ctx):
+    """The candidate RVAs of one rule (exactly one means located)."""
+    if "caller_of" in spec:
+        return match_caller_of(im, spec, ctx)
+    if "callee_of" in spec:
+        return match_callee_of(im, spec, ctx)
+    if "common_callee" in spec:
+        return match_common_callee(im, spec, ctx)
+    if "tail_target" in spec:
+        return match_tail_target(im, spec, ctx)
+    if "vtable_sibling" in spec:
+        return match_vtable_sibling(im, spec, ctx)
+    if "call_seq" in spec:
+        return match_call_seq(im, spec, ctx)
+    if "site" in spec:
+        return match_site(im, spec, ctx)
+    if "node_invalidator" in spec:
+        return match_node_invalidator(im, spec, ctx)
+    if "call_in" in spec:
+        # the call next to an anchor inside a function located earlier in this table (or a helper from
+        # sdk.json), or inside a command's vtable slot ({"command": token name, "slot": 8 IsValid / 9 Execute})
+        ci = spec["call_in"]
+        if "from" in ci:
+            src = resolve(ci["from"], ctx)
+            if src is None:
+                raise KeyError(ci["from"])
+        else:
+            src = command_slot(im, ci["command"], ci["slot"])
+        return call_near_in(im, src, ci, ctx) if src is not None else []
+    if "vtable_ref" in spec:
+        return match_vtable_ref(im, spec)
+    if "mnemonics" in spec:
+        return match_by_mnemonics(im, spec)
+    if "strings" in spec:
+        return match_by_strings(im, spec)
+    if "vtable_call" in spec:
+        return match_vtable_call(im, spec)
+    if "call_near" in spec:
+        return match_call_near(im, spec)
+    return match_pattern(im, spec, ctx)
+
+
 def main():
     im = Image(EXE)
-    text = im.img[im.text0:im.text1]
+    sdk = json.loads((OUT / "sdk.json").read_text(encoding="utf-8"))
     result, failures = {}, []
+    ctx = {"im": im, "result": result, "sdk": sdk}
     for name, spec in FUNCTIONS.items():
-        if "caller_of" in spec:
-            # the unique function that calls an already located one (a thin wrapper around it)
-            target = result.get(spec["caller_of"], {}).get("rva")
-            callers = set()
-            if target is not None:
-                for m in re.finditer(rb"\xe8", text):
-                    i = m.start()
-                    if im.text0 + i + 5 + struct.unpack_from("<i", text, i + 1)[0] == target:
-                        e = aligned_entry(im, im.fn_of(im.text0 + i))
-                        if e is not None:
-                            callers.add(e)
-            matches = sorted(callers)
-            if len(matches) == 1:
-                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
-                print(f"{name}: 0x{matches[0]:X}")
-            else:
-                failures.append(name)
-                print(f"{name}: {len(matches)} callers {[hex(m) for m in matches]} -- fingerprint needs updating")
-            continue
-        if "call_in" in spec:
-            # the call next to an anchor inside a function located earlier in this table, or inside
-            # a command's vtable slot ({"command": token name, "slot": 8 IsValid / 9 Execute})
-            ci = spec["call_in"]
-            src = result.get(ci["from"], {}).get("rva") if "from" in ci else command_slot(im, ci["command"], ci["slot"])
-            matches = call_near_in(im, src, ci) if src is not None else []
-            if len(matches) == 1:
-                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
-                print(f"{name}: 0x{matches[0]:X}")
-            else:
-                failures.append(name)
-                print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
-            continue
-        if "vtable_ref" in spec:
-            matches = match_vtable_ref(im, spec)
-            if len(matches) == 1:
-                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
-                print(f"{name}: 0x{matches[0]:X}")
-            else:
-                failures.append(name)
-                print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
-            continue
-        if "mnemonics" in spec or "strings" in spec or "call_near" in spec or "vtable_call" in spec:
-            matches = (match_by_mnemonics(im, spec) if "mnemonics" in spec else
-                       match_by_strings(im, spec) if "strings" in spec else
-                       match_vtable_call(im, spec) if "vtable_call" in spec else match_call_near(im, spec))
-            if len(matches) == 1:
-                result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
-                print(f"{name}: 0x{matches[0]:X}")
-            else:
-                failures.append(name)
-                print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
-            continue
-        # functions containing every prefilter constant as an immediate
-        sets = []
-        needles = [struct.pack("<I", imm) for imm in spec.get("prefilter", [])] + spec.get("prefilter_bytes", [])
-        for needle in needles:
-            fns = {entry_of(im, im.text0 + m.start()) for m in re.finditer(re.escape(needle), text)}
-            sets.append(fns - {None})
-        cands = set.intersection(*sets)
-        matches = []
-        for f in sorted(cands):
-            if f % 16:
-                continue  # MSVC function entries are 16-byte aligned; others are split fragments
-            if "max_len" in spec:
-                body = im.disasm_fn(f, 0x800)
-                ret = next((n for n, i in enumerate(body) if i.mnemonic in ("ret", "jmp")), len(body))
-                if ret > spec["max_len"]:
-                    continue
-            ins = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(f, 0x800)[:spec["window"]]]
-            if any(re.match(rx, s) for rx in spec.get("reject", []) for s in ins):
-                continue  # a sibling with the same shape plus this instruction
-            k = 0
-            for s in ins:
-                rx, needle = spec["pattern"][k]
-                if re.match(rx, s) and s.endswith(needle):
-                    k += 1
-                    if k == len(spec["pattern"]):
-                        matches.append(f)
-                        break
-        if spec.get("identical_ok") and len(matches) > 1:
-            # the linker kept byte-identical copies (same instructions, same call targets): any one is it
-            def body(f):
-                out = []
-                for i in im.disasm_fn(f, 0x200):
-                    op = i.op_str
-                    if i.mnemonic.startswith("j") and op.startswith("0x") and 0 <= int(op, 16) - im.ib - f < 0x200:
-                        op = f"+{int(op, 16) - im.ib - f:#x}"  # branch inside the function
-                    out.append(f"{i.mnemonic} {op}")
-                return tuple(out)
-            bodies = {body(f) for f in matches}
-            if len(bodies) == 1:
-                matches = [min(matches)]
-        if spec.get("follow_call"):
-            # the fingerprint matched a thin wrapper; the function wanted is what it calls
-            targets = set()
-            for f in matches:
-                for i in im.disasm_fn(f, 0x200):  # the first direct call, however far in
-                    if i.mnemonic == "call" and i.op_str.startswith("0x"):
-                        t = int(i.op_str, 16)
-                        targets.add(t - im.ib if t > im.ib else t)
-                        break
-            matches = sorted(targets)
+        try:
+            matches = locate(im, spec, ctx)
+            why = "fingerprint needs updating"
+        except KeyError as e:
+            matches, why = [], f"unresolved reference {e}"
         if len(matches) == 1:
-            result[name] = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
-            print(f"{name}: 0x{matches[0]:X}")
+            entry = {"rva": matches[0], "linux": spec["linux"], "signature": spec["signature"]}
+            if "site" in spec:
+                entry["kind"] = "site"
+            if spec.get("emit") is False:
+                entry["emit"] = False
+            result[name] = entry
+            print(f"{name}: 0x{matches[0]:X}" + (" (call site)" if "site" in spec else ""))
         else:
             failures.append(name)
-            print(f"{name}: {len(matches)} matches {[hex(m) for m in matches]} -- fingerprint needs updating")
+            print(f"{name}: {len(matches)} matches {[hex(m) for m in matches[:8]]} -- {why}")
     (OUT / "functions.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
     sys.exit(1 if failures else 0)
 
