@@ -201,7 +201,7 @@ namespace glob {
     inline constexpr uintptr_t TPdxNullObject_CColony_pInstance = 0x3119730;  // TPdxNullObject<CColony>::_pInstance  score=0.87 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CColonyType_pInstance = 0x3117EF8;  // TPdxNullObject<CColonyType>::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t TPdxNullObject_CConstructionQueue_pInstance = 0x3119038;  // TPdxNullObject<CConstructionQueue>::_pInstance  score=1.0 live=not-checked
-    inline constexpr uintptr_t TPdxNullObject_CConstructionQueueItem_pInstance = 0x3119C18;  // TPdxNullObject<CConstructionQueueItem>::_pInstance  score=1.0 live=not-checked
+    inline constexpr uintptr_t TPdxNullObject_CConstructionQueueItem_pInstance = 0x3119028;  // TPdxNullObject<CConstructionQueueItem>::_pInstance  score=1.0 live=swapped with its database
     inline constexpr uintptr_t TPdxNullObject_CCouncilPosition_pInstance = 0x3119270;  // TPdxNullObject<CCouncilPosition>::_pInstance  score=1.0 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CCountry_pInstance = 0x3117ED0;  // TPdxNullObject<CCountry>::_pInstance  score=0.67 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CEdict_pInstance = 0x31186E8;  // TPdxNullObject<CEdict>::_pInstance  score=1.0 live=not-checked
@@ -227,51 +227,51 @@ namespace glob {
     inline constexpr uintptr_t TPdxNullObject_CSpyNetwork_pInstance = 0x3119078;  // TPdxNullObject<CSpyNetwork>::_pInstance  score=0.5 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CStarbase_pInstance = 0x3118D30;  // TPdxNullObject<CStarbase>::_pInstance  score=0.889 live=not-checked
     inline constexpr uintptr_t TPdxRef_CAmbientObject_pDatabase = 0x3119D78;  // TPdxRef<CAmbientObject>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3119C00;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=unverified
-    inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3119CD0;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3119C00;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=ok
+    inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3119CD0;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CAstralRift_pDatabase = 0x3119D30;  // TPdxRef<CAstralRift>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CBuilding_pDatabase = 0x3119D68;  // TPdxRef<CBuilding>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CBuilding_pDatabase = 0x3119D68;  // TPdxRef<CBuilding>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CBypass_pDatabase = 0x3119D28;  // TPdxRef<CBypass>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CColony_pDatabase = 0x3119E70;  // TPdxRef<CColony>::_pDatabase  score=0.87 live=unverified
-    inline constexpr uintptr_t TPdxRef_CConstructionQueue_pDatabase = 0x3119C28;  // TPdxRef<CConstructionQueue>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CConstructionQueueItem_pDatabase = 0x3119028;  // TPdxRef<CConstructionQueueItem>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CColony_pDatabase = 0x3119E70;  // TPdxRef<CColony>::_pDatabase  score=0.87 live=ok
+    inline constexpr uintptr_t TPdxRef_CConstructionQueue_pDatabase = 0x3119C28;  // TPdxRef<CConstructionQueue>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CConstructionQueueItem_pDatabase = 0x3119C18;  // TPdxRef<CConstructionQueueItem>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CCosmicStorm_pDatabase = 0x3119E30;  // TPdxRef<CCosmicStorm>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CCosmicStormInfluenceField_pDatabase = 0x3119C08;  // TPdxRef<CCosmicStormInfluenceField>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CCouncilPosition_pDatabase = 0x3119C30;  // TPdxRef<CCouncilPosition>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CCountry_pDatabase = 0x3119CC0;  // TPdxRef<CCountry>::_pDatabase  score=0.668 live=unverified
+    inline constexpr uintptr_t TPdxRef_CCouncilPosition_pDatabase = 0x3119C30;  // TPdxRef<CCouncilPosition>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CCountry_pDatabase = 0x3119CC0;  // TPdxRef<CCountry>::_pDatabase  score=0.668 live=ok
     inline constexpr uintptr_t TPdxRef_CCountryFocusCard_pDatabase = 0x3119C58;  // TPdxRef<CCountryFocusCard>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDebris_pDatabase = 0x3119D38;  // TPdxRef<CDebris>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDeposit_pDatabase = 0x3119D20;  // TPdxRef<CDeposit>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CDistrict_pDatabase = 0x3119D60;  // TPdxRef<CDistrict>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CEspionageAsset_pDatabase = 0x3119D08;  // TPdxRef<CEspionageAsset>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CEspionageOperation_pDatabase = 0x3119BF0;  // TPdxRef<CEspionageOperation>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CExhibit_pDatabase = 0x3119D58;  // TPdxRef<CExhibit>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CExhibit_pDatabase = 0x3119D58;  // TPdxRef<CExhibit>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CFederation_pDatabase = 0x3119CF8;  // TPdxRef<CFederation>::_pDatabase  score=1.0 live=unverified
     inline constexpr uintptr_t TPdxRef_CFirstContact_pDatabase = 0x3119BF8;  // TPdxRef<CFirstContact>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CFleet_pDatabase = 0x3117A10;  // TPdxRef<CFleet>::_pDatabase  score=0.831 live=unverified
-    inline constexpr uintptr_t TPdxRef_CFleetTemplate_pDatabase = 0x3119DA8;  // TPdxRef<CFleetTemplate>::_pDatabase  score=0.889 live=unverified
-    inline constexpr uintptr_t TPdxRef_CGalacticObject_pDatabase = 0x3119E78;  // TPdxRef<CGalacticObject>::_pDatabase  score=0.48 live=unverified
+    inline constexpr uintptr_t TPdxRef_CFleet_pDatabase = 0x3117A10;  // TPdxRef<CFleet>::_pDatabase  score=0.831 live=ok
+    inline constexpr uintptr_t TPdxRef_CFleetTemplate_pDatabase = 0x3119DA8;  // TPdxRef<CFleetTemplate>::_pDatabase  score=0.889 live=ok
+    inline constexpr uintptr_t TPdxRef_CGalacticObject_pDatabase = 0x3119E78;  // TPdxRef<CGalacticObject>::_pDatabase  score=0.48 live=ok
     inline constexpr uintptr_t TPdxRef_CGroundCombat_pDatabase = 0x3119C20;  // TPdxRef<CGroundCombat>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CLawsuit_pDatabase = 0x3119C40;  // TPdxRef<CLawsuit>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CLeader_pDatabase = 0x3119E48;  // TPdxRef<CLeader>::_pDatabase  score=0.846 live=unverified
-    inline constexpr uintptr_t TPdxRef_CMegaStructure_pDatabase = 0x3119CF0;  // TPdxRef<CMegaStructure>::_pDatabase  score=0.75 live=unverified
+    inline constexpr uintptr_t TPdxRef_CLeader_pDatabase = 0x3119E48;  // TPdxRef<CLeader>::_pDatabase  score=0.846 live=ok
+    inline constexpr uintptr_t TPdxRef_CMegaStructure_pDatabase = 0x3119CF0;  // TPdxRef<CMegaStructure>::_pDatabase  score=0.75 live=ok
     inline constexpr uintptr_t TPdxRef_CMissile_pDatabase = 0x3119E20;  // TPdxRef<CMissile>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CMission_pDatabase = 0x3119D48;  // TPdxRef<CMission>::_pDatabase  score=0.4 live=unverified
     inline constexpr uintptr_t TPdxRef_CNaturalWormhole_pDatabase = 0x3119D80;  // TPdxRef<CNaturalWormhole>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_COrbitalLine_pDatabase = 0x3119C48;  // TPdxRef<COrbitalLine>::_pDatabase  score=anchor live=anchor
-    inline constexpr uintptr_t TPdxRef_CPatronRelation_pDatabase = 0x3119C50;  // TPdxRef<CPatronRelation>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CPlanet_pDatabase = 0x3119E50;  // TPdxRef<CPlanet>::_pDatabase  score=0.571 live=unverified
-    inline constexpr uintptr_t TPdxRef_CPopFaction_pDatabase = 0x3119D00;  // TPdxRef<CPopFaction>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CPopGroup_pDatabase = 0x3119CD8;  // TPdxRef<CPopGroup>::_pDatabase  score=0.5 live=unverified
+    inline constexpr uintptr_t TPdxRef_CPatronRelation_pDatabase = 0x3119C50;  // TPdxRef<CPatronRelation>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CPlanet_pDatabase = 0x3119E50;  // TPdxRef<CPlanet>::_pDatabase  score=0.571 live=ok
+    inline constexpr uintptr_t TPdxRef_CPopFaction_pDatabase = 0x3119D00;  // TPdxRef<CPopFaction>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CPopGroup_pDatabase = 0x3119CD8;  // TPdxRef<CPopGroup>::_pDatabase  score=0.5 live=ok
     inline constexpr uintptr_t TPdxRef_CPopJob_pDatabase = 0x3119D50;  // TPdxRef<CPopJob>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CResolution_pDatabase = 0x3119DB0;  // TPdxRef<CResolution>::_pDatabase  score=0.909 live=unverified
-    inline constexpr uintptr_t TPdxRef_CSector_pDatabase = 0x3119D18;  // TPdxRef<CSector>::_pDatabase  score=1.0 live=unverified
-    inline constexpr uintptr_t TPdxRef_CShip_pDatabase = 0x3119CE0;  // TPdxRef<CShip>::_pDatabase  score=0.8 live=unverified
+    inline constexpr uintptr_t TPdxRef_CSector_pDatabase = 0x3119D18;  // TPdxRef<CSector>::_pDatabase  score=1.0 live=ok
+    inline constexpr uintptr_t TPdxRef_CShip_pDatabase = 0x3119CE0;  // TPdxRef<CShip>::_pDatabase  score=0.8 live=ok
     inline constexpr uintptr_t TPdxRef_CShipDesign_pDatabase = 0x31196B8;  // TPdxRef<CShipDesign>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CSituation_pDatabase = 0x3119D40;  // TPdxRef<CSituation>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CSpecies_pDatabase = 0x3119CC8;  // TPdxRef<CSpecies>::_pDatabase  score=0.533 live=ok
-    inline constexpr uintptr_t TPdxRef_CSpyNetwork_pDatabase = 0x3119D10;  // TPdxRef<CSpyNetwork>::_pDatabase  score=0.5 live=unverified
-    inline constexpr uintptr_t TPdxRef_CStarbase_pDatabase = 0x3119CE8;  // TPdxRef<CStarbase>::_pDatabase  score=1.0 live=unverified
+    inline constexpr uintptr_t TPdxRef_CSpyNetwork_pDatabase = 0x3119D10;  // TPdxRef<CSpyNetwork>::_pDatabase  score=0.5 live=ok
+    inline constexpr uintptr_t TPdxRef_CStarbase_pDatabase = 0x3119CE8;  // TPdxRef<CStarbase>::_pDatabase  score=1.0 live=ok
     inline constexpr uintptr_t TPdxRef_CStrikeCraft_pDatabase = 0x3119E18;  // TPdxRef<CStrikeCraft>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CTradeDeal_pDatabase = 0x3119D88;  // TPdxRef<CTradeDeal>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CTruce_pDatabase = 0x3119D90;  // TPdxRef<CTruce>::_pDatabase  score=anchor live=anchor
@@ -302,7 +302,7 @@ namespace db {
     inline constexpr uintptr_t CBypass = 0x3119D28;
     inline constexpr uintptr_t CColony = 0x3119E70;
     inline constexpr uintptr_t CConstructionQueue = 0x3119C28;
-    inline constexpr uintptr_t CConstructionQueueItem = 0x3119028;
+    inline constexpr uintptr_t CConstructionQueueItem = 0x3119C18;
     inline constexpr uintptr_t CCosmicStorm = 0x3119E30;
     inline constexpr uintptr_t CCosmicStormInfluenceField = 0x3119C08;
     inline constexpr uintptr_t CCouncilPosition = 0x3119C30;
@@ -367,6 +367,7 @@ namespace rt {
     inline constexpr std::ptrdiff_t CComponentTemplate_component_set = 0x848;
     inline constexpr std::ptrdiff_t CComponentTemplate_size_kind = 0x1E0;
     inline constexpr std::ptrdiff_t CComponentTemplate_type_kind = 0x1E1;
+    inline constexpr std::ptrdiff_t CConstructionQueueItem_id = 0x8;
     inline constexpr std::ptrdiff_t CConstructionQueue_id = 0x8;
     inline constexpr std::ptrdiff_t CCosmicStormInfluenceField_id = 0x10;
     inline constexpr std::ptrdiff_t CCosmicStorm_id = 0x20;

@@ -133,9 +133,15 @@ def main():
             # no live objects (main menu / empty database) is "unverified", not a failure
             # the voted pick being empty (this save has none of T) says nothing against it either
             verified[sym] = {**g, "live": "unverified" if best is None or pick_empty else f"failed ({best[0]:.2f})"}
-    (OUT / "globals_verified.json").write_text(json.dumps(verified, indent=1), encoding="utf-8")
     ok = [s for s, v in verified.items() if v.get("live") == "ok"]
     moved = [s for s in ok if verified[s]["rva"] != globs[s]["rva"]]
+    # a database and its TPdxNullObject twin are a static tie: when the live pick takes the twin's address, the twin
+    # had the database's (TPdxRef<CConstructionQueueItem> 0x3119028 and its NullObject 0x3119C18 came out crossed)
+    for s in moved:
+        twin = s.replace("TPdxRef<", "TPdxNullObject<").replace("::_pDatabase", "::_pInstance")
+        if twin in verified and verified[twin]["rva"] == verified[s]["rva"]:
+            verified[twin] = {**verified[twin], "rva": globs[s]["rva"], "live": "swapped with its database"}
+    (OUT / "globals_verified.json").write_text(json.dumps(verified, indent=1), encoding="utf-8")
     print(f"databases verified live: {len(ok)}; static pick corrected for: {moved}")
 
     # ---- field plausibility over live objects
