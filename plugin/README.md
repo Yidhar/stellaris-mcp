@@ -1,6 +1,6 @@
 # Stellaris MCP bridge (launcher plugin)
 
-Lets AI agents read and play **Stellaris 4.5.3** (Windows x64) over MCP. `stellaris_bridge.dll` runs inside the game,
+Lets AI agents read and play **Stellaris 4.5.4** (Windows x64) over MCP. `stellaris_bridge.dll` runs inside the game,
 reads engine state and posts the game's own commands; the MCP server in `mcp-server\` talks to it over the named pipe
 `\\.\pipe\stellaris_mcp_bridge`.
 
