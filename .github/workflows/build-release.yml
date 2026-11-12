@@ -80,7 +80,7 @@ jobs:
             ${{ steps.package.outputs.zip }}.sha256
           generate_release_notes: true
           body: |
-            Built for **Stellaris 4.5.2** (Windows x64), `stellaris.exe` PE timestamp `${{ steps.package.outputs.exe_timestamp }}` (${{ steps.package.outputs.exe_built }}).
+            Built for **Stellaris 4.5.4** (Windows x64), `stellaris.exe` PE timestamp `${{ steps.package.outputs.exe_timestamp }}` (${{ steps.package.outputs.exe_built }}).
             The zip is a Stellaris launcher plugin (DLL plugin spec v2): install it with the launcher, or unpack it into
             `Documents\Paradox Interactive\Stellaris\plugins\stellaris-mcp\`, and start the game with `stl launch`. The bridge only
             works with that exact game build; see README.md in the zip for setup.
