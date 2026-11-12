@@ -33,13 +33,16 @@ namespace glob {
     inline constexpr uintptr_t CModifier_Definitions = 0x281B390;  // CModifier::_Definitions  score=anchor live=anchor
     inline constexpr uintptr_t COnActionDatabase_pInstance = 0x3159D38;  // COnActionDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t COpinionModifierDatabase_pInstance = 0x3159D10;  // COpinionModifierDatabase::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t CPdxModifierName_EmptyName = 0x280E7A0;  // CPdxModifierName::_EmptyName  score=anchor live=anchor
     inline constexpr uintptr_t CRandom_Forbidden = 0x281AD04;  // CRandom_Forbidden  score=anchor live=anchor
+    inline constexpr uintptr_t CScriptedRule_TokenByIndex = 0x2839870;  // CScriptedRule_TokenByIndex  score=anchor live=anchor
     inline constexpr uintptr_t CSettings_pInstance = 0x3235C98;  // CSettings::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CShipBehaviorDatabase_pInstance = 0x315EB70;  // CShipBehaviorDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CShipDesignTemplatesDatabase_pInstance = 0x315EDB0;  // CShipDesignTemplatesDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CSpecialProjectDatabase_pInstance = 0x315B308;  // CSpecialProjectDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CSpeciesNamesDatabase_pInstance = 0x3159D20;  // CSpeciesNamesDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CStartScreenMessageDatabase_pInstance = 0x34F6010;  // CStartScreenMessageDatabase::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t CStaticLexer_Instance = 0x35F9460;  // CStaticLexer_Instance  score=anchor live=anchor
     inline constexpr uintptr_t CStrategicResourceDatabase_pInstance = 0x3159BF0;  // CStrategicResourceDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CTerraformDatabase_pInstance = 0x3159D48;  // CTerraformDatabase::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CTraitDatabase_pInstance = 0x315B3A0;  // CTraitDatabase::_pInstance  score=anchor live=anchor
@@ -280,6 +283,7 @@ namespace glob {
     inline constexpr uintptr_t TPdxRef_CWaystationNetwork_pDatabase = 0x311BDC8;  // TPdxRef<CWaystationNetwork>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CZone_pDatabase = 0x311BDF8;  // TPdxRef<CZone>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t UpdateShipParallel_GrainClamp = 0x252B6A;  // UpdateShipParallel_GrainClamp  score=anchor live=anchor
+    inline constexpr uintptr_t UseSavedRandom = 0x311BEE0;  // UseSavedRandom  score=anchor live=anchor
     inline constexpr uintptr_t UserDesignsFileNames = 0x311D2E0;  // UserDesignsFileNames  score=anchor live=anchor
     inline constexpr uintptr_t g_AllowGetPlayer = 0x280E7A8;  // g_AllowGetPlayer  score=1.0 live=not-checked
     inline constexpr uintptr_t g_AllowGlobalGameStateAccess = 0x311BE88;  // g_AllowGlobalGameStateAccess  score=0.933 live=not-checked
@@ -356,10 +360,17 @@ namespace rt {
     inline constexpr std::ptrdiff_t CArchaeologicalSite_id = 0x8;
     inline constexpr std::ptrdiff_t CArmy_id = 0x10;
     inline constexpr std::ptrdiff_t CAstralRift_id = 0x8;
+    inline constexpr std::ptrdiff_t CBlob_capacity = 0x10;
+    inline constexpr std::ptrdiff_t CBlob_data = 0x8;
+    inline constexpr std::ptrdiff_t CBlob_size = 0x14;
     inline constexpr std::ptrdiff_t CBuildableShip_implementation = 0x8;
     inline constexpr std::ptrdiff_t CBuilding_id = 0x8;
     inline constexpr std::ptrdiff_t CBypass_id = 0x8;
+    inline constexpr std::ptrdiff_t CColony_flags = 0x1088;
+    inline constexpr std::ptrdiff_t CColony_flags_clear_node_bit = 0x2;
     inline constexpr std::ptrdiff_t CColony_id = 0x10;
+    inline constexpr std::ptrdiff_t CColony_modifier = 0x170;
+    inline constexpr std::ptrdiff_t CColony_modifier_node = 0x120;
     inline constexpr std::ptrdiff_t CComponentSlot_name = 0x18;
     inline constexpr std::ptrdiff_t CComponentSlot_size = 0x98;
     inline constexpr std::ptrdiff_t CComponentSlot_size_kind = 0x94;
@@ -386,6 +397,12 @@ namespace rt {
     inline constexpr std::ptrdiff_t CEventOption_name = 0x4F0;
     inline constexpr std::ptrdiff_t CEventScope_event_targets = 0x48;
     inline constexpr std::ptrdiff_t CEventScope_from = 0x38;
+    inline constexpr std::ptrdiff_t CEventScope_id = 0x10;
+    inline constexpr std::ptrdiff_t CEventScope_local = 0x1C;
+    inline constexpr std::ptrdiff_t CEventScope_param_count = 0x84;
+    inline constexpr std::ptrdiff_t CEventScope_prev = 0x40;
+    inline constexpr std::ptrdiff_t CEventScope_root = 0x30;
+    inline constexpr std::ptrdiff_t CEventScope_type = 0x8;
     inline constexpr std::ptrdiff_t CEventTarget_is_event_target = 0x198;
     inline constexpr std::ptrdiff_t CEventTarget_optional = 0x199;
     inline constexpr std::ptrdiff_t CEventWindow_option_flag = 0xA18;
@@ -429,20 +446,36 @@ namespace rt {
     inline constexpr std::ptrdiff_t CMegaStructureType_placement_rules = 0x2080;
     inline constexpr std::ptrdiff_t CMegaStructure_economic_scope = 0x238;
     inline constexpr std::ptrdiff_t CMegaStructure_id = 0x8;
+    inline constexpr std::ptrdiff_t CMemoryFile_blob = 0x80;
+    inline constexpr std::ptrdiff_t CMemoryFile_pos = 0x94;
     inline constexpr std::ptrdiff_t CMissile_id = 0x8;
     inline constexpr std::ptrdiff_t CMission_id = 0x8;
+    inline constexpr std::ptrdiff_t CModifierDefinition_size = 0xB0;
+    inline constexpr std::ptrdiff_t CModifierDefinition_token = 0x90;
+    inline constexpr std::ptrdiff_t CModifierDefinitions_count = 0xC;
+    inline constexpr std::ptrdiff_t CModifierEntry_type = 0x8;
     inline constexpr std::ptrdiff_t CModifierNodeManager_batch = 0x949;
     inline constexpr std::ptrdiff_t CModifierNodeManager_busy = 0x900;
     inline constexpr std::ptrdiff_t CModifierNodeManager_has_invalid = 0x901;
+    inline constexpr std::ptrdiff_t CModifierNodeManager_index_mask = 0xFFFFF;
     inline constexpr std::ptrdiff_t CModifierNodeManager_masked = 0x948;
     inline constexpr std::ptrdiff_t CModifierNodeManager_slot_count = 0x14;
     inline constexpr std::ptrdiff_t CModifierNodeManager_slot_node = 0x8;
+    inline constexpr std::ptrdiff_t CModifierNodeManager_slot_size = 0x18;
     inline constexpr std::ptrdiff_t CModifierNodeManager_slots = 0x8;
+    inline constexpr std::ptrdiff_t CModifierNodeType_category = 0x8;
+    inline constexpr std::ptrdiff_t CModifierNode_calc = 0x48;
     inline constexpr std::ptrdiff_t CModifierNode_dirty = 0x108;
+    inline constexpr std::ptrdiff_t CModifierNode_id = 0x8;
     inline constexpr std::ptrdiff_t CModifierNode_modifier = 0x50;
+    inline constexpr std::ptrdiff_t CModifierParent_category = 0x18;
+    inline constexpr std::ptrdiff_t CModifierParent_multiplier = 0x8;
+    inline constexpr std::ptrdiff_t CModifierParent_name = 0x10;
     inline constexpr std::ptrdiff_t CModifier_entries = 0x38;
     inline constexpr std::ptrdiff_t CModifier_entry_count = 0x44;
+    inline constexpr std::ptrdiff_t CModifier_entry_size = 0x10;
     inline constexpr std::ptrdiff_t CModifier_parent_count = 0x9C;
+    inline constexpr std::ptrdiff_t CModifier_parent_size = 0x20;
     inline constexpr std::ptrdiff_t CModifier_parents = 0x90;
     inline constexpr std::ptrdiff_t CNaturalWormhole_id = 0x8;
     inline constexpr std::ptrdiff_t COrbitalLine_id = 0x8;
@@ -450,12 +483,16 @@ namespace rt {
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_count = 0x1C;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_days = 0x40;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_ids = 0x10;
+    inline constexpr std::ptrdiff_t CPdxParallelForDescriptor_tasks = 0x14;
     inline constexpr std::ptrdiff_t CPlanet_id = 0x18;
+    inline constexpr std::ptrdiff_t CPopFaction_approval = 0x50;
     inline constexpr std::ptrdiff_t CPopFaction_id = 0x8;
+    inline constexpr std::ptrdiff_t CPopFaction_support = 0x40;
     inline constexpr std::ptrdiff_t CPopGroup_id = 0x10;
     inline constexpr std::ptrdiff_t CPopJob_id = 0x10;
     inline constexpr std::ptrdiff_t CRandomLog_config = 0x38;
     inline constexpr std::ptrdiff_t CResolution_id = 0x8;
+    inline constexpr std::ptrdiff_t CScriptedRule_index = 0x0;
     inline constexpr std::ptrdiff_t CSectionTemplate_slot_count = 0x184;
     inline constexpr std::ptrdiff_t CSectionTemplate_slots = 0x178;
     inline constexpr std::ptrdiff_t CSector_id = 0x8;
@@ -491,7 +528,12 @@ namespace rt {
     inline constexpr std::ptrdiff_t CSpecies_id = 0x10;
     inline constexpr std::ptrdiff_t CSpyNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CStarbase_id = 0x8;
+    inline constexpr std::ptrdiff_t CStaticLexer_built = 0x7C;
+    inline constexpr std::ptrdiff_t CStaticLexer_entries = 0x70;
+    inline constexpr std::ptrdiff_t CStaticLexer_entry_size = 0x30;
+    inline constexpr std::ptrdiff_t CStaticLexer_wanted = 0x80;
     inline constexpr std::ptrdiff_t CStrikeCraft_id = 0x8;
+    inline constexpr std::ptrdiff_t CString_text = 0x10;
     inline constexpr std::ptrdiff_t CTradeDeal_id = 0x10;
     inline constexpr std::ptrdiff_t CTraitDatabase_traits = 0x10;
     inline constexpr std::ptrdiff_t CTraitSet_traits_count = 0x1C;
@@ -501,6 +543,12 @@ namespace rt {
     inline constexpr std::ptrdiff_t CVivariumCritter_id = 0x10;
     inline constexpr std::ptrdiff_t CWar_id = 0x20;
     inline constexpr std::ptrdiff_t CWaystationNetwork_id = 0x8;
+    inline constexpr std::ptrdiff_t CWriter_binary = 0x18;
+    inline constexpr std::ptrdiff_t CWriter_depth = 0x8;
+    inline constexpr std::ptrdiff_t CWriter_file = 0x10;
+    inline constexpr std::ptrdiff_t CWriter_token_eol = 0x10;
+    inline constexpr std::ptrdiff_t CWriter_token_fixed_point = 0x167;
+    inline constexpr std::ptrdiff_t CWriter_token_indent = 0x11;
     inline constexpr std::ptrdiff_t CZone_id = 0x8;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_colonizable_planet_odds = 0x98;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_command_limit_galaxy_mult = 0xD0;
@@ -556,12 +604,18 @@ namespace vt {
     inline constexpr int CBuildableBase_CalcProgressionSpeed = 10;
     inline constexpr int CBuildableBase_CalcProgressionTimeNeeded = 11;
     inline constexpr int CBuildableBase_GetToken = 16;
+    inline constexpr int CCountryAI_Update = 7;
     inline constexpr int CDiplomaticAction_Delete = 0;
     inline constexpr int CDiplomaticAction_IsPossible = 10;
     inline constexpr int CDiplomaticAction_IsPotential = 9;
     inline constexpr int CEmpireDesign_Delete = 0;
+    inline constexpr int CFile_GetSize = 16;
+    inline constexpr int CFile_WriteCStr = 6;
+    inline constexpr int CFile_WriteData = 9;
     inline constexpr int CFleet_GetCoordinate = 1;
     inline constexpr int CGuiView_Hide = 7;
+    inline constexpr int CModifierNodeCalc_Call = 2;
+    inline constexpr int CPdxModifierName_CalcHash = 5;
     inline constexpr int CShipDesignImplementation_Destroy = 0;
 }  // namespace vt
 

@@ -332,6 +332,358 @@ def game_state_refs(im, linux, known):
     return out
 
 
+def perf_layouts(im, funcs, result, failures):
+    """Layouts the stellaris-perf plugin reads or writes (D:\\stellaris-perf), each read out of the engine function
+    that uses it, so that the plugin carries no offset, slot index or token id of its own:
+
+      * CPdxParallelForDescriptor: the task count its constructor stores right before dividing the range by it
+        (`mov [desc + T], ecx` ... `idiv ecx`); the per-country virtual the AI's parallel-for runs is the
+        `mov rcx, [rax + rcx*8]; mov rax, [rcx]; call [rax + S]` of the runner called after that constructor.
+      * CColony: InvalidateModifier starts with `lea R, [rcx + NODE]`; OnAddPops tests bit B of `[colony + FLAGS]`
+        to pick the node's Clear or Update and then hands `[colony + MODIFIER]` to MicroUpdateCachedValues.
+      * CModifierNodeBase::Update: id (`cmp dword ptr [rcx + ID], -1`), the calc delegate (`mov rcx, [rbx + CALC]`
+        ... `call [rax + 8*S]`); Invalidate passes `[type + CATEGORY]` to AddInvalid, the type being `[node]`.
+        The manager's slot table (every `and eax, MASK; ...; lea rdx, [rax + rax*2]; ... [rcx + rdx*8 + NODE]`).
+      * CModifier: AddModifierInternal walks the entries (`shl R, 4`; `movsxd rax, [entry + TYPE]`;
+        `imul rcx, rax, DEFINITION_SIZE`) and appends a parent record through the array insert that stores
+        clone, multiplier, name and category; the name it leaves behind is CPdxModifierName::_EmptyName, whose
+        vtable's `xor eax, eax; ret` slot is CalcHash. LogDefinitions prints each definition's token.
+      * CEventScope::Copy: type, id, local object, root / from / prev, the parameter array and its count.
+      * the save writer: CMemoryFile::WriteData (blob, position, the GetSize slot), CBlob::Append and its grow
+        (data, size, capacity), CFile::Write(const char*) (`jmp [vt + WriteData]`), the three in the memory
+        file's vtable; CWriter::WriteIndent (binary, depth, the indent token), the token write it calls (the
+        fixed-point token, the file, Write(const char*)'s slot), WriteString (the end-of-line token),
+        WriteTokenText (the token table's entries, counts, entry size, a CString's text).
+      * CPopFaction::UpdateSupportAndApproval: `movups [faction + SUPPORT], xmm0; ...; mov [faction + APPROVAL], R`.
+      * CScriptedRule::Evaluate: the rule's index and the index -> token table; the token table object;
+        the console variable UseSavedRandom (`lea rdx, [the bool]; lea rcx, "UseSavedRandom"`).
+    """
+    D = r"(0x[0-9a-f]+|\d+)"  # a displacement or immediate as capstone prints it
+
+    def fn(name):
+        r = funcs.get(name, {}).get("rva")
+        if r is None:
+            raise Fail(f"{name} is not located")
+        return r
+
+    def ops(f, n, limit=0x800):
+        ins = im.disasm_fn(f, limit)[:n]
+        return ins, [f"{i.mnemonic} {i.op_str}" for i in ins]
+
+    def num(s):
+        return int(s, 0)
+
+    def one(label, values):
+        vals = sorted(set(v for v in values if v is not None))
+        if len(vals) != 1:
+            raise Fail(f"{label}: {[hex(v) for v in vals]}")
+        return vals[0]
+
+    def first(label, rx, lst):
+        for x in lst:
+            m = re.match(rx, x)
+            if m:
+                return num(m.group(1))
+        raise Fail(f"{label}: no `{rx}`")
+
+    def target(i):
+        return int(i.op_str, 16) - im.ib if i.mnemonic in ("call", "jmp") and i.op_str.startswith("0x") else None
+
+    def around(site, before, after):
+        f = im.primary(im.fn_of(site))
+        ins = im.disasm_fn(f, 0x4000)
+        k = next((n for n, i in enumerate(ins) if rva(im, i) == site), None)
+        if k is None:
+            raise Fail(f"site 0x{site:X} is not an instruction of 0x{f:X}")
+        o = [f"{i.mnemonic} {i.op_str}" for i in ins]
+        return o[max(k - before, 0):k], o[k + 1:k + 1 + after]
+
+    def group(label, body):
+        try:
+            fields, slots, globs = body()
+        except Fail as e:
+            failures.append(f"{label}: {e}")
+            return
+        result["fields"].update(fields)
+        result["slots"].update(slots)
+        result["globals"].update(globs)
+        print(f"{label}: " + ", ".join([f"{k}=0x{v:X}" for k, v in fields.items()] + [f"{k}=slot {v}" for k, v in slots.items()] +
+                                      [f"{k}=0x{v:X}" for k, v in globs.items()]))
+
+    def parallel_for():
+        ctor = fn("CPdxParallelForDescriptor_Ctor")
+        _, o = ops(ctor, 120, 0x200)
+        k = next((n for n, x in enumerate(o) if x == "idiv ecx"), None)
+        if k is None:
+            raise Fail("no `idiv ecx` in the descriptor's constructor")
+        tasks = one("task count store", [num(m.group(1)) for x in o[max(k - 5, 0):k]
+                                         for m in [re.match(r"^mov dword ptr \[r\w+ \+ " + D + r"\], ecx$", x)] if m])
+        helpers = [t for t in dict.fromkeys(target(i) for i in im.disasm_fn(fn("UpdateAIParallel"), 0x800)[:200])
+                   if t and ctor in calls_of(im, t, 120)]
+        slots = []
+        for helper in helpers:
+            seq = [target(i) for i in im.disasm_fn(helper, 0x400)[:120] if i.mnemonic == "call"]
+            runner = seq[seq.index(ctor) + 1] if seq.index(ctor) + 1 < len(seq) else None
+            if not runner:
+                raise Fail(f"no call after the descriptor's constructor in 0x{helper:X}")
+            _, r = ops(runner, 400, 0x1000)
+            slots += [num(m.group(1)) // 8 for a, b, c in zip(r, r[1:], r[2:])
+                      for m in [re.match(r"^call qword ptr \[rax \+ " + D + r"\]$", c)]
+                      if m and a == "mov rcx, qword ptr [rax + rcx*8]" and b == "mov rax, qword ptr [rcx]"]
+        return {"CPdxParallelForDescriptor_tasks": tasks}, {"CCountryAI_Update": one("per-country virtual call", slots)}, {}
+
+    def colony():
+        _, o = ops(fn("CColony_InvalidateModifier"), 8, 0x80)
+        node = first("the colony's node", r"^lea r\w+, \[rcx \+ " + D + r"\]$", o)
+        before, after = around(fn("CColony_OnAddPops_NodeUpdate"), 10, 4)
+        m = re.search(r"mov eax, dword ptr \[(r\w+) \+ " + D + r"\] \| lea rcx, \[\1 \+ " + D + r"\] \| shr eax, (\d+) \| test al, 1 \|",
+                      " | ".join(before) + " |")
+        if not m or num(m.group(3)) != node:
+            raise Fail(f"OnAddPops does not test a flag before the node at +0x{node:X}: {before}")
+        modifier = first("the modifier handed to MicroUpdateCachedValues", r"^lea rdx, \[" + m.group(1) + r" \+ " + D + r"\]$", after)
+        if modifier != node + result["fields"].get("CModifierNode_modifier", -1):
+            raise Fail(f"the cached values' modifier +0x{modifier:X} is not the node's (+0x{node:X})")
+        return {"CColony_modifier_node": node, "CColony_modifier": modifier, "CColony_flags": num(m.group(2)),
+                "CColony_flags_clear_node_bit": int(m.group(4))}, {}, {}
+
+    def nodes():
+        _, o = ops(fn("CModifierNodeBase_Update"), 40, 0x100)
+        nid = first("node id", r"^cmp dword ptr \[rcx \+ " + D + r"\], -1$", o[:8])
+        calc = set()
+        for n, x in enumerate(o):
+            c = re.match(r"^call qword ptr \[rax \+ " + D + r"\]$", x)
+            for p in o[max(n - 5, 0):n] if c else []:
+                m = re.match(r"^mov rcx, qword ptr \[rbx \+ " + D + r"\]$", p)
+                if m:
+                    calc.add((num(m.group(1)), num(c.group(1)) // 8))
+        if len(calc) != 1:
+            raise Fail(f"calc delegate call: {sorted(calc)}")
+        calc_off, call_slot = calc.pop()
+        before, _ = around(fn("CModifierNodeBase_Invalidate_AddInvalid"), 5, 0)
+        m = re.search(r"mov rax, qword ptr \[(r\w+)\] \| mov edx, dword ptr \[\1 \+ " + D + r"\] \|.*mov r8d, dword ptr \[rax \+ " + D + r"\]$",
+                      " | ".join(before))
+        if not m or num(m.group(2)) != nid:
+            raise Fail(f"Invalidate does not pass (id, type category) to AddInvalid: {before}")
+        fields = {"CModifierNode_id": nid, "CModifierNode_calc": calc_off, "CModifierNodeType_category": num(m.group(3))}
+        # the slot table lookup (the same sites the slot fields come from): index mask and slot size
+        text = im.img[im.text0:im.text1]
+        shapes = set()
+        for s in re.finditer(rb"\x25(....)\x48\x8B\x0D....\x3B\x41.\x73.\x48\x8D\x14\x40\x48\x8B\x49.", text, re.S):
+            tail = list(im.md.disasm(text[s.start():s.end() + 16], im.ib + im.text0 + s.start()))
+            j = " | ".join(f"{i.mnemonic} {i.op_str}" for i in tail)
+            t = re.search(r"lea rdx, \[rax \+ rax\*(\d)\] \|.*\[rcx \+ rdx\*(\d)(?: \+ " + D + r")?\]", j)
+            if t:
+                shapes.add((struct.unpack("<I", s.group(1))[0], (1 + int(t.group(1))) * int(t.group(2))))
+        if len(shapes) != 1:
+            raise Fail(f"slot table lookups: {sorted(shapes)}")
+        mask, size = shapes.pop()
+        fields.update({"CModifierNodeManager_index_mask": mask, "CModifierNodeManager_slot_size": size})
+        return fields, {"CModifierNodeCalc_Call": call_slot}, {}
+
+    def modifier():
+        f = result["fields"]
+        if "CModifier_entry_count" not in f or "CModifier_parents" not in f:
+            raise Fail("CModifier_entries / CModifier_parents are not located")
+        ins, o = ops(fn("CPdxModifier_AddModifierInternal"), 140, 0x400)
+        entry = [1 << int(b.group(2)) for x, y in zip(o, o[1:])
+                 for a, b in [(re.match(r"^movsxd (r\w+), dword ptr \[r\w+ \+ " + D + r"\]$", x), re.match(r"^shl (r\w+), (\d+)$", y))]
+                 if a and b and a.group(1) == b.group(1) and num(a.group(2)) == f["CModifier_entry_count"]]
+        typ = [(num(a.group(1)), num(b.group(1))) for x, y in zip(o, o[1:])
+               for a, b in [(re.match(r"^movsxd rax, dword ptr \[r\w+ \+ " + D + r"\]$", x), re.match(r"^imul r\w+, rax, " + D + r"$", y))]
+               if a and b]
+        if len(set(typ)) != 1:
+            raise Fail(f"entry type / definition size: {typ}")
+        inserts = [target(ins[n + 1]) for n, x in enumerate(o[:-1])
+                   for m in [re.match(r"^lea rcx, \[rsi \+ " + D + r"\]$", x)] if m and num(m.group(1)) + 8 == f["CModifier_parents"]]
+        insert = one("the parent records' insert", inserts)
+        pins, p = ops(insert, 70, 0x200)
+        k = next((n for n, x in enumerate(p) if x == "mul rcx"), None)
+        size = first("parent record size", r"^mov eax, " + D + r"$", p[max(k - 3, 0):k]) if k else None
+        if not size:
+            raise Fail("no `mov eax, SIZE; ...; mul rcx` in the parent records' insert")
+        j = " | ".join(p)
+        m = re.search(r"mov (r\w+), qword ptr \[r\w+\] \| mov qword ptr \[(r\w+ \+ r\w+) \+ " + D + r"\], \1 \| mov qword ptr \[\2\], r\w+ \| "
+                      r"mov \1, qword ptr \[(r\w+)\] \| mov qword ptr \[\2 \+ " + D + r"\], \1 \| (lea r\w+, \[rip \+ 0x[0-9a-f]+\]) \| "
+                      r"mov qword ptr \[\4\], r\w+ \| mov dword ptr \[r\w+ \+ r\w+ \+ " + D + r"\], r\w+d", j)
+        if not m:
+            raise Fail("the parent records' insert does not store clone, multiplier, name and category as expected")
+        empty = rip_target(im, pins[p.index(m.group(6))])
+        vt = im.q(empty) - im.ib
+        if not (im.rdata0 <= vt < im.rdata1):
+            raise Fail(f"CPdxModifierName::_EmptyName 0x{empty:X} has no static vtable")
+        hashes = []
+        for s in range(16):
+            sf = slot_fn(im, vt, s)
+            if not (im.text0 <= sf < im.text1):
+                break
+            if [f"{i.mnemonic} {i.op_str}".strip() for i in im.disasm_fn(sf, 0x10)[:2]] == ["xor eax, eax", "ret"]:
+                hashes.append(s)
+        # CModifier::LogDefinitions: the definitions array's count next to its data pointer, each definition's token
+        log = string_xrefs(im, ["Printing Modifier Definitions:"])["Printing Modifier Definitions:"]
+        if len(log) != 1:
+            raise Fail(f"CModifier::LogDefinitions: {len(log)} functions")
+        lins, lo = ops(next(iter(log)), 120, 0x400)
+        dsize = one("definition size", [num(a.group(1)) for x in lo for a in [re.match(r"^imul r\w+, rax, " + D + r"$", x)] if a] + [typ[0][1]])
+        defs = result["globals"].get("CModifier::_Definitions")
+        count = [rip_target(im, i) - defs for i, x in zip(lins, lo) if defs and re.match(r"^movsxd r\w+, dword ptr \[rip \+ ", x)
+                 and 0 < rip_target(im, i) - defs < 0x20]
+        token = [num(a.group(2)) - num(b.group(1)) for x in lo for a in [re.match(r"^lea (r\w+), \[rdx \+ " + D + r"\]$", x)] if a
+                 for y in lo for b in [re.match(r"^movsxd r\w+, dword ptr \[" + a.group(1) + r" - " + D + r"\]$", y)] if b]
+        return ({"CModifier_entry_size": one("entry size", entry), "CModifierEntry_type": typ[0][0], "CModifier_parent_size": size,
+                 "CModifierParent_multiplier": num(m.group(3)), "CModifierParent_name": num(m.group(5)),
+                 "CModifierParent_category": num(m.group(7)), "CModifierDefinition_size": dsize,
+                 "CModifierDefinition_token": one("definition token", token), "CModifierDefinitions_count": one("definition count", count)},
+                {"CPdxModifierName_CalcHash": one("CPdxModifierName::CalcHash slot", hashes)}, {"CPdxModifierName::_EmptyName": empty})
+
+    def scope():
+        _, o = ops(fn("CEventScope_Copy"), 140, 0x400)
+        links = [num(m.group(1)) for x, y in zip(o, o[1:]) for m in [re.match(r"^mov rax, qword ptr \[rdx \+ " + D + r"\]$", x)]
+                 if m and y == f"mov qword ptr [rcx + {m.group(1)}], rax"]
+        if len(links) < 3 or links[1] != result["fields"].get("CEventScope_from"):
+            raise Fail(f"root / from / prev copies: {links}")
+        typ = one("scope type", [num(m.group(1)) for x in o for m in [re.match(r"^mov r8, qword ptr \[rdx \+ " + D + r"\]$", x)]
+                                 if m and f"mov qword ptr [rcx + {m.group(1)}], r8" in o])
+        sid = one("scope id", [num(m.group(1)) for x in o for m in [re.match(r"^mov edx, dword ptr \[rdx \+ " + D + r"\]$", x)]
+                               if m and any(re.match(r"^mov dword ptr \[rcx \+ " + re.escape(m.group(1)) + r"\], r\w+$", y) for y in o)])
+        k = o.index(f"mov qword ptr [rcx + {typ}], r8") if typ < 10 else o.index(f"mov qword ptr [rcx + {hex(typ)}], r8")
+        local = first("scope local object", r"^mov rcx, qword ptr \[rdx \+ " + D + r"\]$", o[k:k + 6])
+        if not any(re.match(r"^mov qword ptr \[r\w+ \+ " + (str(local) if local < 10 else hex(local)) + r"\], r\w+$", y) for y in o):
+            raise Fail(f"no store to the local object at +0x{local:X}")
+        params = [num(a.group(1)) + num(b.group(1)) for x, y in zip(o, o[1:])
+                  for a in [re.match(r"^lea r10, \[r\w+ \+ " + D + r"\]$", x)]
+                  if a and re.match(r"^lea r\w+, \[r\w+ \+ " + re.escape(a.group(1)) + r"\]$", y)
+                  for z in o for b in [re.match(r"^movsxd r\w+, dword ptr \[r10 \+ " + D + r"\]$", z)] if b]
+        return {"CEventScope_type": typ, "CEventScope_id": sid, "CEventScope_local": local, "CEventScope_root": links[0],
+                "CEventScope_prev": links[2], "CEventScope_param_count": one("parameter count", params)}, {}, {}
+
+    def writer():
+        def disp(v):
+            return str(v) if v < 10 else hex(v)
+
+        wd, wcs, gsz = fn("CMemoryFile_WriteData"), fn("CFile_WriteCStr"), fn("CMemoryFile_GetSize")
+        ins, o = ops(wd, 40, 0x200)
+        blob = first("the file's blob", r"^cmp qword ptr \[rcx \+ " + D + r"\], 0$", o[:8])
+        size_slot = first("GetSize call", r"^call qword ptr \[rax \+ " + D + r"\]$", o[:14]) // 8
+        pos = first("the file's position", r"^movsxd rcx, dword ptr \[rbx \+ " + D + r"\]$", o[:16])
+        data = one("the blob's data", [num(m.group(1)) for n, x in enumerate(o) if x == f"mov rax, qword ptr [rbx + {disp(blob)}]"
+                                       for y in o[n + 1:n + 5] for m in [re.match(r"^add rcx, qword ptr \[rax \+ " + D + r"\]$", y)] if m])
+        append = one("CBlob::Append", [target(i) for n, i in enumerate(ins)
+                                       if i.mnemonic == "call" and f"mov rcx, qword ptr [rbx + {disp(blob)}]" in o[max(n - 4, 0):n]])
+        ains, a = ops(append, 30, 0x100)
+        size = first("the blob's size", r"^movsxd r\w+, dword ptr \[rcx \+ " + D + r"\]$", a[:14])
+        if not any(re.match(r"^add rcx, qword ptr \[r\w+ \+ " + disp(data) + r"\]$", x) for x in a):
+            raise Fail("CBlob::Append does not add to the data pointer")
+        grow = next((target(i) for i in ains if i.mnemonic == "call" and target(i)), None)
+        _, g = ops(grow, 8, 0x80) if grow else (None, [])
+        capacity = [num(m.group(1)) for x in g for m in [re.match(r"^mov eax, dword ptr \[rcx \+ " + D + r"\]$", x)]
+                    if m and "cmp edx, eax" in g]
+        _, s = ops(gsz, 6, 0x40)
+        if first("GetSize's blob", r"^mov rax, qword ptr \[rcx \+ " + D + r"\]$", s) != blob or \
+                first("GetSize's size", r"^mov eax, dword ptr \[rax \+ " + D + r"\]$", s) != size:
+            raise Fail("CMemoryFile::GetSize does not return the blob's size")
+        _, c = ops(wcs, 12, 0x40)
+        data_slot = first("Write(const char*)'s tail call", r"^jmp qword ptr \[rax \+ " + D + r"\]$", c) // 8
+        needle, vts, p = struct.pack("<Q", im.ib + wd), [], im.rdata0
+        while True:
+            p = im.img.find(needle, p, im.rdata1)
+            if p == -1:
+                break
+            vts.append(p - 8 * data_slot)
+            p += 8
+
+        def index_in(vt, f):
+            return next((k for k in range(48) if slot_fn(im, vt, k) == f), None)
+
+        cstr_slot = one("Write(const char*) slot", [index_in(vt, wcs) for vt in vts])
+        if one("GetSize slot", [index_in(vt, gsz) for vt in vts]) != size_slot:
+            raise Fail("the vtable's GetSize slot is not the one WriteData calls")
+        # the text writer
+        wi, wt = fn("CWriter_WriteIndent"), fn("CWriter_WriteTokenText")
+        iins, i_ = ops(wi, 80, 0x200)
+        binary = first("the writer's binary flag", r"^cmp byte ptr \[rcx \+ " + D + r"\], 0$", i_[:14])
+        depth = first("the writer's depth", r"^mov e\w+, dword ptr \[rcx \+ " + D + r"\]$", i_[:14])
+        indent = [(num(a.group(1)), num(b.group(1))) for x, y in zip(i_, i_[1:])
+                  for a, b in [(re.match(r"^mov eax, dword ptr \[rax \+ " + D + r"\]$", x), re.match(r"^cmp eax, " + D + r"$", y))] if a and b]
+        if len(set(indent)) != 1:
+            raise Fail(f"the indent token: {indent}")
+        fixed, file_ = [], []
+        for t in dict.fromkeys(target(i) for i in iins if i.mnemonic == "call"):
+            if not t:
+                continue
+            j = " | ".join(ops(t, 60, 0x200)[1])
+            m = re.search(r"cmp byte ptr \[rbx \+ " + D + r"\], 0 \| jne 0x[0-9a-f]+ \| cmp edi, " + D + r" \|", j)
+            if m and num(m.group(1)) == binary:
+                fixed.append(num(m.group(2)))
+                file_ += [(num(q.group(1)), num(q.group(2)) // 8) for q in re.finditer(
+                    r"mov rcx, qword ptr \[rbx \+ " + D + r"\] \| mov rax, qword ptr \[rcx\] \| lea rdx, \[[^\]]+\] \| "
+                    r"call qword ptr \[rax \+ " + D + r"\]", j)]
+        if len(set(file_)) != 1 or file_[0][1] != cstr_slot:
+            raise Fail(f"the token write's file and Write(const char*) call: {file_} (vtable slot {cstr_slot})")
+        sins, s_ = ops(fn("CWriter_WriteString"), 400, 0x800)
+        k = next((n for n, i in enumerate(sins) if i.mnemonic == "call" and target(i) == wt), None)
+        eol = first("the end-of-line token", r"^mov edx, " + D + r"$", s_[max(k - 3, 0):k]) if k else None
+        if eol is None:
+            raise Fail("CWriter::WriteString does not call WriteTokenText")
+        _, t_ = ops(wt, 48, 0x100)
+        built = first("the token table's built count", r"^mov eax, dword ptr \[rax \+ " + D + r"\]$", t_)
+        wanted = first("the token table's wanted count", r"^cmp eax, dword ptr \[rbx \+ " + D + r"\]$", t_)
+        entries = first("the token table's entries", r"^add rcx, qword ptr \[rbx \+ " + D + r"\]$", t_)
+        esize = [(1 + int(a.group(1))) << int(b.group(1)) for x, y in zip(t_, t_[1:])
+                 for a, b in [(re.match(r"^lea rcx, \[rdi \+ rdi\*(\d)\]$", x), re.match(r"^shl rcx, (\d+)$", y))] if a and b]
+        k = next(n for n, x in enumerate(t_) if x.startswith("add rcx, qword ptr [rbx + "))
+        text_off = first("a CString's text", r"^lea r\w+, \[rcx \+ " + D + r"\]$", t_[k:k + 20])
+        if built != indent[0][0]:
+            raise Fail("WriteIndent and WriteTokenText disagree on the token table's built count")
+        lins, l_ = ops(fn("CStaticLexer_Table"), 24, 0x80)
+        table = one("the token table object", [rip_target(im, i) for i, x in zip(lins, l_) if x.startswith("lea rax, [rip + ")])
+        return ({"CMemoryFile_blob": blob, "CMemoryFile_pos": pos, "CBlob_data": data, "CBlob_size": size,
+                 "CBlob_capacity": one("the blob's capacity", capacity), "CWriter_binary": binary, "CWriter_depth": depth,
+                 "CWriter_file": file_[0][0], "CWriter_token_eol": eol, "CWriter_token_indent": indent[0][1],
+                 "CWriter_token_fixed_point": one("the fixed-point token", fixed), "CStaticLexer_entries": entries,
+                 "CStaticLexer_built": built, "CStaticLexer_wanted": wanted, "CStaticLexer_entry_size": one("token entry size", esize),
+                 "CString_text": text_off},
+                {"CFile_WriteCStr": cstr_slot, "CFile_WriteData": data_slot, "CFile_GetSize": size_slot},
+                {"CStaticLexer_Instance": table})
+
+    def faction():
+        _, o = ops(fn("CPopFaction_UpdateSupportAndApproval"), 120, 0x400)
+        pairs = {(num(m.group(2)), num(a.group(1))) for n, x in enumerate(o)
+                 for m in [re.match(r"^movups xmmword ptr \[(r\w+) \+ " + D + r"\], xmm\d+$", x)] if m
+                 for y in o[n + 1:n + 5] for a in [re.match(r"^mov qword ptr \[" + m.group(1) + r" \+ " + D + r"\], r\w+$", y)] if a}
+        if len(pairs) != 1:
+            raise Fail(f"support / approval stores: {sorted(pairs)}")
+        support, approval = pairs.pop()
+        return {"CPopFaction_support": support, "CPopFaction_approval": approval}, {}, {}
+
+    def misc():
+        ins, o = ops(fn("CScriptedRule_Evaluate"), 60, 0x200)
+        rule = [(num(m.group(1)) if m.group(1) else 0, rip_target(im, ins[n + 1])) for n, x in enumerate(o[:-2])
+                for m in [re.match(r"^movsxd rax, dword ptr \[rcx(?: \+ " + D + r")?\]$", x)]
+                if m and o[n + 1].startswith("lea rcx, [rip + ") and re.match(r"^movsxd r\w+, dword ptr \[rcx \+ rax\*4\]$", o[n + 2])]
+        if len(set(rule)) != 1:
+            raise Fail(f"CScriptedRule::Evaluate's index lookup: {rule}")
+        d0, d1 = data_range(im)
+        s = im.img.find(b"\x00UseSavedRandom\x00", im.rdata0, im.rdata1) + 1
+        saved = set()
+        for r in im.lea_index().get(s, []) if s > 0 else []:
+            prev = next(im.md.disasm(im.img[r - 7:r], im.ib + r - 7), None)
+            if prev is not None and prev.mnemonic == "lea" and prev.op_str.startswith("rdx, [rip + "):
+                g = rip_target(im, prev)
+                if d0 <= g < d1:
+                    saved.add(g)
+        return ({"CScriptedRule_index": rule[0][0]}, {},
+                {"CScriptedRule_TokenByIndex": rule[0][1], "UseSavedRandom": one("the UseSavedRandom console variable", saved)})
+
+    group("parallel-for descriptor, AI update slot", parallel_for)
+    group("colony modifier node", colony)
+    group("modifier node", nodes)
+    group("modifier content", modifier)
+    group("event scope", scope)
+    group("save writer", writer)
+    group("pop faction", faction)
+    group("scripted rule, UseSavedRandom", misc)
+
+
 def main():
     im = Image(EXE)
     r = token_names(im, set())
@@ -2083,6 +2435,8 @@ def main():
     else:
         result["vtables"]["NSpeciesModification_SSpeciesColonyPair"] = pvt
         print(f"SSpeciesColonyPair vtable 0x{pvt:X}")
+
+    perf_layouts(im, funcs, result, failures)
 
     have = set(result["globals"]) | set(globs)
     failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]
