@@ -469,10 +469,15 @@ def assign_offsets(events, refs, insns, kinds, indirect=None):
                         if R in wr:
                             break
                 if not belongs_next and r["lea"]:
-                    # lea into a register that is spilled to the stack => wrapper object
-                    for ins in insns[i + 1:i + 3]:
-                        if ins.mnemonic == "mov" and ins.op_str.startswith("qword ptr [rsp") and ins.op_str.endswith(R):
+                    # lea into a register that is spilled to the stack => wrapper object (the
+                    # spill can follow a check of the field first: `lea rax, [rsi + 0x110]; lea r14,
+                    # [rip..]; lea rbx, [rip..]; cmp byte ptr [rax], 0; je; mov [rbp - 0x18], rax`)
+                    for ins in insns[i + 1:i + 6]:
+                        if ins.mnemonic == "mov" and ins.op_str.startswith(("qword ptr [rsp", "qword ptr [rbp")) \
+                                and ins.op_str.endswith(", " + R):
                             belongs_next = True
+                            break
+                        if R in regs_rw(ins)[1]:
                             break
         if as_arg:
             owner[i] = ("arg", nxt["i"])            # the writer's own argument register

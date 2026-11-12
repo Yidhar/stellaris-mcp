@@ -2,6 +2,8 @@
 #include "game_state.hpp"
 #include "fleet_access.hpp"
 #include "sdk/stellaris_sdk.hpp"
+#include "command_builder.hpp"
+#include "alert_manager.hpp"
 #include <windows.h>
 #include <cstring>
 #include <algorithm>
@@ -95,6 +97,124 @@ bool ContactsManager::Init(uintptr_t base_address) {
 
 
     return true;
+}
+
+namespace {
+
+// a script database (TGameDatabase<T>): its types (data at +0x50, count at +0x5C), key at +0x20
+std::vector<void*> ScriptTypes(uintptr_t db_global) {
+    std::vector<void*> out;
+    void* db = nullptr;
+    void* arr = nullptr;
+    uint32_t n = 0;
+    if (!SafeReadPtr((const void*)db_global, &db) || !db || !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 4096) {
+        return out;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        void* t = nullptr;
+        if (SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &t) && t) out.push_back(t);
+    }
+    return out;
+}
+constexpr std::ptrdiff_t kTypeKey = 0x20;
+
+struct NewActionCtx {
+    uintptr_t create;
+    void* type;
+    void* actor;
+    void* recipient;
+    void* action;
+    uint8_t shown;
+};
+
+void CallNewAction(void* p, void*) {
+    auto* x = (NewActionCtx*)p;
+    x->action = ((void* (*)(void*, void*, void*))x->create)(x->type, x->actor, x->recipient);
+    if (x->action) {
+        void** vt = *(void***)x->action;
+        x->shown = ((uint8_t(*)(void*, bool))vt[sdk::vt::CDiplomaticAction_IsPotential])(x->action, false);
+    }
+}
+
+void CallDeleteAction(void* action, void*) {
+    void** vt = *(void***)action;
+    ((void (*)(void*, int))vt[sdk::vt::CDiplomaticAction_Delete])(action, 1);
+}
+
+}  // namespace
+
+void* ContactsManager::NewAction(void* type, uint32_t country_id, bool* shown) {
+    void* cdb = nullptr;
+    void* slots = nullptr;
+    void* recipient = nullptr;
+    uint32_t cap = 0, check = 0xFFFFFFFF;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::db::CCountry), &cdb) || !cdb ||
+        !SafeReadPtr((const void*)((uintptr_t)cdb + 0x18), &slots) || !slots || !SafeReadU32((const void*)((uintptr_t)cdb + 0x20), &cap) ||
+        (country_id & 0xFFFFFF) >= cap || !SafeReadPtr((const void*)((uintptr_t)slots + (country_id & 0xFFFFFF) * 16 + 8), &recipient) ||
+        !recipient || !SafeReadU32((const void*)((uintptr_t)recipient + sdk::rt::CCountry_id), &check) || check != country_id) {
+        return nullptr;
+    }
+    NewActionCtx ctx{ base_address_ + sdk::fn::NDiplomacyUtil_CreateDiplomaticAction, type, GetPlayerCountry(), recipient, nullptr, 0 };
+    if (!ctx.actor || !CommandBuilder::Get().CallGuarded(&CallNewAction, &ctx)) return nullptr;
+    *shown = ctx.shown != 0;
+    return ctx.action;
+}
+
+nlohmann::json ContactsManager::GetDiplomaticActionsJson(uint32_t country_id) {
+    if (!GetPlayerCountry()) return { {"error", "No player country (not in game?)"} };
+    nlohmann::json out = nlohmann::json::array();
+    namespace pr = sdk::cmd::diplo_action_propose_command;
+    constexpr std::ptrdiff_t kAction = 0x20;  // CPdxScopedPtr<CDiplomaticAction>: the command owns it
+    bool any = false;
+    for (void* type : ScriptTypes(base_address_ + sdk::glob::TGameDatabase_CDiplomaticActionTypeDatabase_pInstance)) {
+        bool shown = false;
+        void* action = NewAction(type, country_id, &shown);
+        if (!action) continue;
+        any = true;
+        if (!shown) {
+            CommandBuilder::Get().CallGuarded(&CallDeleteAction, action);
+            continue;
+        }
+        std::string key;
+        SafeReadPdxString((const void*)((uintptr_t)type + kTypeKey), key);
+        auto cmd = CommandBuilder::Get().Create(pr::kSpec);
+        cmd.Set<uint64_t>(kAction, (uint64_t)(uintptr_t)action);  // freed with the unposted command
+        std::string why;
+        const bool can = cmd.IsValid(&why);
+        nlohmann::json row = { {"action", key}, {"can_propose", can} };
+        if (!can) row["reason"] = AlertManager::Get().CleanPdxString(why);
+        out.push_back(row);
+    }
+    if (!any && out.empty()) return { {"error", "No empire with country id " + std::to_string(country_id)} };
+    return { {"country_id", country_id}, {"actions", out} };
+}
+
+nlohmann::json ContactsManager::ProposeDiplomaticAction(uint32_t country_id, const std::string& action_key) {
+    if (!GetPlayerCountry()) return { {"error", "No player country (not in game?)"} };
+    void* type = nullptr;
+    for (void* t : ScriptTypes(base_address_ + sdk::glob::TGameDatabase_CDiplomaticActionTypeDatabase_pInstance)) {
+        std::string key;
+        if (SafeReadPdxString((const void*)((uintptr_t)t + kTypeKey), key) && key == action_key) type = t;
+    }
+    if (!type) return { {"success", false}, {"error", "Unknown diplomatic action " + action_key + " (stellaris_get_diplomatic_actions)"} };
+    bool shown = false;
+    void* action = NewAction(type, country_id, &shown);
+    if (!action) return { {"success", false}, {"error", "No empire with country id " + std::to_string(country_id) + ", or the game makes no such action toward it"} };
+    if (!shown) {
+        CommandBuilder::Get().CallGuarded(&CallDeleteAction, action);
+        return { {"success", false}, {"error", action_key + " is not offered toward this empire"} };
+    }
+    namespace pr = sdk::cmd::diplo_action_propose_command;
+    auto cmd = CommandBuilder::Get().Create(pr::kSpec);
+    cmd.Set<uint64_t>(0x20, (uint64_t)(uintptr_t)action);
+    // Post runs CDiploActionProposeCommand::IsValid first: refused with the game's reason
+    if (!cmd.Post()) {
+        return { {"success", false}, {"error", AlertManager::Get().CleanPdxString(cmd.error())} };
+    }
+    LOGF("[CONTACTS] proposed %s to country %u", action_key.c_str(), country_id);
+    return { {"success", true}, {"country_id", country_id}, {"action", action_key},
+             {"message", "Proposed; the empire answers on its own time (stellaris_get_contacts)"} };
 }
 
 void* ContactsManager::GetPlayerCountry() {

@@ -32,6 +32,9 @@ public:
     nlohmann::json Survey(uint32_t fleet_id, uint32_t system_id, uint32_t planet_id, bool queue);
     // a construction ship builds an outpost (starbase) in the system
     nlohmann::json BuildOutpost(uint32_t fleet_id, uint32_t system_id, bool queue);
+    // a construction ship builds an orbital station at a planet (its deposit decides what the
+    // station yields): station "mining", "research" or "observation"; empty: mining, else research
+    nlohmann::json BuildStation(uint32_t fleet_id, uint32_t planet_id, const std::string& station, bool queue);
     // a colony ship colonizes the planet
     nlohmann::json Colonize(uint32_t fleet_id, uint32_t planet_id, bool queue);
     // cancel every order of these fleets (they stop where they are)
@@ -116,6 +119,7 @@ private:
     bool OwnFleet(const Snapshot& s, uint32_t fleet_id);
     // build_orbital_station_order for an outpost; IsValid only unless post
     bool OutpostCommand(uint32_t fleet_id, uint32_t system_id, bool queue, bool post, std::string* why);
+    bool StationCommand(uint32_t fleet_id, uint32_t planet_id, uint8_t ship_class, bool queue, bool post, std::string* why);
     bool SurveyCommand(uint32_t fleet_id, uint32_t system_id, uint32_t planet_id, bool queue, bool post, std::string* why);
 
     uintptr_t base_address_{ 0 };

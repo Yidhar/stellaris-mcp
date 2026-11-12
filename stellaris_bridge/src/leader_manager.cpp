@@ -4,6 +4,8 @@
 #include "command_builder.hpp"
 #include <algorithm>
 #include "alert_manager.hpp"
+#include "fleet_access.hpp"
+#include <map>
 #include <windows.h>
 #include <cmath>
 #include <cstring>
@@ -113,6 +115,22 @@ static bool SafeReadPdxString(const void* src, std::string& out) {
     }
     out = "";
     return false;
+}
+
+// CLeaderLocation (16 bytes): +0 ELocationType, +4 sub-kind (9 for most; an envoy's task), +8 the
+// target's id. The types, as CLeaderLocation::GetLocationTypeLocalization names them
+constexpr std::ptrdiff_t kLocType = 0x0, kLocKind = 0x4, kLocTarget = 0x8;
+constexpr uint8_t kLocationCouncil = 9;
+constexpr uint8_t kLocationTypes = 11;
+constexpr uint32_t kLocKindDefault = 9;
+const char* const kLocationSlot[kLocationTypes] = { "unassigned", "governor", "ship", "army", "empire",
+    "galactic_community", "federation", "spy_network", "first_contact", "council", "shroud" };
+const char* const kLocationLoc[kLocationTypes] = { "", "LOCATION_TYPE_PLANET", "LOCATION_TYPE_SHIP",
+    "LOCATION_TYPE_ARMY", "LOCATION_TYPE_EMPIRE", "LOCATION_TYPE_GALACTIC_COMMUNITY", "LOCATION_TYPE_FEDERATION",
+    "LOCATION_TYPE_SPY_NETWORK", "LOCATION_TYPE_FIRST_CONTACT_SYSTEM", "LOCATION_TYPE_COUNCIL", "LOCATION_TYPE_SHROUD" };
+
+const char* LocationSlot(uint8_t type) {
+    return type < kLocationTypes ? kLocationSlot[type] : "unknown";
 }
 
 nlohmann::json TraitsJson(const std::vector<LeaderTraitDetail>& traits) {
@@ -244,6 +262,9 @@ static std::string StripNameTags(std::string name) {
         }
         name.erase(at, end - at);
     }
+    // a regnal name carries its alternative after "|||" ("毛妮|||reg:婗"): the shown name is before it
+    const size_t alt = name.find("|||");
+    if (alt != std::string::npos) name.erase(alt);
     return name;
 }
 
@@ -345,56 +366,30 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         detail.ethic_name = LocalizeKey(detail.ethic_key);
     }
 
-    // 4. Assignment & Council
-    SafeReadU8((const void*)((uintptr_t)leader + 0x110), &detail.assignment_type);
-    SafeReadU32((const void*)((uintptr_t)leader + 0x118), &detail.assignment_target);
-    SafeReadU32((const void*)((uintptr_t)leader + 0x9E0), &detail.hire_date);
-
-    uint32_t assign_upper = 0;
-    SafeReadU32((const void*)((uintptr_t)leader + 0x114), &assign_upper);
-    detail.is_councilor = (assign_upper != 0);
+    // 4. Where the leader serves (CLeader::location) and the council seat it holds
+    //    (CLeader::council_location): CLeaderLocation = +0 ELocationType, +4 a sub-kind (an envoy's
+    //    task), +8 the target's id
+    uint8_t council_type = 0;
+    SafeReadU8((const void*)((uintptr_t)leader + sdk::ent::CLeader::location + kLocType), &detail.assignment_type);
+    SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::location + kLocTarget), &detail.assignment_target);
+    SafeReadU8((const void*)((uintptr_t)leader + sdk::ent::CLeader::council_location + kLocType), &council_type);
+    if (council_type == kLocationCouncil) {
+        SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::council_location + kLocTarget), &detail.council_position);
+    }
+    SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::recruitment_date), &detail.hire_date);
 
     void* country = GetPlayerCountry();
-    uint32_t ruler_id = 0;
+    uint32_t ruler_id = 0xFFFFFFFF;
     if (country) {
         SafeReadU32((const void*)((uintptr_t)country + sdk::ent::CCountry::ruler), &ruler_id);
     }
-
+    detail.is_councilor = leader_id == ruler_id || detail.council_position != 0xFFFFFFFF;
     if (leader_id == ruler_id) {
         detail.assignment_type_name = "ruler";
-        detail.title = "总统";
-        detail.is_councilor = true;
     } else {
-        switch (detail.assignment_type) {
-            case 0:
-                detail.assignment_type_name = "unassigned";
-                detail.title = "未指派";
-                break;
-            case 1:
-                detail.assignment_type_name = "governor";
-                detail.title = detail.is_councilor ? "国务卿" : "星区总督";
-                break;
-            case 2:
-                detail.assignment_type_name = "fleet";
-                detail.title = (detail.class_key == "scientist") ? "首席科学家" : "舰队司令";
-                break;
-            case 3:
-                detail.assignment_type_name = "army";
-                detail.title = "陆军将领";
-                break;
-            case 6:
-                detail.assignment_type_name = "council";
-                detail.title = "内阁官员";
-                detail.is_councilor = true;
-                break;
-            case 8:
-                detail.assignment_type_name = "envoy";
-                detail.title = "特使";
-                break;
-            default:
-                detail.assignment_type_name = "unknown";
-                detail.title = "领袖";
-                break;
+        detail.assignment_type_name = LocationSlot(detail.assignment_type);
+        if (detail.assignment_type < kLocationTypes) {
+            detail.assignment_name = LocalizeKey(kLocationLoc[detail.assignment_type]);
         }
     }
 
@@ -494,7 +489,7 @@ nlohmann::json LeaderManager::GetLeadersJson() {
     if (l_arr && cnt > 0) {
         for (uint32_t i = 0; i < cnt && i < 256; ++i) {
             uint32_t lid = 0;
-            if (SafeReadU32((const void*)((uintptr_t)l_arr + i * 4), &lid) && lid > 0) {
+            if (SafeReadU32((const void*)((uintptr_t)l_arr + i * 4), &lid) && lid != 0xFFFFFFFF) {
                 HiredLeaderDetail d = ReadLeader(lid);
                 nlohmann::json traits_arr = nlohmann::json::array();
                 for (const auto& t : d.traits) {
@@ -508,7 +503,6 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                     {"id", d.id},
                     {"name", d.name.empty() ? d.key : d.name},
                     {"name_key", d.key},
-                    {"title", d.title},
                     {"class", d.class_key},
                     {"class_name", d.class_name},
                     {"background_job", d.background_job_key},
@@ -519,7 +513,9 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                     {"ethic", d.ethic_key},
                     {"ethic_name", d.ethic_name},
                     {"assignment_type", d.assignment_type_name},
+                    {"assignment_name", d.assignment_name},
                     {"target_id", d.assignment_target},
+                    {"council_position_id", d.council_position},
                     {"hire_date", d.hire_date},
                     {"is_councilor", d.is_councilor},
                     {"has_unspent_trait_points", d.has_unspent_trait_points},
@@ -545,7 +541,7 @@ nlohmann::json LeaderManager::GetLeadersJson() {
         if (pool_arr && pool_cnt > 0) {
             for (uint32_t i = 0; i < pool_cnt && i < 64; ++i) {
                 uint32_t cid = 0;
-                if (SafeReadU32((const void*)((uintptr_t)pool_arr + i * 4), &cid) && cid > 0) {
+                if (SafeReadU32((const void*)((uintptr_t)pool_arr + i * 4), &cid) && cid != 0xFFFFFFFF) {
                     HiredLeaderDetail d = ReadLeader(cid);
                     if (!d.class_key.empty()) {
                         pool_list.push_back({
@@ -556,7 +552,6 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                             {"class_name", d.class_name},
                             {"level", d.level},
                             {"age", d.age},
-                            {"hire_cost", 200.0},
                             {"ethic", d.ethic_key},
                             {"ethic_name", d.ethic_name}
                         });
@@ -660,51 +655,256 @@ nlohmann::json LeaderManager::DismissLeader(uint32_t leader_id) {
     };
 }
 
-nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, uint8_t assignment_type, uint32_t target_id) {
+namespace {
+
+// an object of a TPdxRefDatabase by id (16-byte slots, object at +8; the id checked at id_off)
+void* RefObject(uintptr_t base, uintptr_t db_rva, std::ptrdiff_t id_off, uint32_t id) {
+    void* db = nullptr;
+    void* slots = nullptr;
+    void* obj = nullptr;
+    uint32_t cap = 0, check = 0xFFFFFFFF;
+    if (id == 0xFFFFFFFF || !SafeReadPtr((const void*)(base + db_rva), &db) || !db ||
+        !SafeReadPtr((const void*)((uintptr_t)db + 0x18), &slots) || !slots ||
+        !SafeReadU32((const void*)((uintptr_t)db + 0x20), &cap) || (id & 0xFFFFFF) >= cap ||
+        !SafeReadPtr((const void*)((uintptr_t)slots + (id & 0xFFFFFF) * 16 + 8), &obj) || !obj ||
+        !SafeReadU32((const void*)((uintptr_t)obj + id_off), &check) || check != id) {
+        return nullptr;
+    }
+    return obj;
+}
+
+// the ids in a CPdxArray<TPdxRef<T>> member (data at +0x8, size at +0x14)
+std::vector<uint32_t> RefIds(uintptr_t array) {
+    std::vector<uint32_t> out;
+    void* data = nullptr;
+    uint32_t n = 0;
+    if (!SafeReadPtr((const void*)(array + 0x8), &data) || !data || !SafeReadU32((const void*)(array + 0x14), &n) || n > 100000) {
+        return out;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = 0xFFFFFFFF;
+        if (SafeReadU32((const void*)((uintptr_t)data + i * 4), &id) && id != 0xFFFFFFFF) out.push_back(id);
+    }
+    return out;
+}
+
+// a fleet's leader location is its first ship (CLeaderLocation::CollectShipLocations): CFleet::ships
+// is the data pointer of its ship ids, the size 0xC further
+uint32_t FleetLeaderShip(void* fleet) {
+    void* data = nullptr;
+    uint32_t n = 0, ship = 0xFFFFFFFF;
+    if (fleet && SafeReadPtr((const void*)((uintptr_t)fleet + sdk::ent::CFleet::ships), &data) && data &&
+        SafeReadU32((const void*)((uintptr_t)fleet + sdk::ent::CFleet::ships + 0xC), &n) && n > 0) {
+        SafeReadU32(data, &ship);
+    }
+    return ship;
+}
+
+struct Slot {
+    uint8_t type;
+    uint32_t target;      // what the CLeaderLocation holds (colony, ship, army, council position)
+    uint32_t shown_id;    // what the player knows it by (planet, fleet, army, council position)
+    std::string name;
+};
+
+}  // namespace
+
+nlohmann::json LeaderManager::GetAssignmentsJson(uint32_t leader_id) {
     void* leader = FindLeaderPtr(leader_id);
-    if (!leader) {
-        return {
-            {"error", {{"code", -32081}, {"message", "Leader ID " + std::to_string(leader_id) + " not found"}}}
-        };
+    void* country = GetPlayerCountry();
+    if (!leader || !country) {
+        return { {"error", {{"code", -32081}, {"message", "Leader ID " + std::to_string(leader_id) + " not found"}}} };
+    }
+    const uint32_t country_id = GetPlayerCountryId();
+    std::vector<Slot> slots;
+
+    // governors: the player's colonized planets (the location holds the colony)
+    void* pdb = nullptr;
+    void* parr = nullptr;
+    uint32_t pcap = 0;
+    if (SafeReadPtr((const void*)(base_address_ + sdk::db::CPlanet), &pdb) && pdb &&
+        SafeReadPtr((const void*)((uintptr_t)pdb + 0x18), &parr) && parr && SafeReadU32((const void*)((uintptr_t)pdb + 0x20), &pcap)) {
+        for (uint32_t i = 0; i < pcap && i < 200000; ++i) {
+            void* planet = nullptr;
+            uint32_t owner = 0xFFFFFFFF, colony = 0xFFFFFFFF, pid = 0xFFFFFFFF;
+            if (!SafeReadPtr((const void*)((uintptr_t)parr + i * 16 + 8), &planet) || !planet ||
+                !SafeReadU32((const void*)((uintptr_t)planet + sdk::ent::CPlanet::owner), &owner) || owner != country_id ||
+                !SafeReadU32((const void*)((uintptr_t)planet + sdk::ent::CPlanet::colony), &colony) || colony == 0xFFFFFFFF ||
+                !SafeReadU32((const void*)((uintptr_t)planet + sdk::rt::CPlanet_id), &pid)) {
+                continue;
+            }
+            slots.push_back({ 1, colony, pid, PersistentNameText((const void*)((uintptr_t)planet + sdk::ent::CPlanet::name)) });
+        }
+    }
+    // ships: the player's fleets, science and construction ships (the location holds the first ship)
+    for (uint32_t fid : fleets::Owned(country)) {
+        void* fleet = fleets::Find(base_address_, fid);
+        if (!fleet || fleets::IsStation(fleets::ClassOf(fleet))) continue;
+        const uint32_t ship = FleetLeaderShip(fleet);
+        if (ship != 0xFFFFFFFF) slots.push_back({ 2, ship, fid, fleets::Name(fleet) });
+    }
+    // armies
+    for (uint32_t aid : RefIds((uintptr_t)country + sdk::ent::CCountry::owned_armies)) {
+        void* army = RefObject(base_address_, sdk::db::CArmy, sdk::rt::CArmy_id, aid);
+        if (army) slots.push_back({ 3, aid, aid, PersistentNameText((const void*)((uintptr_t)army + sdk::ent::CArmy::name)) });
+    }
+    // council positions
+    std::vector<Slot> council;
+    void* cdb = nullptr;
+    void* carr = nullptr;
+    uint32_t ccap = 0;
+    if (SafeReadPtr((const void*)(base_address_ + sdk::db::CCouncilPosition), &cdb) && cdb &&
+        SafeReadPtr((const void*)((uintptr_t)cdb + 0x18), &carr) && carr && SafeReadU32((const void*)((uintptr_t)cdb + 0x20), &ccap)) {
+        for (uint32_t i = 0; i < ccap && i < 65536; ++i) {
+            void* pos = nullptr;
+            uint32_t owner = 0xFFFFFFFF, id = 0xFFFFFFFF;
+            if (!SafeReadPtr((const void*)((uintptr_t)carr + i * 16 + 8), &pos) || !pos ||
+                !SafeReadU32((const void*)((uintptr_t)pos + sdk::ent::CCouncilPosition::country), &owner) || owner != country_id ||
+                !SafeReadU32((const void*)((uintptr_t)pos + sdk::rt::CCouncilPosition_id), &id)) {
+                continue;
+            }
+            void* type = nullptr;
+            std::string key;
+            if (SafeReadPtr((const void*)((uintptr_t)pos + sdk::ent::CCouncilPosition::type), &type) && type) {
+                SafeReadPdxString((const void*)((uintptr_t)type + 0x20), key);
+            }
+            council.push_back({ kLocationCouncil, id, id, key.empty() ? "" : LocalizeKey(key) });
+        }
     }
 
-    uint32_t country_id = GetPlayerCountryId();
-
-    uint32_t tick_timestamp = 0;
-    void* date_mgr = nullptr;
-    if (SafeReadPtr((const void*)(base_address_ + sdk::glob::g_CurrentGameState), &date_mgr) && date_mgr && (uintptr_t)date_mgr >= 0x10000) {
-        SafeReadU32((const void*)((uintptr_t)date_mgr + 0xC0), &tick_timestamp);
-    }
-
-    LOGF("[LEADER] Posting CAssignLeaderCommand (0x4076) for leader %u, type %u, target %u, tick %u...",
-        leader_id, assignment_type, target_id, tick_timestamp);
-
+    // the game's verdict on each: CAssignLeaderCommand::IsValid (reassignment allowed, the location's
+    // own checks, CanPlayerSetLeader)
     namespace assign = sdk::cmd::assign_leader_command;
-    // `location` is a nested persistent the SDK does not expand yet. Layout from the engine
-    // factory (0xBE8A00): +0 u8 assignment type, +4 u32 slot kind (default 9), +8 u32 target.
-    constexpr std::ptrdiff_t kLocType = assign::location + 0x0;
-    constexpr std::ptrdiff_t kLocKind = assign::location + 0x4;
-    constexpr std::ptrdiff_t kLocTarget = assign::location + 0x8;
+    auto check = [&](const Slot& s, std::string* why) {
+        auto cmd = CommandBuilder::Get().Create(assign::kSpec);
+        cmd.Set<uint32_t>(assign::leader, leader_id)
+           .Set<uint8_t>(assign::location + kLocType, s.type)
+           .Set<uint32_t>(assign::location + kLocKind, kLocKindDefault)
+           .Set<uint32_t>(assign::location + kLocTarget, s.target);
+        return cmd.IsValid(why);
+    };
+    HiredLeaderDetail me = ReadLeader(leader_id);
+    // the game's IsValid refuses some without a text: say why from the state
+    auto explain = [&](const Slot& s, const std::string& why) -> std::string {
+        std::string text = AlertManager::Get().CleanPdxString(why);
+        if (!text.empty()) return text;
+        if (s.type == kLocationCouncil && s.target == me.council_position) return "The leader already holds this seat";
+        if (s.type == me.assignment_type && s.target == me.assignment_target) return "The leader already serves here";
+        if (s.type == kLocationCouncil) {
+            void* pos = RefObject(base_address_, sdk::db::CCouncilPosition, sdk::rt::CCouncilPosition_id, s.target);
+            uint32_t holder = 0xFFFFFFFF;
+            if (pos && SafeReadU32((const void*)((uintptr_t)pos + sdk::ent::CCouncilPosition::leader), &holder) && holder != 0xFFFFFFFF) {
+                return "Held by leader " + std::to_string(holder) + " (" + ReadLeader(holder).name + ")";
+            }
+        }
+        return "The game refuses it without a reason";
+    };
+    nlohmann::json ok = nlohmann::json::array(), seats = nlohmann::json::array();
+    std::map<std::string, int> refused;
+    for (const Slot& s : slots) {
+        std::string why;
+        if (check(s, &why)) {
+            ok.push_back({ {"slot", kLocationSlot[s.type]}, {"target_id", s.shown_id}, {"name", s.name} });
+        } else {
+            refused[explain(s, why)]++;
+        }
+    }
+    for (const Slot& s : council) {
+        std::string why;
+        nlohmann::json seat = { {"slot", "council"}, {"target_id", s.shown_id}, {"name", s.name} };
+        const bool can = check(s, &why);
+        seat["can_assign"] = can;
+        if (!can) seat["reason"] = explain(s, why);
+        seats.push_back(seat);
+    }
+    nlohmann::json refused_json = nlohmann::json::array();
+    for (const auto& [why, n] : refused) refused_json.push_back({ {"reason", why}, {"count", n} });
+    return { {"leader_id", leader_id}, {"name", me.name}, {"class", me.class_key},
+             {"current", { {"slot", me.assignment_type_name}, {"target_id", me.assignment_target},
+                           {"council_position_id", me.council_position} }},
+             {"slots", ok}, {"council", seats}, {"refused", refused_json} };
+}
+
+nlohmann::json LeaderManager::AssignLeader(uint32_t leader_id, const std::string& slot, uint32_t target_id, const std::string& task) {
+    if (!FindLeaderPtr(leader_id)) {
+        return { {"error", {{"code", -32081}, {"message", "Leader ID " + std::to_string(leader_id) + " not found"}}} };
+    }
+    // the slot's location: the target as the player knows it -> what the location holds
+    uint8_t type = 0;
+    uint32_t target = 0xFFFFFFFF;
+    uint32_t kind = kLocKindDefault;
+    if (slot == "envoy") {
+        // an envoy's location: the EEnvoyAssignment as its sub-kind; toward an empire
+        // (CLeaderLocation type 4, the country's id) or the galactic community (type 5, no target),
+        // as CLeaderLocation::CanHaveEnvoyAssignment allows them
+        constexpr uint8_t kLocationEmpire = 4, kLocationCommunity = 5;
+        uint32_t n = 0xFFFFFFFF;
+        for (uint32_t i = 0; i < std::size(sdk::enums::EnvoyAssignment); ++i) {
+            if (task == sdk::enums::EnvoyAssignment[i]) n = i;
+        }
+        const std::string empire_tasks[] = { "improve_relations", "harm_relations", "spy_network", "patron_attunement" };
+        const std::string community_tasks[] = { "galactic_community", "strengthen_imperial_authority", "undermine_imperial_authority" };
+        if (n != 0xFFFFFFFF && std::find(std::begin(empire_tasks), std::end(empire_tasks), task) != std::end(empire_tasks)) {
+            type = kLocationEmpire;
+            target = target_id;
+        } else if (n != 0xFFFFFFFF && std::find(std::begin(community_tasks), std::end(community_tasks), task) != std::end(community_tasks)) {
+            type = kLocationCommunity;
+        } else {
+            return { {"error", {{"code", -32082}, {"message", "envoy task is one of improve_relations, harm_relations, spy_network, "
+                                                              "patron_attunement (target_id: the country), galactic_community, "
+                                                              "strengthen_imperial_authority, undermine_imperial_authority"}}} };
+        }
+        kind = n;
+    } else if (slot == "governor") {
+        void* planet = RefObject(base_address_, sdk::db::CPlanet, sdk::rt::CPlanet_id, target_id);
+        type = 1;
+        if (planet) SafeReadU32((const void*)((uintptr_t)planet + sdk::ent::CPlanet::colony), &target);
+        if (target == 0xFFFFFFFF) {
+            return { {"error", {{"code", -32082}, {"message", "Planet " + std::to_string(target_id) + " is not a colony"}}} };
+        }
+    } else if (slot == "ship") {
+        type = 2;
+        target = FleetLeaderShip(fleets::Find(base_address_, target_id));
+        if (target == 0xFFFFFFFF) {
+            return { {"error", {{"code", -32082}, {"message", "Fleet " + std::to_string(target_id) + " not found"}}} };
+        }
+    } else if (slot == "army") {
+        type = 3;
+        target = target_id;
+    } else if (slot == "council") {
+        type = kLocationCouncil;
+        target = target_id;
+    } else {
+        return { {"error", {{"code", -32082}, {"message", "slot is governor, ship, army, council or envoy"}}} };
+    }
+
+    // the game's IsValid compares only the leader's main location: a council seat already held
+    // would be posted again for nothing
+    if (type == kLocationCouncil && target == ReadLeader(leader_id).council_position) {
+        return { {"error", {{"code", -32083}, {"message", "The leader already holds this seat"}}} };
+    }
+    namespace assign = sdk::cmd::assign_leader_command;
     auto cmd = CommandBuilder::Get().Create(assign::kSpec);
     cmd.Set<uint32_t>(assign::leader, leader_id)
-       .Set<uint8_t>(kLocType, assignment_type)
-       .Set<uint32_t>(kLocKind, (assignment_type == 8) ? 4u : 9u)
-       .Set<uint32_t>(kLocTarget, target_id);
+       .Set<uint8_t>(assign::location + kLocType, type)
+       .Set<uint32_t>(assign::location + kLocKind, kind)
+       .Set<uint32_t>(assign::location + kLocTarget, target);
+    // Post runs the game's CAssignLeaderCommand::IsValid first: refused with its reason
     if (!cmd.Post()) {
-        return {
-            {"error", {{"code", -32083}, {"message", cmd.error()}}}
-        };
+        std::string why = AlertManager::Get().CleanPdxString(cmd.error());
+        if (why.empty() || why.find("rejected by the engine") != std::string::npos) {
+            HiredLeaderDetail me = ReadLeader(leader_id);
+            if (type == kLocationCouncil && target == me.council_position) why = "The leader already holds this seat";
+            else if (type == me.assignment_type && target == me.assignment_target) why = "The leader already serves here";
+            else why = "The game refuses it without a reason (stellaris_get_leader_assignments lists the slots it accepts)";
+        }
+        return { {"error", {{"code", -32083}, {"message", why}}} };
     }
-
-    LOGF("[LEADER] CAssignLeaderCommand successfully posted for %u.", leader_id);
-
-    return {
-        {"success", true},
-        {"leader_id", leader_id},
-        {"assignment_type", assignment_type},
-        {"target_id", target_id},
-        {"message", "Leader assigned successfully"}
-    };
+    LOGF("[LEADER] CAssignLeaderCommand posted: leader %u -> %s %u", leader_id, slot.c_str(), target_id);
+    nlohmann::json out = { {"success", true}, {"leader_id", leader_id}, {"slot", slot}, {"target_id", target_id},
+                           {"message", "Posted; the game assigns the leader when it runs the command"} };
+    if (!task.empty()) out["task"] = task;
+    return out;
 }
 
 nlohmann::json LeaderManager::SelectTrait(uint32_t leader_id, const std::string& trait_key) {

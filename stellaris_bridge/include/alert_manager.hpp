@@ -27,6 +27,9 @@ public:
 
     using FnOnAlertClick = void(*)(void* alert_win, void* banner_button);
 
+    // engine text without its formatting codes and icons
+    std::string CleanPdxString(const std::string& input);
+
 private:
     AlertManager() = default;
     ~AlertManager() = default;
@@ -36,7 +39,6 @@ private:
     FnOnAlertClick fn_on_alert_click_{ nullptr };
 
     std::string ExtractPdxString(void* ptr);
-    std::string CleanPdxString(const std::string& input);
     std::string GetAlertTypeName(uint32_t alert_id);
 };
 

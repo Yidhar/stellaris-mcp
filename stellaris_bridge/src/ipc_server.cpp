@@ -253,6 +253,21 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([fleet_id, system_id, queue]() {
             return GalaxyManager::Get().BuildOutpost(fleet_id, system_id, queue);
         });
+    } else if (method == "get_diplomatic_actions") {
+        uint32_t country_id = params.value("country_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([country_id]() { return ContactsManager::Get().GetDiplomaticActionsJson(country_id); });
+    } else if (method == "propose_diplomatic_action") {
+        uint32_t country_id = params.value("country_id", 0xFFFFFFFFu);
+        std::string action = params.value("action", std::string());
+        fut = TaskQueue::Get().Enqueue([country_id, action]() { return ContactsManager::Get().ProposeDiplomaticAction(country_id, action); });
+    } else if (method == "build_station") {
+        uint32_t fleet_id = params.value("fleet_id", 0xFFFFFFFFu);
+        uint32_t planet_id = params.value("planet_id", 0xFFFFFFFFu);
+        std::string station = params.value("station", std::string());
+        bool queue = params.value("queue", false);
+        fut = TaskQueue::Get().Enqueue([fleet_id, planet_id, station, queue]() {
+            return GalaxyManager::Get().BuildStation(fleet_id, planet_id, station, queue);
+        });
     } else if (method == "get_megastructure") {
         uint32_t id = params.value("megastructure_id", 0xFFFFFFFFu);
         fut = TaskQueue::Get().Enqueue([id]() { return GalaxyManager::Get().GetMegastructureJson(id); });
@@ -413,6 +428,10 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
         fut = TaskQueue::Get().Enqueue([]() {
             return LeaderManager::Get().GetLeadersJson();
         });
+    }
+    // the dispatch goes on in a second chain: MSVC limits how deep one if / else-if chain may nest
+    // (C1061). A method matched above has its task already
+    if (fut.valid()) {
     } else if (method == "hire_leader") {
         uint32_t candidate_id = params.value("candidate_id", 0);
         fut = TaskQueue::Get().Enqueue([candidate_id]() {
@@ -430,12 +449,16 @@ nlohmann::json IPCServer::ProcessRequest(const nlohmann::json& req) {
             return LeaderManager::Get().SelectTrait(leader_id, trait_key);
         });
     } else if (method == "assign_leader") {
-        uint32_t leader_id = params.value("leader_id", 0);
-        uint8_t assignment_type = (uint8_t)params.value("assignment_type", 0);
-        uint32_t target_id = params.value("target_id", 0);
-        fut = TaskQueue::Get().Enqueue([leader_id, assignment_type, target_id]() {
-            return LeaderManager::Get().AssignLeader(leader_id, assignment_type, target_id);
+        uint32_t leader_id = params.value("leader_id", 0xFFFFFFFFu);
+        std::string slot = params.value("slot", std::string());
+        uint32_t target_id = params.value("target_id", 0xFFFFFFFFu);
+        std::string task = params.value("task", std::string());
+        fut = TaskQueue::Get().Enqueue([leader_id, slot, target_id, task]() {
+            return LeaderManager::Get().AssignLeader(leader_id, slot, target_id, task);
         });
+    } else if (method == "get_leader_assignments") {
+        uint32_t leader_id = params.value("leader_id", 0xFFFFFFFFu);
+        fut = TaskQueue::Get().Enqueue([leader_id]() { return LeaderManager::Get().GetAssignmentsJson(leader_id); });
     } else if (method == "get_species") {
         fut = TaskQueue::Get().Enqueue([params]() {
             return SpeciesManager::Get().GetSpeciesJson(params);

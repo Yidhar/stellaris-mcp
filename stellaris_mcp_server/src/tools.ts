@@ -624,6 +624,36 @@ export function registerTools(server: McpServer, client: PipeClient) {
   );
 
   server.tool(
+    "stellaris_get_diplomatic_actions",
+    "Diplomatic actions the player can take toward one empire (Layer 2), as the game's diplomacy view lists them: each with its key (e.g. action_form_research_agreement), can_propose and, when not, the game's reason (opinion, trust, relations, a missing tech or treaty slot ...). Empire ids: stellaris_get_contacts. Propose one with stellaris_propose_diplomatic_action.",
+    { country_id: z.number().int().nonnegative().describe("The other empire's country id (stellaris_get_contacts)") },
+    async ({ country_id }) => galaxyCall("get_diplomatic_actions", { country_id })
+  );
+
+  server.tool(
+    "stellaris_propose_diplomatic_action",
+    "Propose a diplomatic action to an empire (native CDiploActionProposeCommand, as the diplomacy view's confirm button): e.g. an embassy, a research agreement, a commercial pact, a defensive pact, a non-aggression pact, a migration treaty, guaranteeing independence, closing or opening borders, rivalry, claims. Improving or harming relations and building a spy network are envoy jobs instead: stellaris_assign_leader slot envoy. The game checks it first and refuses with its own reason; the other empire answers on its own time. Keys: stellaris_get_diplomatic_actions. Actions with extra choices (war goals, trade deals, federation terms) are not covered here.",
+    {
+      country_id: z.number().int().nonnegative().describe("The other empire's country id"),
+      action: z.string().describe("The action key from stellaris_get_diplomatic_actions"),
+    },
+    async ({ country_id, action }) => galaxyCall("propose_diplomatic_action", { country_id, action })
+  );
+
+  server.tool(
+    "stellaris_build_station",
+    "Orders a player construction ship to build an orbital station at a planet (native CFleetBuildOrbitalStationCommand on the planet's deposit, as the ship's build menu): mining station (minerals, energy, ...), research station (physics, society, engineering) or observation post (over a pre-FTL world). station may be omitted: mining is tried, then research. The ship travels there and builds, paying the cost. Rejected with the game's reasons (no deposit for that station, not your system, already built, resources ...). Planets with deposits: stellaris_get_system, or stellaris_find_systems purpose=deposit.",
+    {
+      fleet_id: z.number().int().describe("The construction ship's fleet id"),
+      planet_id: z.number().int().describe("The planet (or asteroid) with the deposit"),
+      station: z.enum(["mining", "research", "observation"]).optional().describe("Which station (default: mining, else research)"),
+      queue: z.boolean().optional().default(false).describe("Append to the current orders instead of replacing them"),
+    },
+    async ({ fleet_id, planet_id, station, queue }) =>
+      galaxyCall("build_station", { fleet_id, planet_id, queue: queue ?? false, ...(station ? { station } : {}) })
+  );
+
+  server.tool(
     "stellaris_get_megastructure",
     "One megastructure (Layer 2): type, name, owner, system, planet, an upgrade under way (target, days done, halted) and, for the player's own, the upgrades its view offers: each with the engine's cost (the cost the upgrade charges), possible and the game's reason when not. Megastructure ids come from stellaris_get_system.",
     { megastructure_id: z.number().int().describe("Megastructure id (stellaris_get_system megastructures[].id)") },
@@ -1070,7 +1100,7 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 21: stellaris_get_leaders
   server.tool(
     "stellaris_get_leaders",
-    "Retrieves full leader and recruitment pool details (Layer 2 Domain Deep-Dive in progressive disclosure architecture). Returns summary counts, list of all hired leaders (id, localized name, class, background_job (job held before recruitment), level, age, ethic, assignment_type, target_id, hire_date), and candidate recruitment pool (id, name, class, level, age, hire_cost, ethic).",
+    "Retrieves full leader and recruitment pool details (Layer 2). Hired leaders: id, name, class, background_job, level, experience, age, ethic, traits and level-up trait picks, assignment_type (where they serve: ruler, unassigned, governor, ship, army, empire / galactic_community / federation (envoys), spy_network, first_contact, council, shroud) with assignment_name (the game's name) and target_id (governor: colony id, ship: ship id, army: army id, envoy: country id), council_position_id (the council seat held, or 4294967295), is_councilor, hire_date. pool_candidates: recruitable leaders (id, name, class, level, age, ethic): hire one with stellaris_hire_leader. Where a leader can serve: stellaris_get_leader_assignments.",
     {},
     async () => {
       try {
@@ -1100,12 +1130,12 @@ export function registerTools(server: McpServer, client: PipeClient) {
   // Tool 22: stellaris_hire_leader
   server.tool(
     "stellaris_hire_leader",
-    "Recruits a leader candidate from the candidate pool via native engine CHireLeaderCommand (0x4073). Implements progressive disclosure (Layer 3 Action Command).",
+    "Recruit a leader from the recruitment pool (native CHireLeaderCommand). The game checks it first (cost, leader cap) and refuses with its own reason. Candidates: stellaris_get_leaders pool_candidates. Then give the leader a job with stellaris_assign_leader.",
     {
       candidate_id: z
         .number()
         .int()
-        .positive()
+        .nonnegative()
         .describe("The unique candidate leader ID to recruit (from pool_candidates in stellaris_get_leaders)."),
     },
     async ({ candidate_id }) => {
@@ -1169,52 +1199,42 @@ export function registerTools(server: McpServer, client: PipeClient) {
     }
   );
 
-  // Tool 24: stellaris_assign_leader
+  // Tool 24: stellaris_get_leader_assignments / stellaris_assign_leader
+  const leaderReply = (result: any) => {
+    const failed = result && typeof result === "object" && result.error;
+    const text = failed ? `Error: ${result.error.message ?? JSON.stringify(result.error)}` : JSON.stringify(result, null, 2);
+    return { ...(failed ? { isError: true } : {}), content: [{ type: "text" as const, text }] };
+  };
+
+  server.tool(
+    "stellaris_get_leader_assignments",
+    "Where one leader can serve right now (Layer 2): every slot the game accepts for them, checked with the game's own CAssignLeaderCommand::IsValid. slots[]: {slot, target_id, name} with slot governor (target_id = planet id), ship (fleet id: a fleet, science ship or construction ship), army (army id); council[]: every council position with can_assign and, when not, the game's reason; refused[]: the other locations' reasons with counts. Use a row as is with stellaris_assign_leader.",
+    { leader_id: z.number().int().nonnegative().describe("A hired leader's id (stellaris_get_leaders)") },
+    async ({ leader_id }) => {
+      try {
+        return leaderReply(await client.request("get_leader_assignments", { leader_id }));
+      } catch (err: any) {
+        return leaderReply({ error: { message: err.message } });
+      }
+    }
+  );
+
   server.tool(
     "stellaris_assign_leader",
-    "Assigns a leader to a planetary governorship, fleet/science ship, army, or council seat via native engine CAssignLeaderCommand (0x4076). Implements progressive disclosure (Layer 3 Action Command).",
+    "Put a leader in a slot (native CAssignLeaderCommand, as the game's leader views do): a scientist on a science ship, a commander on a fleet or army, an official as planet governor, any leader the council position takes onto the council, an envoy to improve or harm relations with an empire, build a spy network there, or to the galactic community. slot governor: target_id = planet id; ship: fleet id; army: army id; council: council position id (stellaris_get_government council_seats[].position_id); envoy: task + target_id (the empire's country id; none for the galactic community tasks). The game checks it first and refuses with its own reason. Slots the game accepts for a leader: stellaris_get_leader_assignments.",
     {
-      leader_id: z
-        .number()
-        .int()
-        .positive()
-        .describe("The unique leader ID to assign."),
-      assignment_type: z
-        .number()
-        .int()
-        .min(1)
-        .max(6)
-        .describe("Assignment type: 1 = Planet Governor, 2 = Fleet / Science Ship Commander, 3 = Army General, 6 = Council Seat."),
-      target_id: z
-        .number()
-        .int()
-        .describe("Target ID: Planet ID (for governor), Fleet ID (for fleet commander), Army ID (for general), or Council Seat ID (for councilor)."),
+      leader_id: z.number().int().nonnegative().describe("The hired leader's id (stellaris_get_leaders)"),
+      slot: z.enum(["governor", "ship", "army", "council", "envoy"]).describe("Where: governor, ship, army, council or envoy"),
+      target_id: z.number().int().nonnegative().optional().describe("governor: planet id; ship: fleet id; army: army id; council: council position id; envoy toward an empire: its country id"),
+      task: z.enum(["improve_relations", "harm_relations", "spy_network", "patron_attunement", "galactic_community",
+        "strengthen_imperial_authority", "undermine_imperial_authority"]).optional()
+        .describe("slot envoy: improve_relations / harm_relations / spy_network / patron_attunement toward the empire target_id, or galactic_community / strengthen_ / undermine_imperial_authority (no target)"),
     },
-    async ({ leader_id, assignment_type, target_id }) => {
+    async ({ leader_id, slot, target_id, task }) => {
       try {
-        const result = await client.request("assign_leader", {
-          leader_id,
-          assignment_type,
-          target_id,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-        };
+        return leaderReply(await client.request("assign_leader", { leader_id, slot, target_id: target_id ?? 4294967295, ...(task ? { task } : {}) }));
       } catch (err: any) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Error assigning leader: ${err.message}`,
-            },
-          ],
-        };
+        return leaderReply({ error: { message: err.message } });
       }
     }
   );

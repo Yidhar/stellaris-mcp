@@ -1421,6 +1421,59 @@ bool GalaxyManager::OutpostCommand(uint32_t fleet_id, uint32_t system_id, bool q
     return true;
 }
 
+bool GalaxyManager::StationCommand(uint32_t fleet_id, uint32_t planet_id, uint8_t ship_class, bool queue, bool post,
+                                   std::string* why) {
+    // CFleetBuildOrbitalStationCommand on a deposit holder (no galactic object): the holder is a
+    // CMetaRef persistent (vtable, then EDepositHolderType 0 = planet and the id), the class the
+    // station's EShipClass, checked by CanBuildOnDepositHolder
+    namespace ob = sdk::cmd::build_orbital_station_order;
+    constexpr std::ptrdiff_t kHolderType = ob::deposit_holder + 0x8, kHolderId = ob::deposit_holder + 0xC;
+    constexpr uint32_t kHolderPlanet = 0;
+    auto cmd = CommandBuilder::Get().Create(ob::kSpec);
+    cmd.Set<uint32_t>(ob::fleet, fleet_id)
+        .Set<uint32_t>(kHolderType, kHolderPlanet)
+        .Set<uint32_t>(kHolderId, planet_id)
+        .Set<uint32_t>(ob::galactic_object, 0xFFFFFFFF)
+        .Set<uint8_t>(ob::class_, ship_class)
+        .Set<uint8_t>(ob::queue, queue ? 1 : 0)
+        .Set<uint8_t>(ob::queue_to_front, 0);
+    if (!cmd) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    if (!cmd.IsValid(why)) return false;
+    if (post && !cmd.Post(NativeCommand::Check::EngineGate)) {
+        if (why) *why = cmd.error();
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json GalaxyManager::BuildStation(uint32_t fleet_id, uint32_t planet_id, const std::string& station, bool queue) {
+    Snapshot s = Take();
+    if (!s.player) return { {"error", "No player country (not in game?)"} };
+    if (!OwnFleet(s, fleet_id)) return { {"success", false}, {"error", "Fleet " + std::to_string(fleet_id) + " is not one of the player's fleets"} };
+    if (!RefLookup(base_address_, sdk::db::CPlanet, planet_id)) return { {"success", false}, {"error", "Unknown planet id: " + std::to_string(planet_id)} };
+    const std::pair<const char*, fleets::ShipClass> kinds[] = {
+        { "mining", fleets::ShipClass::MiningStation }, { "research", fleets::ShipClass::ResearchStation },
+        { "observation", fleets::ShipClass::ObservationStation } };
+    std::vector<std::pair<const char*, fleets::ShipClass>> tries;
+    for (const auto& k : kinds) {
+        if (station == k.first || (station.empty() && k.second != fleets::ShipClass::ObservationStation)) tries.push_back(k);
+    }
+    if (tries.empty()) return { {"success", false}, {"error", "station is mining, research or observation"} };
+    nlohmann::json refused = nlohmann::json::object();
+    for (const auto& [name, cls] : tries) {
+        std::string why;
+        if (StationCommand(fleet_id, planet_id, (uint8_t)cls, queue, true, &why)) {
+            return { {"success", true}, {"fleet_id", fleet_id}, {"planet_id", planet_id}, {"station", name},
+                     {"queued", queue}, {"message", std::string(name) + " station order posted"} };
+        }
+        refused[name] = why.empty() ? "The game refused it" : why;
+    }
+    return { {"success", false}, {"error", "The game refuses the station"}, {"reasons", refused} };
+}
+
 nlohmann::json GalaxyManager::BuildOutpost(uint32_t fleet_id, uint32_t system_id, bool queue) {
     Snapshot s = Take();
     if (!s.player) return { {"error", "No player country (not in game?)"} };

@@ -209,3 +209,10 @@ flowchart TD
 - `CModifierNodeManager::Update`（flush）0x29D9D0：busy +0x900、has_invalid +0x901、掩码模式 +0x948（flush 内清零：重算走不带掩码的 `AddModifierInternal`；按需重建时每个来源 `InvalidateChildren(来源涉及的类别 & +0xFC)`）、批处理 +0x949；`CPdxGraphJob` 按类别依赖序，每类 `CollectInvalid` 合并各线程失效集后并行重建（不经过 0x238300，内联清空 + 委托）。
 - 类别（Windows 编号 = Linux 枚举从 3 起减 1）：0 中继网络（calc 0xAD41D0）、1 国家（0x709BF0；节点在 `CCountry+0x3150`，另两个 +0x3180 和虚调用；`CCountry::InvalidateModifier` 0x23EFA0）、2–7 星系、8/19 领袖、13 间谍网、16 行星（0xE04060，节点 `CPlanet+0x700`）、17 殖民地（0xDAD840，`CColony+0x120`）、20 巨构、22 人口组（0x67B980）、23 舰队（0xC78E10）、24–29 星港、30 军队（0x810FA0）、31 舰船（0xCB3DF0）。
 - 国家节点的每日失效源：国家日更 0x6F1530（`[country+0x1268]` 派系支持/认可度变化标志 → 失效 + 中继节点 0x574DE0（`+0x2CF0`）→ 立刻 `Update` 两者）、`UpdateRelayNetwork` 0x752D60（并行任务；网络内星系集合变了才失效）、`AssignPopsToJobs` 末尾、0xD80760 等。修正类型表 `CModifier::_Definitions` 0x2814390（指针 +0、数量 +0xC、每项 0xB0、键名 Clausewitz 字符串在 +0x10：16 字节内联/堆指针、size u64、capacity u64）。
+
+## 16. 领袖位置、工程船造站、外交行动 (verified 4.5.4)
+
+- `CLeaderLocation`（16 字节）：`+0` 类型（1 行星/总督、2 舰船、3 陆军、4 帝国、5 银河议会、6 联邦、7 间谍网络、8 首次接触、9 内阁、10 帷幕），`+4` 子类（多数为 9；特使是 `EEnvoyAssignment`），`+8` 目标 id（行星位置存殖民地 id，舰船位置存舰队第一艘船的 id，内阁存 `CCouncilPosition` id，特使派往帝国存国家 id）。领袖身上两个：`CLeader::location`（0x110，本职）和 `council_location`（0x120，内阁）。`CAssignLeaderCommand` 的 `location` 就是一个完整的 `CLeaderLocation`；它的 `IsValid` 只比较本职位置，同一内阁职位重复指派会照样通过。
+- 生成器修正：Linux 索引把 `council_location` 的偏移推断成了后面 `if` 分支读的 `this + 0xf8`（现在沿 `local = pCVar` 别名回溯）；Windows 端没认出存到 `[rbp…]` 的包装对象（现在 6 条指令内存到 `[rsp…]`/`[rbp…]` 都算）。修正后一批日期类字段和 `CCountryBudgetPage` 的偏移也跟着变对了，均与 Linux 对上。
+- 工程船造站：`CFleetBuildOrbitalStationCommand` 的矿藏持有者是 `CMetaRef`（`+0x28` vtable、`+0x30` `EDepositHolderType`：0 行星、1 星界裂隙、2 舰船、3 无，`+0x34` id），星系填 -1，类别填站的 `EShipClass`（5 采矿、6 研究、9 观察），`CanBuildOnDepositHolder` 给原因。
+- 外交行动：`NDiplomacyUtil::CreateDiplomaticAction(类型, 本国, 目标国)` 造行动（类型来自 `TGameDatabase<CDiplomaticActionTypeDatabase>`），虚函数槽 9 是否显示、10 能否选择、0 删除（MSVC 比 GCC 少一个析构槽）。`CDiploActionProposeCommand` 在 `+0x20` 持有行动对象（指令析构时释放），`IsValid` 给原因。需要特使的行动（改善/损害关系、间谍网）提议了也不生效，要把特使指派到帝国位置。

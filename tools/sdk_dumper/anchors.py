@@ -1746,6 +1746,50 @@ def main():
         result["fields"]["CInGameIdler_auto_paused_by_popup"] = auto.pop()
         print(f"CInGameIdler auto-paused-by-popup flag 0x{result['fields']['CInGameIdler_auto_paused_by_popup']:X}")
 
+    # Diplomatic actions. The diplomacy view lists them (CDiplomacyView::ShowDiplomaticActions, its
+    # window has "favors_container"): for each CDiplomaticActionType of the database,
+    # `call NDiplomacyUtil::CreateDiplomaticAction(type, country, target); test rax, rax`, then the
+    # action's virtuals: `mov r8, [rcx + P]; xor edx, edx; call r8` (shown at all), deleted with
+    # `mov edx, 1; call [r8 + D]` when not, else `xor edx, edx; call [r8 + Q]` (selectable)
+    action_db = result["globals"].get("TGameDatabase<CDiplomaticActionTypeDatabase>::_pInstance") or \
+        globs.get("TGameDatabase<CDiplomaticActionTypeDatabase>::_pInstance", {}).get("rva")
+    got = {}
+    for f in sorted(fns_with_strings("favors_container")) if action_db else []:
+        ins = im.disasm_fn(f, 0x4000)
+        loads = [n for n, i in enumerate(ins) if "[rip + " in i.op_str and rip_target(im, i) == action_db]
+        if not loads:
+            continue
+        for n in range(loads[0], min(len(ins) - 12, loads[0] + 80)):
+            i = ins[n]
+            if not (i.mnemonic == "call" and i.op_str.startswith("0x") and ins[n + 2].op_str == "rax, rax"):
+                continue
+            tail = ins[n + 3:n + 24]
+            pot = next((re.match(r"^r8, qword ptr \[rcx \+ (0x[0-9a-f]+)\]$", x.op_str) for x in tail
+                        if x.mnemonic == "mov" and re.match(r"^r8, qword ptr \[rcx \+ 0x[0-9a-f]+\]$", x.op_str)), None)
+            dele = next((k for k, x in enumerate(tail) if x.op_str == "edx, 1"), None)
+            if pot is None or dele is None:
+                continue
+            dcall = next((x for x in tail[dele + 1:dele + 3] if x.mnemonic == "call"), None)
+            qcall = next((x for x in tail[dele + 3:] if x.mnemonic == "call" and re.match(r"^qword ptr \[r8(?: \+ 0x[0-9a-f]+)?\]$", x.op_str)), None)
+            dm = re.match(r"^qword ptr \[r8(?: \+ (0x[0-9a-f]+))?\]$", dcall.op_str) if dcall else None
+            qm = re.match(r"^qword ptr \[r8(?: \+ (0x[0-9a-f]+))?\]$", qcall.op_str) if qcall else None
+            if dm and qm:
+                got = {"create": int(i.op_str, 16) - im.ib, "potential": int(pot.group(1), 16) // 8,
+                       "delete": int(dm.group(1) or "0", 16) // 8, "possible": int(qm.group(1) or "0", 16) // 8}
+                break
+        if got:
+            break
+    if not got:
+        failures.append("diplomatic actions: NDiplomacyUtil::CreateDiplomaticAction / CDiplomaticAction slots")
+    else:
+        result["functions"]["NDiplomacyUtil_CreateDiplomaticAction"] = {
+            "rva": got["create"], "linux": "NDiplomacyUtil::CreateDiplomaticAction(CDiplomaticActionType const*, CCountry const*, CCountry const*)",
+            "signature": "void* (*)(const void* action_type, const void* actor_country, const void* recipient_country)  -- a new CDiplomaticAction, or null"}
+        result["slots"]["CDiplomaticAction_IsPotential"] = got["potential"]
+        result["slots"]["CDiplomaticAction_Delete"] = got["delete"]
+        result["slots"]["CDiplomaticAction_IsPossible"] = got["possible"]
+        print("diplomatic actions:", {k: hex(v) for k, v in got.items()})
+
     # New game. The galaxy setup's pickers write the single-player galaxy settings in CSettings
     # (SGalaxyConfigSettingsSP at galaxy_config_sp) and LaunchNewGame reads them from there, so
     # CSettings::_pInstance is the global loaded right before `lea r, [reg + galaxy_config_sp]`.
@@ -1865,7 +1909,19 @@ def main():
                 linux_names = json.loads((HERE / "linux_tokens.json").read_text(encoding="utf-8"))["tokens"]
                 if lim and base:
                     enums["Scaling"] = [linux_names.get(hex(int(base.group(1), 16) + k), "") for k in range(int(lim.group(1)))]
-    if set(enums) != {"Difficulty", "Aggressiveness", "CrisisType", "TechScaling", "Scaling"}:
+    # EEnvoyAssignment (a leader location's sub-kind for envoys), by the script tokens
+    # TokenToEnum<EEnvoyAssignment> reads: `if (iVar1 == TOKEN) { return N; }`
+    if src.exists():
+        s = mm.find(b"\n/* EEnvoyAssignment TokenToEnum<EEnvoyAssignment>")
+        if s >= 0:
+            body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
+            linux_names = json.loads((HERE / "linux_tokens.json").read_text(encoding="utf-8"))["tokens"]
+            vals = {}
+            for tok, n in re.findall(r"iVar1 == (0x[0-9a-f]+)\)\)? \{\s*return (\d+);", body):
+                vals.setdefault(int(n), linux_names.get(tok, ""))
+            if vals and sorted(vals) == list(range(len(vals))) and all(vals.values()):
+                enums["EnvoyAssignment"] = [vals[k] for k in range(len(vals))]
+    if set(enums) != {"Difficulty", "Aggressiveness", "CrisisType", "TechScaling", "Scaling", "EnvoyAssignment"}:
         failures.append(f"galaxy settings enums: {sorted(enums)}")
     result["enums"] = enums
     print("galaxy settings enums:", enums)

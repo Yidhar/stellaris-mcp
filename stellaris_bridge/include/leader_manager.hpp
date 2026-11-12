@@ -36,9 +36,11 @@ struct HiredLeaderDetail {
     uint32_t age{ 0 };
     std::string ethic_key;
     std::string ethic_name;
-    uint8_t assignment_type{ 0 };
-    std::string assignment_type_name;
-    uint32_t assignment_target{ 0 };
+    uint8_t assignment_type{ 0 };          // CLeader::location: CLeaderLocation::ELocationType
+    std::string assignment_type_name;      // its slot name (governor, ship, army, ...)
+    std::string assignment_name;           // the game's name of that location type
+    uint32_t assignment_target{ 0xFFFFFFFF };
+    uint32_t council_position{ 0xFFFFFFFF };  // CLeader::council_location: the CCouncilPosition held
     uint32_t hire_date{ 0 };
     std::vector<LeaderTraitDetail> traits;
     bool has_unspent_trait_points{ false };
@@ -80,7 +82,15 @@ public:
     // Layer 3: Action commands
     nlohmann::json HireLeader(uint32_t candidate_id);
     nlohmann::json DismissLeader(uint32_t leader_id);
-    nlohmann::json AssignLeader(uint32_t leader_id, uint8_t assignment_type, uint32_t target_id);
+    // Where a leader can serve now (Layer 2): the player's colonies (governor), fleets (ship: a
+    // fleet, a science or construction ship), armies and council positions, each checked with the
+    // game's own CAssignLeaderCommand::IsValid; refused ones are counted by the game's reason
+    // (council positions are listed with theirs)
+    nlohmann::json GetAssignmentsJson(uint32_t leader_id);
+    // CAssignLeaderCommand to a slot: governor (planet id), ship (fleet id), army (army id),
+    // council (council position id), envoy (task: an EEnvoyAssignment name; target_id: the
+    // country for tasks toward an empire)
+    nlohmann::json AssignLeader(uint32_t leader_id, const std::string& slot, uint32_t target_id, const std::string& task = "");
     // Picks one of the traits the engine currently offers this leader (level-up selection).
     nlohmann::json SelectTrait(uint32_t leader_id, const std::string& trait_key);
 

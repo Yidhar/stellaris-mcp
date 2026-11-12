@@ -55,6 +55,19 @@ def classify(fn, targ, args):
     return "other", None
 
 
+# `local_48 = pCVar1;`: a local (the CPersistent wrapper's member) set from another variable
+WRAPPED_VAR = re.compile(r"\blocal_\w+\s*=\s*(\w+)\s*;")
+
+
+def last_alias(text, var, upto):
+    """The this-offset `var` was last assigned (`var = (T *)(this + X);`) before position upto."""
+    off = None
+    for m in LOCAL_ALIAS.finditer(text, 0, upto):
+        if m.group("var") == var:
+            off = int(m.group("off"), 0)
+    return off
+
+
 def parse_body(body):
     text = " ".join(l.strip() for l in body)
     aliases = {}
@@ -73,8 +86,16 @@ def parse_body(body):
         if not offs:
             # Value built from context: `if (this[0x74]) Write(tok, true)`,
             # `local_28 = this + 0x898; Write(tok, (CPersistent*)&local_38)`, ...
-            ctx = [int(a or b, 0) for a, b in THIS_OFF.findall(text[seg_start:m.start()])]
-            if ctx:
+            seg = text[seg_start:m.start()]
+            # a wrapper filled from a variable (`local_48 = pCVar1;`): that variable's last
+            # `pCVar1 = (T *)(this + X)` before the call, not whatever this-offset the code
+            # between happens to read last (`if (..) iVar6 = *(int *)(this + 0xf8); else {..}`)
+            via = [v for v in WRAPPED_VAR.findall(seg) if v.startswith("p")]
+            aliased = [a for a in (last_alias(text, v, m.start()) for v in via) if a is not None]
+            ctx = [int(a or b, 0) for a, b in THIS_OFF.findall(seg)]
+            if aliased:
+                offs, source = [aliased[-1]], "context"
+            elif ctx:
                 offs, source = [ctx[-1]], "context"
         seg_start = m.end()
         kind, ref = classify(fn, targ, args)

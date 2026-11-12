@@ -366,6 +366,7 @@ FullGovernmentState GovernmentManager::GetGovernmentState() {
                 }
                 CouncilSeatDetail seat{};
                 seat.seat_index = (uint32_t)state.seats.size();
+                SafeReadU32((const void*)((uintptr_t)pos + sdk::rt::CCouncilPosition_id), &seat.position_id);
                 void* type = nullptr;
                 if (SafeReadPtr((const void*)((uintptr_t)pos + P::type), &type) && type) {
                     SafeReadPdxString((const void*)((uintptr_t)type + 0x20), seat.position_key);
@@ -401,6 +402,7 @@ nlohmann::json GovernmentManager::GetGovernmentJson() {
     for (const auto& seat : s.seats) {
         nlohmann::json sj = {
             {"seat_index", seat.seat_index},
+            {"position_id", seat.position_id},
             {"position_key", seat.position_key},
             {"position_name", seat.position_name},
             {"is_ruler", seat.is_ruler},

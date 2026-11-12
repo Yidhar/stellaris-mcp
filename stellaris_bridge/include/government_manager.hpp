@@ -25,6 +25,7 @@ struct LeaderDetail {
 
 struct CouncilSeatDetail {
     uint32_t seat_index{ 0 };
+    uint32_t position_id{ 0xFFFFFFFF };  // the CCouncilPosition (stellaris_assign_leader slot council)
     std::string position_key;
     std::string position_name;
     bool is_ruler{ false };
