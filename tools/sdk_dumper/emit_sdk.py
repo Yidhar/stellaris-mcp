@@ -278,7 +278,10 @@ def main():
         print(f"glob 0x{globs[sym]['rva']:X}: {claimed[globs[sym]['rva']]} (anchor) replaces {sym} (vote)")
         del globs[sym]
     for sym, a in anchors.get("globals", {}).items():
-        # derived from located code (anchors.py), not voted from commands
+        # derived from located code (anchors.py), not voted from commands: it also corrects a vote under the same name
+        if sym in globs and globs[sym]["rva"] != a:
+            print(f"glob {sym}: 0x{a:X} (anchor) replaces 0x{globs[sym]['rva']:X} (vote)")
+            del globs[sym]
         globs.setdefault(sym, {"rva": a, "score": "anchor", "live": "anchor"})
     if globs:
         w("// ============================== globals ===============================")

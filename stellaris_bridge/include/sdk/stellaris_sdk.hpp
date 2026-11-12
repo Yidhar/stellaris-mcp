@@ -289,7 +289,7 @@ namespace glob {
     inline constexpr uintptr_t g_AllowGlobalGameStateAccess = 0x311BE88;  // g_AllowGlobalGameStateAccess  score=0.933 live=not-checked
     inline constexpr uintptr_t g_CurrentFrontEndIdler = 0x311BF28;  // g_CurrentFrontEndIdler  score=0.778 live=not-checked
     inline constexpr uintptr_t g_CurrentGameState = 0x311B708;  // g_CurrentGameState  score=0.771 live=not-checked
-    inline constexpr uintptr_t g_CurrentIdler = 0x315E848;  // g_CurrentIdler  score=0.6 live=not-checked
+    inline constexpr uintptr_t g_CurrentIdler = 0x311BF18;  // g_CurrentIdler  score=anchor live=anchor
     inline constexpr uintptr_t g_CurrentInGameIdler = 0x311BF10;  // g_CurrentInGameIdler  score=0.791 live=not-checked
     inline constexpr uintptr_t g_QuickStartSave = 0x281B260;  // g_QuickStartSave  score=anchor live=anchor
     inline constexpr uintptr_t g_bFrameSmoothing = 0x280E838;  // g_bFrameSmoothing  score=anchor live=anchor
@@ -420,13 +420,17 @@ namespace rt {
     inline constexpr std::ptrdiff_t CFleetTemplate_id = 0x8;
     inline constexpr std::ptrdiff_t CFleet_coordinate_base = 0x38;
     inline constexpr std::ptrdiff_t CFleet_id = 0x30;
+    inline constexpr std::ptrdiff_t CFleet_selectable = 0x18;
     inline constexpr std::ptrdiff_t CFrontEndIdler_launch = 0x218;
     inline constexpr std::ptrdiff_t CGalacticObject_id = 0x8;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1370;
+    inline constexpr std::ptrdiff_t CGameIdler_gui = 0xF0;
+    inline constexpr std::ptrdiff_t CGameIdler_input = 0xF8;
     inline constexpr std::ptrdiff_t CGameIdler_is_multiplayer = 0x180;
     inline constexpr std::ptrdiff_t CGameState_date_hours = 0xC0;
     inline constexpr std::ptrdiff_t CGoMIACommand_mia_type = 0x38;
     inline constexpr std::ptrdiff_t CGroundCombat_id = 0x10;
+    inline constexpr std::ptrdiff_t CGui_hovered_object = 0x180;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_dynamic_size = 0x248;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_flag = 0x220;
     inline constexpr std::ptrdiff_t CHasFlagTrigger_vt_GetFlags = 0xF0;
@@ -534,6 +538,10 @@ namespace rt {
     inline constexpr std::ptrdiff_t CStaticLexer_wanted = 0x80;
     inline constexpr std::ptrdiff_t CStrikeCraft_id = 0x8;
     inline constexpr std::ptrdiff_t CString_text = 0x10;
+    inline constexpr std::ptrdiff_t CToolTip_size = 0xD0;
+    inline constexpr std::ptrdiff_t CToolTip_state = 0xC0;
+    inline constexpr std::ptrdiff_t CToolTip_string_count = 0x4;
+    inline constexpr std::ptrdiff_t CToolTip_strings = 0x0;
     inline constexpr std::ptrdiff_t CTradeDeal_id = 0x10;
     inline constexpr std::ptrdiff_t CTraitDatabase_traits = 0x10;
     inline constexpr std::ptrdiff_t CTraitSet_traits_count = 0x1C;
@@ -573,6 +581,11 @@ namespace rt {
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_technology = 0xB8;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_traditions = 0xC0;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_voidworms_scaling = 0x160;
+    inline constexpr std::ptrdiff_t TPdxRefDatabase_capacity = 0x20;
+    inline constexpr std::ptrdiff_t TPdxRefDatabase_slot_object = 0x8;
+    inline constexpr std::ptrdiff_t TPdxRefDatabase_slot_size = 0x10;
+    inline constexpr std::ptrdiff_t TPdxRefDatabase_slots = 0x18;
+    inline constexpr std::ptrdiff_t TPdxRef_index_mask = 0xFFFFFF;
     inline constexpr std::ptrdiff_t Token_buildable_colony_ship = 0x3DFD;
     inline constexpr std::ptrdiff_t Token_buildable_federation_ship = 0x3DFC;
     inline constexpr std::ptrdiff_t Token_buildable_galactic_community_ship = 0x3EC7;
@@ -613,7 +626,10 @@ namespace vt {
     inline constexpr int CFile_WriteCStr = 6;
     inline constexpr int CFile_WriteData = 9;
     inline constexpr int CFleet_GetCoordinate = 1;
+    inline constexpr int CGameIdler_BuildToolTip = 32;
+    inline constexpr int CGuiObject_GetToolTipHandler = 69;
     inline constexpr int CGuiView_Hide = 7;
+    inline constexpr int CInput_GetMousePosition = 25;
     inline constexpr int CModifierNodeCalc_Call = 2;
     inline constexpr int CPdxModifierName_CalcHash = 5;
     inline constexpr int CShipDesignImplementation_Destroy = 0;
@@ -733,14 +749,20 @@ namespace fn {
     inline constexpr uintptr_t CEvent_GetTitle = 0x8E7560;
     // CFile::Write(char const*) (vtable slot 6: strlen, then WriteData)  --  void (*)(void* file, const char* s)
     inline constexpr uintptr_t CFile_WriteCStr = 0x1B50860;
+    // CFleetActionUpgradeButton::IsValid(CString*) const  --  bool (*)(const void* button, void* reason)
+    inline constexpr uintptr_t CFleetActionUpgradeButton_IsValid = 0x1576880;
     // CFleetManagerTemplateGridController::Update(CPdxArray<TPdxRef<CFleetTemplate>> const&, CContainerWindow*, CStandardGridBox*)  --  int (*)(void* controller, const void* templates, void* window, void* grid)
     inline constexpr uintptr_t CFleetManagerTemplateGridController_Update = 0x14A6230;
     // CFleetManagerView::Update()  --  void (*)(void* view)
     inline constexpr uintptr_t CFleetManagerView_Update = 0x11321C0;
+    // CFleetMovementManager::CalcCanMoveTo(CGalacticObject const*, CAICacheHelper*, CString*) const  --  bool (*)(const void* movement_manager, const void* system, void* ai_cache, void* reason)
+    inline constexpr uintptr_t CFleetMovementManager_CalcCanMoveTo = 0xE33920;
     // CFleetPath::CalcEstimatedDays(CFleet const*, CFixedPoint*) const  --  int64_t* (*)(const void* path, int64_t* out_days, const void* fleet, int64_t* per_node)
     inline constexpr uintptr_t CFleetPath_CalcEstimatedDays = 0xE29160;
     // CFleetPath::Create(CCelestialCoordinate const&, CCelestialCoordinate const&, CGalacticObject const*, CFleet const*, CSimpleBitMask<EPathFindSettings>)  --  void (*)(void* path, const void* from, const void* to, const void* avoid, const void* fleet, uint32_t settings)
     inline constexpr uintptr_t CFleetPath_Create = 0xE299B0;
+    // CFleetViewEntry::OnUpdate() (no body in the Linux decompile)  --  void (*)(void* entry)
+    inline constexpr uintptr_t CFleetViewEntry_OnUpdate = 0x1268CB0;
     // CFleet::BuildOrdersString(bool, bool) const  --  void* (*)(const void* fleet, void* out_cstring, bool, bool)
     inline constexpr uintptr_t CFleet_BuildOrdersString = 0xC7B960;
     // CFleet::CalcMilitaryPower(int) const  --  int64_t* (*)(const void* fleet, int64_t* out, int type, bool flag)
@@ -749,6 +771,8 @@ namespace fn {
     inline constexpr uintptr_t CFleet_PathFindSettingsFlag = 0xC8D780;
     // CFrontEndIdler::LaunchGame()  --  void (*)(void* front_end_idler)  -- the start button: StartNewGame on the next update
     inline constexpr uintptr_t CFrontEndIdler_LaunchGame = 0x8BE530;
+    // CGalacticObjectMapIcon::UpdateHoverIndicator(SGalacticObjectMapIconUpdateData const&)  --  void (*)(void* icon, const void* update_data)
+    inline constexpr uintptr_t CGalacticObjectMapIcon_UpdateHoverIndicator = 0x162A3E0;
     // CGalacticObject::CalcFTLPointWith(CCelestialCoordinate const&) const  --  void* (*)(const void* system, void* out_coordinate, const void* toward)
     inline constexpr uintptr_t CGalacticObject_CalcFTLPointWith = 0x86FE10;
     // CGalacticObject::GetClaimsBy(CCountry const*) const  --  void* (*)(const void* system, void* out_claim, const void* country)
@@ -787,12 +811,16 @@ namespace fn {
     inline constexpr uintptr_t CInGameIdler_DoResign = 0x937EB0;
     // CInGameIdler::SaveGame(CString const&, bool, bool)  --  int (*)(void* in_game_idler, const void* name_cstring, bool cloud, bool overwrite)
     inline constexpr uintptr_t CInGameIdler_SaveGame = 0x937820;
+    // CInGameIdler::Select(CSelectable const*)  --  void (*)(void* idler, const void* selectable)
+    inline constexpr uintptr_t CInGameIdler_Select = 0x927920;
     // CInGameIdler::SetGameSpeed(int)  --  void (*)(void* idler, int speed)
     inline constexpr uintptr_t CInGameIdler_SetGameSpeed = 0x938230;
     // CInGameIdler::SetPaused(SPauseGameSettings const&)  --  void (*)(void* idler, const void* settings)
     inline constexpr uintptr_t CInGameIdler_SetPaused = 0x938920;
     // CInGameIdler::Update()  --  void (*)(void* in_game_idler)
     inline constexpr uintptr_t CInGameIdler_Update = 0x92C980;
+    // CInGameIdler::UpdateCursor()  --  void (*)(void* idler)
+    inline constexpr uintptr_t CInGameIdler_UpdateCursor = 0x92B6F0;
     // CInGameIdler virtual after Update: `mov rcx, [this + save_manager]; jmp CSaveGameTaskManager::Update`  --  void (*)(void* in_game_idler)
     inline constexpr uintptr_t CInGameIdler_UpdateSaveGame = 0x92C6B0;
     // CIsMultiplayerTrigger::ActualEvaluate(CEventScope&) const  --  bool (*)(const void* scope)
@@ -917,6 +945,8 @@ namespace fn {
     inline constexpr uintptr_t CString_Assign = 0x15BC40;
     // CString::~CString() (frees the heap buffer, back to an empty inline string)  --  void (*)(void* cstring)
     inline constexpr uintptr_t CString_Free = 0x15BDE0;
+    // CTooltipManager::Update()  --  void (*)(void* manager)
+    inline constexpr uintptr_t CTooltipManager_Update = 0x1015E10;
     // CTraitSet::SetTraits(CPdxArray<CSpeciesTrait const*, int> const&)  --  void (*)(void* trait_set, const void* traits_array)
     inline constexpr uintptr_t CTraitSet_SetTraits = 0x3DD1E0;
     // CTrait::GetCost(CCountry const*) const  --  int (*)(const void* trait, const void* country)
@@ -955,6 +985,8 @@ namespace fn {
     inline constexpr uintptr_t NDiplomacyUtil_CreateDiplomaticAction = 0xABC5B0;
     // NEventWindowUtil::GetEventWindowDesc(CEvent const&, CEventScope const&)  --  void* (*)(void* out_cstring, void* event, void* scope)
     inline constexpr uintptr_t NEventWindowUtil_GetEventWindowDesc = 0x107F6D0;
+    // NFleetUtil::CanAffordUpgrade(CFleet const&, CString*)  --  bool (*)(const void* fleet, void* reason)
+    inline constexpr uintptr_t NFleetUtil_CanAffordUpgrade = 0xE6A2B0;
     // NHabitability::CalcHabitability(CSpecies const&, CColonyCarrier const&, CCountry const&, CPlanetClass const&, CPopGroup const*, CModifier const*)  --  int64_t* (*)(int64_t* out, const void* species, const void* carrier, const void* country, const void* planet_class, const void* pop_group, const void* modifier)
     inline constexpr uintptr_t NHabitability_CalcHabitability = 0xA26DE0;
     // NPlanetJobs::AssignPopsToJobs(SPopJobAssignmentUpdateData&)  --  void (*)(void* data)
@@ -1011,8 +1043,18 @@ namespace site {
     inline constexpr uintptr_t CCountry_InvalidateModifier_InvalidateChildren = 0x23EEA7;
     // the InvalidateChildren call of the relay node's InvalidateModifier  --  call CModifierNodeBase_InvalidateChildren
     inline constexpr uintptr_t CCountry_InvalidateRelayNetworkModifier_InvalidateChildren = 0x578966;
+    // the NFleetUtil::CanAffordUpgrade call inside CFleetActionUpgradeButton::IsValid (the GUI's, not the command's)  --  call NFleetUtil_CanAffordUpgrade
+    inline constexpr uintptr_t CFleetActionUpgradeButton_IsValid_CanAffordUpgrade = 0x1576BF1;
+    // the CalcCanMoveTo call inside CGalacticObjectMapIcon::UpdateHoverIndicator (only the indicator depends on it)  --  call CFleetMovementManager_CalcCanMoveTo
+    inline constexpr uintptr_t CGalacticObjectMapIcon_UpdateHoverIndicator_CalcCanMoveTo = 0x162AA43;
+    // the CalcCanMoveTo call inside CInGameIdler::UpdateCursor (no cache, no reason: only the cursor depends on it)  --  call CFleetMovementManager_CalcCanMoveTo
+    inline constexpr uintptr_t CInGameIdler_UpdateCursor_CalcCanMoveTo = 0x92B9A3;
     // the AddInvalid call inside CModifierNodeBase::Invalidate (its return address marks a cascaded invalidation)  --  call CModifierNodeManager_AddInvalid
     inline constexpr uintptr_t CModifierNodeBase_Invalidate_AddInvalid = 0x23965E;
+    // the idler's BuildToolTip(CGuiObject*, CToolTip&) (virtual) called by CTooltipManager::Update  --  call qword ptr [rax + sdk::vt::CGameIdler_BuildToolTip * 8]
+    inline constexpr uintptr_t CTooltipManager_Update_BuildToolTip = 0x1016106;
+    // the hovered object's tooltip handler getter (a CGuiObject virtual) called by CTooltipManager::Update  --  call qword ptr [rax + sdk::vt::CGuiObject_GetToolTipHandler * 8]
+    inline constexpr uintptr_t CTooltipManager_Update_GetHandler = 0x1016096;
     // the first pop-job pass of the daily (cheat-mode) variant  --  call NPlanetJobs_UpdatePopJobs
     inline constexpr uintptr_t NColonyUpdate_DailyUpdatePopJobs_UpdatePopJobs_0 = 0xE4730E;
     // the second pop-job pass of the daily (cheat-mode) variant  --  call NPlanetJobs_UpdatePopJobs

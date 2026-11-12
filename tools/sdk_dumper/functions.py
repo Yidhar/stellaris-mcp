@@ -12,7 +12,7 @@ instead of guessing. Rule kinds (one per entry):
     `identical_ok` accepts byte-identical linker copies, `follow_call` returns the first (or "last")
     call instead. Needles and prefilters may use ${Name} (a located function's absolute address)
     and ${ent:Class::field} (an entity offset from sdk.json). `filters` (below) narrow the matches.
-  * strings (+ require): the function referencing every given C string.
+  * strings (+ require, + filters): the function referencing every given C string.
   * mnemonics + min_rdata_refs: the first mnemonics of a function referenced that often from .rdata.
   * call_near: the call next to an anchor inside the function that references the given strings.
   * call_in: the call next to an anchor inside a located function ("from"; "helper:<name>" names a
@@ -33,7 +33,10 @@ instead of guessing. Rule kinds (one per entry):
   * node_invalidator: the small InvalidateModifier-shaped function working on the node whose offset
     a located function uses before its own InvalidateChildren call.
   * site: the index-th call instruction to a located target inside a located function (emitted in
-    sdk::site, not sdk::fn; a return address is the site + 5).
+    sdk::site, not sdk::fn; a return address is the site + 5). With `indirect` instead of `target`: the
+    one virtual call (`call qword ptr [...]`, at least `min_size` bytes long) whose surroundings match
+    that regex, written as the `before` instructions ahead of it, " @ ", then the call and the `after`
+    instructions behind it (each list joined by " | ").
 
 Filters: exclude, min_instr / max_instr, calls ({name: exact count} or [names] each called at least
 once), calls_total, calls_distinct, called_from, min_callers / max_callers, min_lea_refs,
@@ -1125,6 +1128,112 @@ FUNCTIONS = {
         "signature": "void (*)(void* gui, void* input, void*, void*)",
         "common_callee": {"of": ["CGameIdler_Idle", "Application_Update_OtherCaller"], "exclude": ["Application_Update"], "min_instr": 300},
     },
+    # --- the tooltip manager (once a frame from CGameIdler::Idle), the fleet window, the selection
+    "CTooltipManager_Update": {
+        "linux": "CTooltipManager::Update()",
+        # rcx = manager. Resets its static CToolTip, asks the hovered GUI object's tooltip handler for the content
+        # (slot 0 of the handler, then both texts trimmed) and, when that has none, the idler; the rest compares the
+        # text with the shown tooltip window's, runs the hover timers and places the window
+        "signature": "void (*)(void* manager)",
+        "callee_of": {"from": "CGameIdler_Idle",
+                      "require": [r"call qword ptr \[rax\] \| test al, al \| je 0x[0-9a-f]+ \| lea rcx, \[rip \+ 0x[0-9a-f]+\] \| call 0x[0-9a-f]+ \| "
+                                  r"lea rcx, \[rip \+ 0x[0-9a-f]+\] \| call 0x[0-9a-f]+ \| jmp "]},
+    },
+    "CTooltipManager_Update_GetHandler": {
+        "linux": "the hovered object's tooltip handler getter (a CGuiObject virtual) called by CTooltipManager::Update",
+        # rcx = the hovered CGuiObject, rax = its vtable. The handler it returns is used once, a few instructions
+        # later and only when it is not null: `call qword ptr [rax]`, GetToolTip(handler, object, the static CToolTip)
+        "signature": "call qword ptr [rax + sdk::vt::CGuiObject_GetToolTipHandler * 8]",
+        "site": {"in": "CTooltipManager_Update", "min_size": 5, "after": 18,
+                 "indirect": r" @ call qword ptr \[rax \+ 0x[0-9a-f]+\] \| mov rcx, rax \| (?:(?!call |mov rcx|lea rcx)[^|]+ \| )*?"
+                             r"test rcx, rcx \| je 0x[0-9a-f]+ \| mov rax, qword ptr \[rcx\] \| lea r8, \[rip \+ 0x[0-9a-f]+\] \| "
+                             r"mov rdx, r\d+ \| call qword ptr \[rax\] \| test al, al"},
+    },
+    "CTooltipManager_Update_BuildToolTip": {
+        "linux": "the idler's BuildToolTip(CGuiObject*, CToolTip&) (virtual) called by CTooltipManager::Update",
+        # rcx = g_CurrentIdler, rdx = the hovered object or null, r8 = the static CToolTip; al = there is a tooltip.
+        # Reached when the object has no handler or the handler has no tooltip (the map and what lies on it)
+        "signature": "call qword ptr [rax + sdk::vt::CGameIdler_BuildToolTip * 8]",
+        "site": {"in": "CTooltipManager_Update", "min_size": 5, "before": 4, "after": 2,
+                 "indirect": r"mov rcx, qword ptr \[rip \+ 0x[0-9a-f]+\] \| mov rax, qword ptr \[rcx\] \| "
+                             r"lea r8, \[rip \+ 0x[0-9a-f]+\] \| mov rdx, r\d+ @ "
+                             r"call qword ptr \[rax \+ 0x[0-9a-f]+\] \| test al, al \| jne 0x[0-9a-f]+"},
+    },
+    "CFleetViewEntry_OnUpdate": {
+        "linux": "CFleetViewEntry::OnUpdate() (no body in the Linux decompile)",
+        # rcx = entry: one selected fleet's entry in the fleet window, every frame it is shown: the name, the power
+        # (CFleet::BuildFleetOffensivePowerString, every ship's stats from scratch), hull / armor / shields, cloaking,
+        # the orders and the ship list. CFleetViewEntry::GetToolTip shares the window's element names, not these
+        "signature": "void (*)(void* entry)",
+        "strings": ["GFX_armada_command_button_none", "fleet_power", "growth_progress_bar"],
+    },
+    "CInGameIdler_Select": {
+        "linux": "CInGameIdler::Select(CSelectable const*)",
+        # rcx = idler, rdx = the object's CSelectable base (a fleet's is at sdk::rt::CFleet_selectable): what a click
+        # on the object does. An active fleet order or megastructure action takes it; otherwise it replaces the selection
+        "signature": "void (*)(void* idler, const void* selectable)",
+        "pattern": [(r"^mov rsi, rdx$", ""), (r"^mov rbx, rcx$", ""), (r"^call 0x", ""), (r"^mov rcx, qword ptr \[rbx \+ 0x[0-9a-f]+\]$", ""),
+                    (r"^test al, al$", ""), (r"^mov edx, 1$", ""), (r"^call qword ptr \[rax\]$", ""),
+                    (r"^cmp byte ptr \[rip \+ 0x[0-9a-f]+\], dil$", ""), (r"^call qword ptr \[rax \+ 0x30\]$", ""),
+                    (r"^call qword ptr \[rax \+ 0x38\]$", "")],
+        "prefilter_bytes": [b"\x48\x8B\xF2\x48\x8B\xD9\xE8"],  # mov rsi, rdx; mov rbx, rcx; call
+        "window": 70,
+    },
+    # --- answers the GUI asks for again every frame
+    "NFleetUtil_CanAffordUpgrade": {
+        "linux": "NFleetUtil::CanAffordUpgrade(CFleet const&, CString*)",
+        # rcx = fleet, rdx = CString* reason or null: the upgrade cost of every ship of the fleet (CShip::CalcUpgradeCost:
+        # each component's resource tables) against the owner's treasury and income; the reason is the localized cost
+        # and income text. Called by the fleet window's upgrade button every frame and by the upgrade command's IsValid
+        "signature": "bool (*)(const void* fleet, void* reason)",
+        "strings": ["FLEET_UPGRADE_CANT_AFFORD_EVER_TOOLTIP", "MISSING_TREASURY"],
+    },
+    "CFleetActionUpgradeButton_IsValid": {
+        "linux": "CFleetActionUpgradeButton::IsValid(CString*) const",
+        # rcx = button, rdx = CString* reason: asked by the fleet window's action button update every frame
+        "signature": "bool (*)(const void* button, void* reason)",
+        "strings": ["SHIPS_NOT_UPGRADABLE"],
+    },
+    "CFleetActionUpgradeButton_IsValid_CanAffordUpgrade": {
+        "linux": "the NFleetUtil::CanAffordUpgrade call inside CFleetActionUpgradeButton::IsValid (the GUI's, not the command's)",
+        "signature": "call NFleetUtil_CanAffordUpgrade",
+        "site": {"in": "CFleetActionUpgradeButton_IsValid", "target": "NFleetUtil_CanAffordUpgrade", "index": 0, "count": 1},
+    },
+    "CFleetMovementManager_CalcCanMoveTo": {
+        "linux": "CFleetMovementManager::CalcCanMoveTo(CGalacticObject const*, CAICacheHelper*, CString*) const",
+        # rcx = the fleet's movement manager, rdx = the target system, r8 = the AI's path cache or null, r9 = CString*
+        # reason or null. Without a cache and unless the fleet's current path already reaches the system: a FindPath
+        # over the galaxy. Both CFleet::CalcCanMoveTo overloads are inlined into their callers on Windows
+        "signature": "bool (*)(const void* movement_manager, const void* system, void* ai_cache, void* reason)",
+        "strings": ["FLEET_NO_PATH_SYSTEM_LOCKED"],
+        "filters": {"min_callers": 20},
+    },
+    "CInGameIdler_UpdateCursor": {
+        "linux": "CInGameIdler::UpdateCursor()",
+        # rcx = idler: picks the mouse cursor every frame. With a fleet of the player selected and the mouse over a
+        # system in the galaxy view it asks CalcCanMoveTo for that system (the "can move" / "cannot" cursor)
+        "signature": "void (*)(void* idler)",
+        "caller_of": {"of": "CFleetMovementManager_CalcCanMoveTo", "called_from": "CInGameIdler_Update"},
+    },
+    "CInGameIdler_UpdateCursor_CalcCanMoveTo": {
+        "linux": "the CalcCanMoveTo call inside CInGameIdler::UpdateCursor (no cache, no reason: only the cursor depends on it)",
+        "signature": "call CFleetMovementManager_CalcCanMoveTo",
+        "site": {"in": "CInGameIdler_UpdateCursor", "target": "CFleetMovementManager_CalcCanMoveTo", "index": 0, "count": 1},
+    },
+    "CGalacticObjectMapIcon_UpdateHoverIndicator": {
+        "linux": "CGalacticObjectMapIcon::UpdateHoverIndicator(SGalacticObjectMapIconUpdateData const&)",
+        # the hovered system icon's indicator: CalcCanMoveTo for every selected mobile fleet, every icon update. Like
+        # UpdateCursor it tells the jump drive / astral jump orders (0x1a, 0x1b) apart by their type ids
+        "signature": "void (*)(void* icon, const void* update_data)",
+        "caller_of": {"of": "CFleetMovementManager_CalcCanMoveTo", "exclude": ["CInGameIdler_UpdateCursor"],
+                      "require": [r"(?:cmp|sub) e\w+, 0x1a(?: \||$)", r"(?:cmp|sub) e\w+, 0x1b(?: \||$)"]},
+    },
+    "CGalacticObjectMapIcon_UpdateHoverIndicator_CalcCanMoveTo": {
+        "linux": "the CalcCanMoveTo call inside CGalacticObjectMapIcon::UpdateHoverIndicator (only the indicator depends on it)",
+        "signature": "call CFleetMovementManager_CalcCanMoveTo",
+        "site": {"in": "CGalacticObjectMapIcon_UpdateHoverIndicator", "target": "CFleetMovementManager_CalcCanMoveTo", "index": 0,
+                 "count": 1},
+    },
     # --- the CRT's formatting (the save writer's number formatting goes through these)
     "CRT_sprintf": {
         "linux": "sprintf(char*, char const*, ...) (the UCRT inline: _vsprintf_l with the legacy null-termination option)",
@@ -1992,11 +2101,22 @@ def match_call_seq(im, spec, ctx):
 
 def match_site(im, spec, ctx):
     """The index-th call to a located target inside a located function (optionally exactly `count`
-    such calls)."""
+    such calls); with `indirect`, the virtual call whose surroundings match that regex."""
     st = spec["site"]
-    fn, target = resolve(st["in"], ctx), resolve(st["target"], ctx)
-    if fn is None or target is None:
-        raise KeyError(st["in"] if fn is None else st["target"])
+    fn = resolve(st["in"], ctx)
+    if fn is None:
+        raise KeyError(st["in"])
+    if "indirect" in st:
+        body = fn_body(im, fn)
+        text = [f"{i.mnemonic} {i.op_str}" for i in body]
+        rx = re.compile(subst(st["indirect"], ctx))
+        before, after = st.get("before", 0), st.get("after", 12)
+        return [i.address - im.ib for n, i in enumerate(body)
+                if i.mnemonic == "call" and i.op_str.startswith("qword ptr [") and i.size >= st.get("min_size", 0)
+                and rx.search(" | ".join(text[max(n - before, 0):n]) + " @ " + " | ".join(text[n:n + 1 + after]))]
+    target = resolve(st["target"], ctx)
+    if target is None:
+        raise KeyError(st["target"])
     sites = [s for s, t in fn_calls(im, fn) if t == target]
     if "count" in st and len(sites) != st["count"]:
         return []
@@ -2126,7 +2246,8 @@ def locate(im, spec, ctx):
     if "mnemonics" in spec:
         return match_by_mnemonics(im, spec)
     if "strings" in spec:
-        return match_by_strings(im, spec)
+        found = match_by_strings(im, spec)
+        return [f for f in found if passes(im, f, spec["filters"], ctx)] if spec.get("filters") else found
     if "vtable_call" in spec:
         return match_vtable_call(im, spec)
     if "call_near" in spec:

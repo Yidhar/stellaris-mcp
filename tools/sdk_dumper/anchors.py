@@ -332,7 +332,7 @@ def game_state_refs(im, linux, known):
     return out
 
 
-def perf_layouts(im, funcs, result, failures):
+def perf_layouts(im, funcs, globs, result, failures):
     """Layouts the stellaris-perf plugin reads or writes (D:\\stellaris-perf), each read out of the engine function
     that uses it, so that the plugin carries no offset, slot index or token id of its own:
 
@@ -357,6 +357,15 @@ def perf_layouts(im, funcs, result, failures):
       * CPopFaction::UpdateSupportAndApproval: `movups [faction + SUPPORT], xmm0; ...; mov [faction + APPROVAL], R`.
       * CScriptedRule::Evaluate: the rule's index and the index -> token table; the token table object;
         the console variable UseSavedRandom (`lea rdx, [the bool]; lea rcx, "UseSavedRandom"`).
+      * CTooltipManager::Update: the slots of its two provider calls (the hovered object's handler getter, the
+        idler's BuildToolTip) and the static CToolTip both fill; CToolTip::Clear, called on that object, ends each of
+        its strings and zeroes the state behind them, and the CString the update clears next gives its size.
+        The update loads the idler it works on (g_CurrentIdler), `[idler + GUI]` and that GUI's hovered object, and
+        asks `[idler + INPUT]` for the mouse position through a virtual.
+      * a fleet's CSelectable base: the handlers that look their fleet up by id in the fleet database (at CFleet_id)
+        and tail-jump to CInGameIdler::Select with `lea rdx, [fleet + BASE]`. That lookup is every reference
+        database's: `and eax, MASK; cmp eax, [db + CAPACITY]; ...; mov rax, [db + SLOTS]; add rcx, rcx;
+        mov rcx, [rax + rcx*8 + OBJECT]` (slots of 16 bytes).
     """
     D = r"(0x[0-9a-f]+|\d+)"  # a displacement or immediate as capstone prints it
 
@@ -674,6 +683,104 @@ def perf_layouts(im, funcs, result, failures):
         return ({"CScriptedRule_index": rule[0][0]}, {},
                 {"CScriptedRule_TokenByIndex": rule[0][1], "UseSavedRandom": one("the UseSavedRandom console variable", saved)})
 
+    def tooltip():
+        ins, o = ops(fn("CTooltipManager_Update"), 400, 0x1000)
+        at = {rva(im, i): n for n, i in enumerate(ins)}
+        a, b = at.get(fn("CTooltipManager_Update_GetHandler")), at.get(fn("CTooltipManager_Update_BuildToolTip"))
+        if a is None or b is None:
+            raise Fail("the provider calls are not among the update's first instructions")
+
+        def slot(n):
+            m = re.match(r"^call qword ptr \[rax \+ " + D + r"\]$", o[n])
+            if not m or num(m.group(1)) % 8 or ins[n].size < 5:
+                raise Fail(f"not a virtual call a 5-byte jump fits in: {o[n]}")
+            return num(m.group(1)) // 8
+
+        # the static CToolTip both providers fill: r8 of the handler's slot 0 and of the idler's call
+        tips = [rip_target(im, ins[k]) for k in list(range(a, min(a + 18, len(o)))) + list(range(max(b - 4, 0), b))
+                if o[k].startswith("lea r8, [rip + ")]
+        if len(tips) != 2:
+            raise Fail(f"the tooltip argument of the two provider calls: {[hex(t) for t in tips]}")
+        tip = one("the manager's static tooltip", tips)
+        # CToolTip::Clear is called on it when the update resets its holder; the CString cleared next starts where it ends
+        k = next((n for n in range(a) if o[n].startswith("lea rcx, [rip + ") and rip_target(im, ins[n]) == tip and target(ins[n + 1])), None)
+        if k is None:
+            raise Fail("no call on the static tooltip before the provider calls (CToolTip::Clear)")
+        text = result["fields"]["CString_text"]
+        nxt = next((rip_target(im, ins[n]) for n in range(k + 2, a) if o[n].startswith("lea rcx, [rip + ")), None)
+        if nxt is None:
+            raise Fail("no string cleared after the static tooltip")
+        size = nxt - text - tip
+        _, c = ops(target(ins[k + 1]), 40, 0x100)
+        if c[-1].split()[0] != "ret":
+            raise Fail(f"CToolTip::Clear is longer than expected: {len(c)} instructions")
+        q = [num(m.group(1)) for x in c for m in [re.match(r"^mov qword ptr \[rcx \+ " + D + r"\], rdx$", x)] if m]
+        w = [num(m.group(2)) + {"byte": 1, "word": 2, "dword": 4}[m.group(1)] for x in c
+             for m in [re.match(r"^mov (byte|word|dword) ptr \[rcx \+ " + D + r"\], " + D + r"$", x)] if m]
+        ends = sum(1 for x in c if x == "mov byte ptr [rax], dl")
+        if ends < 2 or len(q) != ends + 1 or not w:
+            raise Fail(f"CToolTip::Clear: {ends} strings ended, sizes / state stored at {[hex(v) for v in q]}, state ends {w}")
+        starts = [v - text - 0x10 for v in q[:ends]]  # a std::string's size follows its 16-byte buffer
+        stride = one("the tooltip's string stride", [y - x for x, y in zip(starts, starts[1:])])
+        if stride != result["fields"]["CStaticLexer_entry_size"] or q[ends] != starts[0] + ends * stride:
+            raise Fail(f"CToolTip::Clear: strings at {[hex(v) for v in starts]}, state at +0x{q[ends]:X}")
+        if not (q[ends] < max(w) <= size) or size - q[ends] > 0x40:
+            raise Fail(f"CToolTip: state +0x{q[ends]:X}..+0x{max(w):X}, size 0x{size:X}")
+        # the idler the update works on (g_CurrentIdler): its GUI, whose hovered object is the one asked about, and its
+        # input, whose position getter the update calls first
+        def at(rx, width, stop):
+            for n in range(stop):
+                m = re.match(rx, " | ".join(o[n:n + width]))
+                if m:
+                    return n, m
+            raise Fail(f"no `{rx}` in the update")
+
+        n1, m = at(r"^mov rax, qword ptr \[rip \+ " + D + r"\] \| mov (r\w+), qword ptr \[rax \+ " + D + r"\] \| "
+                   r"mov r\w+, qword ptr \[\2 \+ " + D + r"\] \| mov (r\w+), qword ptr \[\2 \+ " + D + r"\]$", 4, 40)
+        n2, g = at(r"^mov rax, qword ptr \[rip \+ " + D + r"\] \| mov rcx, qword ptr \[rax \+ " + D + r"\] \| mov rax, qword ptr \[rcx\] \| "
+                   r"lea rdx, \[rbp - " + D + r"\] \| call qword ptr \[rax \+ " + D + r"\]$", 5, a)
+        if o[a - 1] != f"mov rcx, {m.group(5)}" or num(g.group(4)) % 8 or not o[b - 4].startswith("mov rcx, qword ptr [rip + "):
+            raise Fail(f"the update's idler: hovered object in {m.group(5)}, getter slot {g.group(4)}, before the idler's call: {o[b - 4]}")
+        idler = one("the idler the tooltip update works on", [rip_target(im, ins[n1]), rip_target(im, ins[n2]), rip_target(im, ins[b - 4])])
+        return ({"CToolTip_strings": starts[0], "CToolTip_string_count": ends, "CToolTip_state": q[ends], "CToolTip_size": size,
+                 "CGameIdler_gui": num(m.group(3)), "CGui_hovered_object": num(m.group(6)), "CGameIdler_input": num(g.group(2))},
+                {"CGuiObject_GetToolTipHandler": slot(a), "CGameIdler_BuildToolTip": slot(b),
+                 "CInput_GetMousePosition": num(g.group(4)) // 8}, {"g_CurrentIdler": idler})
+
+    def selection():
+        sel = fn("CInGameIdler_Select")
+        db = globs.get("TPdxRef<CFleet>::_pDatabase", {}).get("rva")
+        if db is None:
+            raise Fail("TPdxRef<CFleet>::_pDatabase is not located")
+        pairs, lookups = set(), set()
+        for m in re.finditer(rb"\xe9", im.img[im.text0:im.text1]):
+            s = im.text0 + m.start()
+            if s + 5 + struct.unpack_from("<i", im.img, s + 1)[0] != sel:
+                continue
+            f = im.fn_of(s)
+            if f is None or s - f > 0x100:
+                continue
+            ins, o = ops(f, 60, 0x100)
+            if not ins or rva(im, ins[-1]) != s or not any(rip_target(im, i) == db for i in ins):
+                continue
+            ids = [num(x.group(1)) for y in o for x in [re.match(r"^cmp dword ptr \[rcx \+ " + D + r"\], r\d+d$", y)] if x]
+            bases = [num(x.group(1)) for y in o for x in [re.match(r"^lea rdx, \[rcx \+ " + D + r"\]$", y)] if x]
+            # the lookup by id: index = id & MASK, checked against the capacity, then slots[index] (16 bytes each)'s object
+            look = re.search(r"and e\w+, " + D + r" \| cmp e\w+, dword ptr \[(r\w+) \+ " + D + r"\] \| jae \w+ \| mov e\w+, e\w+ \| "
+                             r"mov (r\w+), qword ptr \[\2 \+ " + D + r"\] \| add (r\w+), \6 \| "
+                             r"mov r\w+, qword ptr \[\4 \+ \6\*8 \+ " + D + r"\]", " | ".join(o))
+            if len(ids) == 1 and len(bases) == 1 and look:
+                pairs.add((ids[0], bases[0]))
+                lookups.add((num(look.group(1)), num(look.group(3)), num(look.group(5)), num(look.group(7))))
+        if len(pairs) != 1 or len(lookups) != 1:
+            raise Fail(f"handlers that select their fleet: (id, CSelectable base) {sorted(pairs)}, lookups {sorted(lookups)}")
+        fleet_id, base = pairs.pop()
+        mask, capacity, slots, obj = lookups.pop()
+        if fleet_id != result["fields"].get("CFleet_id"):
+            raise Fail(f"the handlers compare the fleet's id at +0x{fleet_id:X}, CFleet_id is {result['fields'].get('CFleet_id')}")
+        return ({"CFleet_selectable": base, "TPdxRef_index_mask": mask, "TPdxRefDatabase_capacity": capacity,
+                 "TPdxRefDatabase_slots": slots, "TPdxRefDatabase_slot_size": 16, "TPdxRefDatabase_slot_object": obj}, {}, {})
+
     group("parallel-for descriptor, AI update slot", parallel_for)
     group("colony modifier node", colony)
     group("modifier node", nodes)
@@ -682,6 +789,8 @@ def perf_layouts(im, funcs, result, failures):
     group("save writer", writer)
     group("pop faction", faction)
     group("scripted rule, UseSavedRandom", misc)
+    group("tooltip manager", tooltip)
+    group("fleet selection", selection)
 
 
 def main():
@@ -2436,7 +2545,7 @@ def main():
         result["vtables"]["NSpeciesModification_SSpeciesColonyPair"] = pvt
         print(f"SSpeciesColonyPair vtable 0x{pvt:X}")
 
-    perf_layouts(im, funcs, result, failures)
+    perf_layouts(im, funcs, globs, result, failures)
 
     have = set(result["globals"]) | set(globs)
     failures += [f"{sym}: not located" for sym in REQUIRED if sym not in have]
