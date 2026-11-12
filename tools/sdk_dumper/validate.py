@@ -71,6 +71,18 @@ ADDRESS_TRUTH = {
         "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,
                    "ImGuiIO_ImeWindowHandle": 0x118, "ImGuiIO_BackendPlatformUserData": 0xE0},
     },
+    # Stellaris 4.5.4, the same way as 4.5.3: exercised in a running game by stellaris-guiexpand 0.1.2, not disassembled again. The ImGui layout
+    # constants are still the ones of 4.5.2.
+    0x6AF23393: {
+        "functions": {"ImGui_NewFrame": 0x1EA44F0, "NImGuiWrapper_ImGuiInit": 0x1B17A60, "CGameText_ProcessWithScope": 0x5ED640,
+                      "PostCommand": 0x5FCB90, "CInGameIdler_SetGameSpeed": 0x938230, "CInGameIdler_SetPaused": 0x938920,
+                      "CGameState_HandleTurnTick": 0x251780, "CConsole_RunCommandNow": 0x1B19AF0, "PdxLocalize": 0x16D490,
+                      "GetPlayerCountry": 0x14B30B0},
+        "globals": {"GImGui": 0x28E9D58, "GImAllocatorAllocFunc": 0x2804320, "GImAllocatorFreeFunc": 0x2804328,
+                    "GImAllocatorUserData": 0x28E9D68},
+        "fields": {"ImGuiContext_sizeof": 0x3F70, "ImGuiContext_io_MetricsActiveAllocations": 0x3B0,
+                   "ImGuiIO_ImeWindowHandle": 0x118, "ImGuiIO_BackendPlatformUserData": 0xE0},
+    },
 }
 
 

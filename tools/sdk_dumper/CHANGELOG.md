@@ -2,6 +2,16 @@
 
 每次改 `tools/sdk_dumper` 的规则（新增指纹、改启发式、改输出）都在这里记一笔：改了什么、为什么、怎么验证的、生成的头文件有什么变化。游戏补丁后单纯重新 dump 不用记。最新的在最上面。
 
+## 2026-11-12：4.5.4 的地址表（Stellaris 4.5.4，exe 时间戳 `0x6AF23393`）
+
+和 4.5.3 那次一样，规则没有改：所有指纹在新 exe 上各自唯一命中，`anchors.py` 全部找到，ImGui 的布局常量（`0x3F70`、`0x3B0`、`0x118`、`0xE0`）不变；宿主用到的 41 个符号只有 RVA 变了，没有字段偏移变化。
+`validate.py` 的 `ADDRESS_TRUTH` 加了 4.5.4 的一张表（同样 18 项），依据同样是 stellaris-guiexpand 0.1.2 在 4.5.4 的游戏里实际用过这些地址：引擎 ImGui 经两个钩子启动并绘制，快照和 4.5.2、4.5.3 一致（28 个殖民地、
+能量 60684.22），速度设为 4 后读回一致、取消暂停日期前进、暂停后日期不动，按钮 effect 走完「被拒绝 → 入队 → 再提交被拒绝（证明上一次已执行）」一圈，`[Root.GetName]` 求出国家名，控制台一行执行成功。
+`validate.py --addresses`：18 个全部吻合。
+
+主检出的 dump 仍然不含 ImGui 和作用域本地化的规则，stellaris-guiexpand 的 `tools/extract_sdk.py` 还得用本分支生成的头文件（做法见 4.5.3 那条的最后一段）。注意：把主检出的 `out/*.json` 拷进本分支的 `out/`
+会覆盖被 git 跟踪的 `out/linux_index.json`，拷完要 `git checkout` 恢复。
+
 ## 2026-11-05：4.5.3 的地址表（Stellaris 4.5.3，exe 时间戳 `0x6AE49C1B`）
 
 规则没有改：游戏更新后的单纯重新 dump，`functions.py` 里所有指纹（包括引擎自带 ImGui 的和 `CGameText_ProcessWithScope`）在新 exe 上各自唯一命中，`anchors.py` 也全部找到，`sdk::rt` 里
