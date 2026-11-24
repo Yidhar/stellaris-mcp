@@ -11,10 +11,11 @@ import sys
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent / "out" / "win_layouts.json"
-LINUX_TOKENS = Path(__file__).resolve().parent / "linux_tokens.json"
+# GROUND_TRUTH below is numbered as in the 4.5.1 exe; tokens_451.json maps those numbers to names.
+LINUX_TOKENS = Path(__file__).resolve().parent / "tokens_451.json"
 
-# serializer key -> {token: expected Windows offset}. Tokens are numbered as in the decompile
-# (linux_tokens.json); main() renumbers them to the installed exe by name, like win_extract.py.
+# serializer key -> {token: expected Windows offset}. Tokens are numbered as in the 4.5.1 exe
+# (tokens_451.json); main() renumbers them to the installed exe by name, like win_extract.py.
 GROUND_TRUTH = {
     # commands (engine factories + serializers, 4.5.1)
     "CResearchTechnologyCommand::WriteCommandMembers": {0x2c88: 0x20, 0x2d0d: 0x28},

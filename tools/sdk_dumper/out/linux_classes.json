@@ -17,7 +17,6 @@
   "CActivateRelicCommand",
   "CActiveReconnaissanceCommand",
   "CAddAutomationUnusableResourceCommand",
-  "CAddBuildableToQueueCommand",
   "CAddCountryControllerCommand",
   "CAddDesignToFleetTemplateCommand",
   "CAddEdictCommand",

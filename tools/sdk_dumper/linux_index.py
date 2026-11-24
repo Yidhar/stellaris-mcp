@@ -1,6 +1,6 @@
 """Stage 1: index serializer functions in the Linux (symbolized) Ghidra decompile.
 
-Streams source/stellaris_4.5_source.cpp once and extracts, for every
+Streams source/stellaris_4.6_source.cpp once and extracts, for every
     Class::WriteMembers(CWriter&) / Class::WriteCommandMembers(CWriter&)
 the ordered list of serialized fields:
     token (same numeric value on Windows), linux offset, value kind, ref type.
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "source" / "stellaris_4.5_source.cpp"
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "source" / "stellaris_4.6_source.cpp"
 OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "tools" / "sdk_dumper" / "out" / "linux_index.json"
 
 FUNC_COMMENT = re.compile(r"^/\* ([\w:<>, ]+?)::(WriteMembers|WriteCommandMembers)\(CWriter&\)(?: const)? \*/")
@@ -79,7 +79,10 @@ def parse_body(body):
     seg_start = 0
     for m in CALL.finditer(text):
         fn, targ, tok, args = m.group("fn"), m.group("targ"), int(m.group("tok"), 0), m.group("args")
-        if not fn.startswith(("CWriter::", "NParserUtil::")):
+        # 4.6.0's decompile (names ported from 4.5.2) leaves many writer template instantiations
+        # unnamed: `FUN_01866380(param_1, 0x3981, *(T *)(this + X), *(int *)(this + C))`
+        unnamed = re.fullmatch(r"FUN_[0-9a-f]+", fn) is not None
+        if not (fn.startswith(("CWriter::", "NParserUtil::")) or unnamed):
             continue
         offs = [int(a or b, 0) for a, b in THIS_OFF.findall(args)]
         source = "arg"
@@ -98,7 +101,10 @@ def parse_body(body):
             elif ctx:
                 offs, source = [ctx[-1]], "context"
         seg_start = m.end()
-        kind, ref = classify(fn, targ, args)
+        if unnamed:  # the value type is unknown: an array when a count is passed along
+            kind, ref = ("array" if re.search(r"\*\(u?int \*\)\s*\(this \+", args) else "writer"), None
+        else:
+            kind, ref = classify(fn, targ, args)
         if kind == "other" and args.strip() in ("true", "false"):
             kind = "bool_cond"
         fields.append({
@@ -136,6 +142,8 @@ def main():
                 m = ANY_FUNC.match(line)
                 if m:
                     fn_name = m.group(1)
+            elif line.startswith("// ============ "):
+                fn_name = None  # a function without a name header (FUN_...) follows
             elif fn_name:
                 if '"common/' in line:
                     for p in DB_PATH.findall(line):

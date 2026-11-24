@@ -18,7 +18,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUT = HERE / "out"
-SRC = ROOT / "source" / "stellaris_4.5_source.cpp"
+SRC = ROOT / "source" / "stellaris_4.6_source.cpp"
 
 wx = runpy.run_path(str(HERE / "win_extract.py"), run_name="sdk_globals")
 Image, EXE, X86_OP_MEM = wx["Image"], wx["EXE"], wx["X86_OP_MEM"]

@@ -65,9 +65,9 @@ FUNCTIONS = {
         "linux": "CCouncilAgenda::GetCost(CCountry const*, CString*) const",
         # MSVC: rcx = this, rdx = CFixedPoint* result, r8 = country, r9 = CString* reason
         "signature": "int64_t* (*)(void* agenda, int64_t* out_cost, void* country, void* reason)",
-        # empire size * 100000, then modifier scan for 0x13B (size base) and 0x13C (cost mult)
-        "pattern": [(r"^imul ", "0x186a0"), (r"^cmp ", "0x13b"), (r"^cmp ", "0x13c")],
-        "prefilter": [0x186A0, 0x13B, 0x13C],
+        # empire size * 100000, then modifier scan for 0x143 (size base) and 0x144 (cost mult)
+        "pattern": [(r"^imul ", "0x186a0"), (r"^cmp ", "0x143"), (r"^cmp ", "0x144")],
+        "prefilter": [0x186A0, 0x143, 0x144],
         "window": 60,
         # a GUI controller (a virtual, never called directly) inlines the same computation
         "filters": {"min_callers": 2},
@@ -95,10 +95,12 @@ FUNCTIONS = {
     },
     # --- perf hooks (bridge perf_tweaks): opinion and scripted game-rule memoization per tick
     "CGameState_HandleTurnTick": {
-        "linux": "CGameState::HandleTurnTick(CPdxArray<CCommand*, int>&)",
+        "linux": "CGameState::HandleTurnTick(CPdxArray<unsigned long long, int> const&)",
         # rcx = game state, rdx = commands of this turn
         "signature": "void (*)(void* game_state, void* commands)",
         "strings": ["It is a new day: "],
+        # 4.6.0: a four-argument logger with two callers also references the string; the tick has one
+        "filters": {"max_callers": 1},
     },
     "CCountry_CalcOurOpinionOfOtherNoScopeCopy": {
         "linux": "CCountry::CalcOurOpinionOfOtherNoScopeCopy(CCountry const*, CEventScope const&, CString*) const",
@@ -150,11 +152,11 @@ FUNCTIONS = {
                       "anchor": '"description_frame"', "pick": "last_call_before"},
     },
     "CEventOption_GetDescForOptionAtIndex": {
-        "linux": "CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<CEventOption const*> const&, int, CEffect const*, bool)",
+        "linux": "CEventOption::GetDescForOptionAtIndex(CEventScope const&, bool, CPdxArray<std::shared_ptr<CEventOption>, int> const&, int, CEffect const*, bool)",
         # the effect tooltip of one event option (CEvent::GetEffectDescription is inlined)
         "signature": "void* (*)(void* out_cstring, void* scope, bool, void* options_array, int index, void* effect, bool)",
         "call_near": {"strings": ["event_option_button", "coop_event_option_selected_by_other"],
-                      "anchor": r"lea r9, \[rax \+ 0x5e0\]", "pick": "first_call_after"},
+                      "anchor": r"lea r9, \[rax \+ 0x620\]", "pick": "first_call_after"},
     },
     "CEventWindow_PostEventOptionSelection": {
         "linux": "CEventWindow::PostEventOptionSelection(int)",
@@ -172,9 +174,9 @@ FUNCTIONS = {
         # 1 clearable blocker, 2 capital upgrade, 5 unemployment, 6 excess civilians,
         # 7 overcrowding, 10 low stability.
         "signature": "bool (*)(void* controller, int frame, void* colony, uint32_t country, int owner_type)",
-        # a 15-way jump table whose unemployment case tests colony flag bit 1 (+0x1088)
-        "pattern": [(r"^cmp edx", "0xe"), (r"^jmp", "rdx"), (r"^mov eax, dword ptr \[rdi", "0x1088]")],
-        "prefilter": [0x1088, 0xFD4],
+        # a 15-way jump table whose unemployment case tests colony flag bit 1 (+0x1210)
+        "pattern": [(r"^cmp edx", "0xe"), (r"^jmp", "rdx"), (r"^mov eax, dword ptr \[rdi", "0x1210]")],
+        "prefilter": [0x1210, 0x1158],
         "window": 40,
     },
     "PdxLocalize_OneParam": {
@@ -211,7 +213,7 @@ FUNCTIONS = {
         "signature": "int64_t* (*)(const void* army_type, int64_t* out, const void* modifier)",
         # CArmy::GetToolTip: after the has_morale test, a formatting call, then CalcMorale
         "call_near": {"strings": ["ARMY_MILITARY_POWER_TIP", "ARMY_NO_MORALE", "ARMY_NO_POP_LIMIT"],
-                      "anchor": r"cmp byte ptr \[rax \+ 0x355\], 0", "occurrence": 0,
+                      "anchor": r"cmp byte ptr \[rdi \+ 0x33d\], 0", "occurrence": 0,
                       "pick": "first_call_after", "skip": 1},
     },
     "CFleet_BuildOrdersString": {
@@ -223,10 +225,10 @@ FUNCTIONS = {
     },
     "CCountry_CalcTotalCivicPoints": {
         "linux": "CCountry::CalcTotalCivicPoints() const",
-        # rcx = country; GOVERNMENT_CIVIC_POINTS_BASE plus the country's civic points modifier (0x117)
+        # rcx = country; GOVERNMENT_CIVIC_POINTS_BASE plus the country's civic points modifier (0x11F)
         "signature": "int (*)(const void* country)",
-        "pattern": [(r"^cmp dword ptr", "0x117"), (r"^movabs", "0x29f16b11c6d1e109"), (r"^add edx, dword ptr \[rip", "]")],
-        "prefilter": [0x117],
+        "pattern": [(r"^cmp dword ptr", "0x11f"), (r"^movabs", "0x29f16b11c6d1e109"), (r"^add edx, dword ptr \[rip", "]")],
+        "prefilter": [0x11F],
         "window": 30,
     },
     "CCountry_CanChangeGovernment": {
@@ -238,12 +240,12 @@ FUNCTIONS = {
     },
     "CCountry_CalcGovernmentReformCost": {
         "linux": "CCountry::CalcGovernmentReformCost() const",
-        # rcx = country, rdx = CFixedPoint* out: 0 under game rule 0xD0, else
+        # rcx = country, rdx = CFixedPoint* out: 0 under game rule 0xD9, else
         # empire_size * GOVERNMENT_CHANGE_EMPIRE_SIZE_MULT (unity)
         "signature": "int64_t* (*)(const void* country, int64_t* out)",
-        "pattern": [(r"^mov edx", "0xd0"), (r"^call", ""), (r"^mov qword ptr \[rbx\], 0", "0"),
+        "pattern": [(r"^mov edx", "0xd9"), (r"^call", ""), (r"^mov qword ptr \[rbx\], 0", "0"),
                     (r"^movsxd rax, dword ptr \[rdi", "]"), (r"^imul rax, qword ptr \[rip", "]")],
-        "prefilter": [0xD0],
+        "prefilter": [0xD9],
         "window": 24,
     },
     "SEthicGovernmentConfiguration_ctor_country": {
@@ -273,8 +275,8 @@ FUNCTIONS = {
         # r9 = country, [rsp+0x28] = CString* reason (the civic's requirements, with trigger icons)
         "signature": "bool (*)(const void* civic, const void* config, uint16_t flags, const void* country, void* reason)",
         "pattern": [(r"^movzx esi, r8w", ""), (r"^mov r15, rdx", ""), (r"^mov rbp, rcx", ""),
-                    (r"^lea rcx, \[rbp \+ 0x210\]", "")],
-        "prefilter": [0x210],
+                    (r"^lea rcx, \[rbp \+ 0x248\]", "")],
+        "prefilter": [0x248],
         "window": 40,
     },
     "CStrategicResource_GetMaximumForCountry": {
@@ -364,9 +366,9 @@ FUNCTIONS = {
         # rcx = colony, rdx = zone, r8d = owner type (0 = the colony owner), r9 = country;
         # the zone's building slot count as the planet view shows it
         "signature": "int (*)(const void* colony, const void* zone, int owner_type, const void* country)",
-        "pattern": [(r"^mov rbp, rcx", ""), (r"^mov r14, r9", ""), (r"^mov rcx, qword ptr \[rcx \+ 0xf78\]", ""),
+        "pattern": [(r"^mov rbp, rcx", ""), (r"^mov r14, r9", ""), (r"^mov rcx, qword ptr \[rcx \+ 0x10f8\]", ""),
                     (r"^mov ebx, r8d", ""), (r"^mov rdi, rdx", ""), (r"^call", ""), (r"^sub r11d, 1", "")],
-        "prefilter": [0xF78],
+        "prefilter": [0x10F8],
         "window": 20,
     },
     "CFleetManagerView_Update": {
@@ -442,7 +444,7 @@ FUNCTIONS = {
         "signature": "void (*)(void* node)",
         "pattern": [(r"^cmp dword ptr \[rcx \+ 8\], -1$", ""), (r"^movzx eax, byte ptr \[rcx \+ 0x[0-9a-f]+\]$", ""),
                     (r"^lea rdi, \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^xchg byte ptr \[rbx \+ 0x[0-9a-f]+\], al$", ""),
-                    (r"^call qword ptr \[rax \+ 0x80\]$", "")],
+                    (r"^call qword ptr \[rax \+ 0x68\]$", "")],
         "prefilter": [0x108, 0x110, 0x150],
         "window": 30,
     },
@@ -612,8 +614,8 @@ FUNCTIONS = {
         # owner restrictions (what the designer lists as available)
         "signature": "bool (*)(const void* component, const void* country, uint32_t owner)",
         "pattern": [(r"^mov edi, r8d$", ""), (r"^mov rbx, rdx$", ""), (r"^mov r15, rcx$", ""),
-                    (r"^test byte ptr \[rcx \+ 0x10\], 1$", ""), (r"^lea rcx, \[rdx \+ 0x18\]$", "")],
-        "prefilter_bytes": [b"\xF6\x41\x10\x01"],  # test byte ptr [rcx + 0x10], 1
+                    (r"^test byte ptr \[rcx \+ 0x88\], 1$", ""), (r"^lea rcx, \[rdx \+ 0x18\]$", "")],
+        "prefilter_bytes": [b"\xF6\x81\x88\x00\x00\x00\x01"],  # test byte ptr [rcx + 0x88], 1
         "window": 20,
     },
     "CCreateOrUpdateShipDesignCommand_CtorCountry": {
@@ -783,7 +785,7 @@ FUNCTIONS = {
         "linux": "CEventWindow::Setup()",
         # rcx = event window; builds the window and its option buttons
         "signature": "void (*)(void* window)",
-        "strings": [" has no valid options!", "event_option_offset"],
+        "strings": ["Triggered Event %s has no valid options!", "event_option_offset"],
     },
     "CEventWindow_ForEachShownOption": {
         "linux": "(inlined into CEventWindow::Setup) the options shown: the matching exclusive one, else every potential one",
@@ -814,12 +816,13 @@ FUNCTIONS = {
     },
     "CEventOption_GetName": {
         "linux": "CEventOption::GetName(CEventScope const&) const",
-        # rcx = the option's name (option + sdk::rt::CEventOption_name), rdx = CString* out, r8 = scope;
-        # the button text
+        # rcx = the option's name (option + sdk::rt::CEventOption_name; 4.6.0 passes the option itself, so the
+        # offset is 0), rdx = CString* out, r8 = scope; the button text
         "signature": "void* (*)(const void* option_name, void* out_cstring, const void* scope)",
-        # the button builder's call after it addresses the option's name
-        "call_in": {"from": "CEventWindow_AddOptionButton", "anchor": r"^lea rcx, \[r\w+ \+ 0x[0-9a-f]{3,}\]$",
-                    "pick": "first_call_after"},
+        # the button builder's call after it addresses the window's scope (`add r8, S` on the captured window;
+        # 4.5 addressed the option's name with `lea rcx, [option + N]` instead)
+        "call_in": {"from": "CEventWindow_AddOptionButton", "anchor": r"^(lea rcx, \[r\w+ \+ 0x[0-9a-f]{3,}\]|add r8, 0x[0-9a-f]+)$",
+                    "occurrence": 0, "pick": "first_call_after"},
     },
     "CEventOption_IsAllowedSkipPotential": {
         "linux": "CEventOption::IsAllowedSkipPotential(CEventScope const&) const",
@@ -892,6 +895,20 @@ FUNCTIONS = {
         "call_in": {"command": "upgrade_megastructure_command", "slot": 9, "anchor": r"^mov r8d, 0x186a0$",
                     "pick": "first_call_after"},
     },
+    "CCountry_CanHireLeader": {
+        "linux": "CCountry::CanHireLeader(CLeader const*, CString*) const",
+        # rcx = country, rdx = leader (a pool candidate), r8 = CString* reason; costs the leader with
+        # CLeader_CalcCostTable and checks the country can pay (the only CANNOT_AFFORD_TO_HIRE user)
+        "signature": "bool (*)(const void* country, const void* leader, void* reason)",
+        "strings": ["CANNOT_AFFORD_TO_HIRE"],
+    },
+    "CLeader_CalcCostTable": {
+        "linux": "CLeader::CalcTable<(NEconomicUnitTable::EEconomicUnitTableType)0>(CResourceTable&, CFixedPoint, bool) const",
+        # rcx = leader, rdx = CResourceTable* cost, r8d = 100000 (CFixedPoint 1), r9b = 0: the
+        # recruitment cost (the leader class's resources.cost in the leader's scope)
+        "signature": "void (*)(const void* leader, void* cost, int64_t multiplier, bool flag)",
+        "call_in": {"from": "CCountry_CanHireLeader", "anchor": r"^mov r8d, 0x186a0$", "pick": "first_call_after"},
+    },
     "CMegaStructureType_IsPotentiallyUpgradableFrom": {
         "linux": "CMegaStructureType::IsPotentiallyUpgradableFrom(CCountry const*, CMegaStructure const*) const",
         # rcx = target type, rdx = country, r8 = megastructure: whether the type is an upgrade the
@@ -899,7 +916,7 @@ FUNCTIONS = {
         "signature": "bool (*)(const void* type, const void* country, const void* megastructure)",
         # the megastructure's owner (CMegaStructure::owner) and type (::type) read from r8
         "pattern": [(r"^mov r14, r8$", ""), (r"^mov rbp, rdx$", ""), (r"^mov r15, rcx$", ""),
-                    (r"^mov edx, dword ptr \[r8 \+ 0x1b8\]$", ""), (r"^mov rsi, qword ptr \[r8 \+ 0x178\]$", ""),
+                    (r"^mov edx, dword ptr \[r8 \+ 0x1d0\]$", ""), (r"^mov rsi, qword ptr \[r8 \+ 0x178\]$", ""),
                     (r"^cmp rbx, rbp$", "")],
         "prefilter_bytes": [b"\x4D\x8B\xF0\x48\x8B\xEA\x4C\x8B\xF9"],  # mov r14, r8; mov rbp, rdx; mov r15, rcx
         "window": 30,
@@ -917,10 +934,10 @@ FUNCTIONS = {
         # (build type 0), IsPotentialInBuildMenu, IsPotentiallyBuildable, then the type's
         # placement rules (CPlacementRules::IsPossible) for the planet
         "signature": "bool (*)(const void* country, const void* planet, const void* fleet)",
-        "pattern": [(r"^mov rbp, qword ptr \[rip \+ 0x", ""), (r"^cmp dword ptr \[rbp \+ 0x5c\], ebx$", ""),
+        "pattern": [(r"^mov rbp, qword ptr \[rip \+ 0x", ""), (r"^cmp dword ptr \[rbp \+ 0x64\], ebx$", ""),
                     (r"^mov rdi, qword ptr \[rsi \+ rax\]$", ""), (r"^cmp dword ptr \[rdi \+ 0x[0-9a-f]+\], 0$", ""),
                     (r"^call 0x", ""), (r"^call 0x", ""), (r"^lea rcx, \[rdi \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", "")],
-        "prefilter_bytes": [b"\x39\x5D\x5C"],  # cmp dword ptr [rbp + 0x5c], ebx (the type count)
+        "prefilter_bytes": [b"\x39\x5D\x64"],  # cmp dword ptr [rbp + 0x64], ebx (the type count)
         "window": 40,
     },
     "CMegaStructureType_IsPotentiallyBuildable": {
@@ -990,8 +1007,8 @@ FUNCTIONS = {
         "signature": "void (*)(void* message)",
         "pattern": [(r"^mov rdi, rcx$", ""), (r"^mov rax, qword ptr \[rcx\]$", ""), (r"^call qword ptr \[rax \+ 0x38\]$", ""),
                     (r"^test al, al$", ""), (r"^je ", ""), (r"^mov rax, qword ptr \[rdi \+ 0x18\]$", ""),
-                    (r"^cmp byte ptr \[rax \+ 0x100\], 0$", "")],
-        "prefilter_bytes": [b"\x80\xB8\x00\x01\x00\x00\x00"],
+                    (r"^cmp byte ptr \[rax \+ 0x148\], 0$", "")],
+        "prefilter_bytes": [b"\x80\xB8\x48\x01\x00\x00\x00"],
         "window": 20,
     },
     "CAlertIconsWindow_Click": {
@@ -1234,6 +1251,82 @@ FUNCTIONS = {
         "site": {"in": "CGalacticObjectMapIcon_UpdateHoverIndicator", "target": "CFleetMovementManager_CalcCanMoveTo", "index": 0,
                  "count": 1},
     },
+    # --- which design is a ship's latest: every candidate design's upkeep of the ship size's evaluation resource
+    "CCountry_GetLatestShipDesignOfClass": {
+        "linux": "CCountry::GetLatestShipDesignOfClass(EShipClass, EShipConstructionType, CPersistentName const*, "
+                 "CCountry::SLatestShipDesignFilter const&, CEventScope*) const",
+        # the lookup by ship class (stations): every design of the class the country can build, ranked by its energy
+        # upkeep. Not hooked; the anchor of the rules below
+        "signature": "(not called by the plugin)",
+        "strings": ["Tried to get latest ship design of military ship class for country %s (%u)"],
+        # 4.6.0: a smaller function (168 instructions) references the message too
+        "filters": {"min_instr": 300},
+        "emit": False,
+    },
+    "CShipGrowthStageEconomicUnit_CalcUpkeepResource": {
+        "linux": "CFixedPoint CEconomicUnitCollection<CShipGrowthStageEconomicUnit>::CalcResource<(NEconomicUnitTable::EEconomicUnitTableType)2>"
+                 "(CStrategicResource const&, CFixedPoint, STooltipFormatConfig*) const",
+        # rcx = the unit (sdk::rt::CShipGrowthStageEconomicUnit_*: owner id, growth stage, the owner's modifier), rdx = the
+        # result (returned), r8 = the resource, r9 = a multiplier (100000 = 1), [rsp+0x20] = tooltip config or null. One
+        # design's upkeep of one resource: for the hull and every distinct component template the table's value, then,
+        # unless that value is 0, the category's multipliers (the two functions below) up the category's parents
+        "signature": "int64_t* (*)(const void* unit, int64_t* out, const void* resource, int64_t mult, void* tooltip)",
+        "callee_of": {"from": "CCountry_GetLatestShipDesignOfClass", "min_instr": 250,
+                      "require": [r"test byte ptr \[r\w+ \+ 0x[0-9a-f]+\], 0xc0", r"movabs rax, 0x8000000000"]},
+    },
+    "CCountry_GetLatestShipDesign": {
+        "linux": "CCountry::GetLatestShipDesign(CShipSize const*, EDesignOwner, CPersistentName const*, bool, bool, "
+                 "CFixedResourceTable const*, bool) const",
+        # rcx = country, rdx = the result (sdk::rt::SLatestShipDesign_*, returned), r8 = ship size, r9d = whose designs
+        # (own, federation, galactic community), then on the stack: the name a design is preferred for (or null),
+        # "auto-generated designs only", "only what the country can build", the restricting table (its slot is not
+        # read by this build), one more flag. Every design of that size is ranked by CalcUpkeepResource of the size's
+        # evaluation_resource (energy unless scripted). CShip::CalcLatestDesign asks it for every ship the upgrade
+        # checks look at
+        "signature": "void* (*)(const void* country, void* out, const void* size, int32_t owner, const void* name, bool auto_only, "
+                     "bool buildable_only, const void* table, bool flag)",
+        "caller_of": {"of": "CShipGrowthStageEconomicUnit_CalcUpkeepResource", "exclude": ["CCountry_GetLatestShipDesignOfClass"],
+                      "calls": {"CShipGrowthStageEconomicUnit_CalcUpkeepResource": 2}},
+    },
+    "CEconomicUnitBase_ApplyGlobalMultModifiers_Upkeep": {
+        "linux": "CEconomicUnitBase<T>::ApplyEconomicGlobalMultModifiers<(NEconomicUnitTable::EEconomicUnitTableType)2>"
+                 "(CEconomicCategory const&, CEventScope const&, CModifier const&, CFixedPoint&, STooltipFormatConfig*) const",
+        # rcx is not read (the unit), rdx = category, r8 = scope, r9 = modifier, [rsp+0x20] = the sum it adds to,
+        # [rsp+0x28] = tooltip config or null: the category's and its parents' upkeep multipliers that are not tied to
+        # a resource, the triggered ones after their trigger. The same for every table of that category in that scope
+        "signature": "uint64_t (*)(void* unit, const void* category, const void* scope, const void* modifier, int64_t* sum, void* tooltip)",
+        "call_in": {"from": "CShipGrowthStageEconomicUnit_CalcUpkeepResource",
+                    "anchor": r"^test byte ptr \[r\w+ \+ 0x[0-9a-f]+\], 0xc0$", "occurrence": 0, "pick": "first_call_after", "skip": 1},
+    },
+    "CEconomicUnitBase_ApplyPerResourceMultModifiers_Upkeep": {
+        "linux": "CEconomicUnitBase<T>::ApplyEconomicPerResourceMultModifiers<(NEconomicUnitTable::EEconomicUnitTableType)2>"
+                 "(CEconomicCategory const&, CEventScope const&, CStrategicResource const&, CModifier const&, CFixedPoint&, "
+                 "STooltipFormatConfig*) const",
+        # like the global one with the resource in r9 and the modifier, the sum and the tooltip config on the stack
+        "signature": "uint64_t (*)(void* unit, const void* category, const void* scope, const void* resource, const void* modifier, "
+                     "int64_t* sum, void* tooltip)",
+        "call_in": {"from": "CShipGrowthStageEconomicUnit_CalcUpkeepResource",
+                    "anchor": r"^test byte ptr \[r\w+ \+ 0x[0-9a-f]+\], 0xc0$", "occurrence": 0, "pick": "first_call_after", "skip": 2},
+    },
+    "CShipGrowthStageEconomicUnit_CalcUpkeepResource_GlobalMult": {
+        "linux": "the ApplyEconomicGlobalMultModifiers call inside a design's CalcResource<upkeep> (once per table with a value)",
+        "signature": "call CEconomicUnitBase_ApplyGlobalMultModifiers_Upkeep",
+        "site": {"in": "CShipGrowthStageEconomicUnit_CalcUpkeepResource", "target": "CEconomicUnitBase_ApplyGlobalMultModifiers_Upkeep",
+                 "index": 0, "count": 1},
+    },
+    "CShipGrowthStageEconomicUnit_CalcUpkeepResource_PerResourceMult": {
+        "linux": "the ApplyEconomicPerResourceMultModifiers call that follows it",
+        "signature": "call CEconomicUnitBase_ApplyPerResourceMultModifiers_Upkeep",
+        "site": {"in": "CShipGrowthStageEconomicUnit_CalcUpkeepResource",
+                 "target": "CEconomicUnitBase_ApplyPerResourceMultModifiers_Upkeep", "index": 0, "count": 1},
+    },
+    "CSession_Update": {
+        "linux": "CSession::Update()",
+        # rcx = session: runs the queued commands (the players' and CTurnTickCommand, the simulation's day). Called by
+        # the application's update and, when several ticks fit into a frame, from inside the in-game idler's update
+        "signature": "uint64_t (*)(void* session)",
+        "strings": ["Update within execution. Skipping."],
+    },
     # --- the CRT's formatting (the save writer's number formatting goes through these)
     "CRT_sprintf": {
         "linux": "sprintf(char*, char const*, ...) (the UCRT inline: _vsprintf_l with the legacy null-termination option)",
@@ -1269,11 +1362,11 @@ FUNCTIONS = {
     "CMeanTimeToHappen_GetRawFactor": {
         "linux": "CMeanTimeToHappen::GetRawFactor(CFixedPoint*, CEventScope const&) const",
         # rcx = MTTH {base factor +0x10, modifier array data +0x20 / size +0x2c}, rdx = CFixedPoint* out
-        # (returned), r8 = scope: the base, then every modifier's virtual Apply(out, scope) (slot 2)
+        # (returned), r8 = scope: the base, then every modifier's virtual Apply(out, scope) (slot 4 since 4.6.0)
         "signature": "int64_t* (*)(const void* mtth, int64_t* out, const void* scope)",
         "pattern": [(r"^mov rax, qword ptr \[rcx \+ 0x10\]$", ""), (r"^mov rbp, r8$", ""), (r"^mov qword ptr \[rdx\], rax$", ""),
                     (r"^mov rdi, rdx$", ""), (r"^mov rbx, qword ptr \[rcx \+ 0x20\]$", ""), (r"^movsxd rax, dword ptr \[rcx \+ 0x2c\]$", ""),
-                    (r"^lea rsi, \[rbx \+ rax\*8\]$", ""), (r"^call qword ptr \[rax \+ 0x10\]$", "")],
+                    (r"^lea rsi, \[rbx \+ rax\*8\]$", ""), (r"^call qword ptr \[rax \+ 0x20\]$", "")],
         "prefilter_bytes": [b"\x48\x8B\x41\x10\x49\x8B\xE8"],  # mov rax, [rcx + 0x10]; mov rbp, r8
         "window": 24,
     },
@@ -1341,14 +1434,15 @@ FUNCTIONS = {
     # --- factions, pop jobs, colonies and pop groups
     "CPopFaction_UpdateSupportAndApproval": {
         "linux": "CPopFaction::UpdateSupportAndApproval()",
-        # rcx = faction: recomputes support (+0x40) and approval (+0x48); when either changed, invalidates
+        # rcx = faction: recomputes support (+0x48) and approval (+0x58); when either changed, invalidates
         # the nodes of its countries and flags the country
         "signature": "void (*)(void* faction)",
-        "pattern": [(r"^mov rbp, rcx$", ""), (r"^call 0x", ""), (r"^test al, al$", ""), (r"^lea rdx, \[rsp \+ 0x20\]$", ""),
-                    (r"^xor r8d, r8d$", ""), (r"^mov rdi, qword ptr \[rbp \+ 0x48\]$", ""), (r"^call 0x", ""),
-                    (r"^mov rbx, qword ptr \[rbp \+ 0x50\]$", ""), (r"^movups xmm0, xmmword ptr \[rax\]$", ""),
-                    (r"^movups xmmword ptr \[rbp \+ 0x40\], xmm0$", "")],
-        "prefilter_bytes": [b"\x0F\x11\x45\x40"],  # movups xmmword ptr [rbp + 0x40], xmm0
+        # (4.6.0: the IsAlive call became a byte test at +0x18)
+        "pattern": [(r"^cmp byte ptr \[rcx \+ 0x18\], 0$", ""), (r"^mov rbp, rcx$", ""), (r"^lea rdx, \[rsp \+ 0x20\]$", ""),
+                    (r"^xor r8d, r8d$", ""), (r"^mov rdi, qword ptr \[rcx \+ 0x50\]$", ""), (r"^call 0x", ""),
+                    (r"^mov rbx, qword ptr \[rbp \+ 0x58\]$", ""), (r"^movups xmm0, xmmword ptr \[rax\]$", ""),
+                    (r"^movups xmmword ptr \[rbp \+ 0x48\], xmm0$", "")],
+        "prefilter_bytes": [b"\x0F\x11\x45\x48"],  # movups xmmword ptr [rbp + 0x48], xmm0
         "window": 30,
     },
     "NColonyUpdate_DailyUpdatePopJobs": {
@@ -1426,8 +1520,10 @@ FUNCTIONS = {
         # rcx = country: recomputes the relay network's systems; when they changed, invalidates the country's
         # modifier and the relay network node
         "signature": "void (*)(void* country)",
+        # 4.6.0: the faction update (above) and a virtual with no direct callers have the same calls
         "caller_of": {"of": "CCountry_InvalidateModifier",
-                      "calls": {"CModifierNodeBase_InvalidateChildren": 1, "CModifierNodeManager_AddInvalid": 1}, "max_instr": 200},
+                      "calls": {"CModifierNodeBase_InvalidateChildren": 1, "CModifierNodeManager_AddInvalid": 1}, "max_instr": 200,
+                      "exclude": ["CPopFaction_UpdateSupportAndApproval"], "min_callers": 1},
     },
     "CCountry_InvalidateRelayNetworkModifier": {
         "linux": "the relay network node's InvalidateModifier (the node UpdateRelayNetwork invalidates inline)",
@@ -1619,7 +1715,7 @@ FUNCTIONS = {
         "signature": "void (*)(void* planet, void* modifier)",
         "pattern": [(r"^mov rax, qword ptr \[rcx\]$", ""), (r"^call qword ptr \[rax \+ 0x20\]$", ""), (r"^test al, al$", ""), (r"^je ", ""),
                     (r"^mov rax, qword ptr \[rip \+ 0x[0-9a-f]+\]$", ""), (r"^mov r8d, 0x186a0$", ""), (r"^mov r\w+, 0xffffffff$", ""),
-                    (r"^mov r9d, r\w+$", ""), (r"^mov rdx, qword ptr \[rax \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", "")],
+                    (r"^mov rdx, qword ptr \[rax \+ 0x[0-9a-f]+\]$", ""), (r"^call 0x", "")],
         "prefilter": [0x186A0],
         "window": 30,
         "filters": {"max_callers": 0, "min_lea_refs": 1, "calls": ["CModifierNodeBase_InvalidateChildren"]},

@@ -73,10 +73,11 @@ REQUIRED = [
     "TGameDatabase<CCitizenshipTypeDatabase>::_pInstance",
     "TGameDatabase<CArmyTypeDatabase>::_pInstance",
     "TGameDatabase<CBuildingTypeDatabase>::_pInstance",
-    "CTerraformDatabase::_pInstance",
+    # 4.6.0 made these three singletons TGameDatabase<X> (4.5: X::_pInstance)
+    "TGameDatabase<CTerraformDatabase>::_pInstance",
     "CModifier::_Definitions",
-    "CTraitDatabase::_pInstance",
-    "CShipDesignTemplatesDatabase::_pInstance",
+    "TGameDatabase<CTraitDatabase>::_pInstance",
+    "TGameDatabase<CShipDesignTemplatesDatabase>::_pInstance",
     "TPdxRef<CDeposit>::_pDatabase",
     "TPdxRef<CPopJob>::_pDatabase",
     "TPdxRef<CShipDesign>::_pDatabase",
@@ -164,13 +165,55 @@ def calls_of(im, fn, n=200):
 
 
 def is_calc_build_time(im, fn):
+    """CBuildingType::CalcBuildTime: the type's days scaled to fixed point (`movsxd rax, dword ptr
+    [rcx + D]; imul r, rax, 0x186a0`), then the build-time modifier looked up in the owner's modifier
+    (`cmp dword ptr [r + rcx*4], M`) and handed to the tooltip helper (`mov r8d, M`). D and M change
+    between patches (+0x54 / 0x9d up to 4.5.4, +0x8c / 0xa0 in 4.6.0)."""
     j = " | ".join(f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(fn, 0x300)[:60])
-    return "+ 0x54]" in j and "0x9d" in j
+    if not re.search(r"movsxd rax, dword ptr \[rcx \+ 0x[0-9a-f]+\] \| imul \w+, rax, 0x186a0", j):
+        return False
+    ids = set(re.findall(r"cmp dword ptr \[\w+ \+ rcx\*4\], (0x[0-9a-f]+)", j))
+    return any(f"mov r8d, {m}" in j for m in ids)
+
+
+# TGameDatabase<T>: its types (a CPdxArray<T*>: data, count 0xC further). +0x50 / +0x5C up to 4.5.4,
+# +0x58 / +0x64 in 4.6.0; main() measures it (game_db_layout) before anything relies on it
+GAME_DB = {"items": 0x50, "count": 0x5C}
+
+
+def game_db_layout(im, dbs):
+    """(items, count) offsets of TGameDatabase, from the code that iterates the given instances:
+    `mov R, [rip + G]` followed by a qword `[R + D]` and a dword `[R + D + 0xC]`, the offset pair
+    most of the databases agree on."""
+    dbs = set(dbs)
+    text = im.img[im.text0:im.text1]
+    per_db = collections.defaultdict(collections.Counter)
+    for m in re.finditer(rb"[\x48\x4C]\x8B[\x05\x0D\x15\x1D\x25\x2D\x35\x3D]", text):
+        at = im.text0 + m.start()
+        g = at + 7 + struct.unpack_from("<i", im.img, at + 3)[0]
+        if g not in dbs:
+            continue
+        ins = list(im.md.disasm(im.img[at:at + 100], im.ib + at))
+        if not ins:
+            continue
+        reg = ins[0].op_str.split(",")[0].strip()
+        qw, dw = set(), set()
+        for i in ins[1:14]:
+            for x in re.finditer(r"(qword|dword) ptr \[" + reg + r" \+ (0x[0-9a-f]+)\]", i.op_str):
+                (qw if x.group(1) == "qword" else dw).add(int(x.group(2), 16))
+        for d in qw:
+            if d + 0xC in dw:
+                per_db[g][(d, d + 0xC)] += 1
+    votes = collections.Counter(c.most_common(1)[0][0] for c in per_db.values())
+    top = votes.most_common(2)
+    if not top or top[0][1] * 2 < len(per_db) or (len(top) > 1 and top[1][1] * 5 > top[0][1]):
+        raise Fail(f"TGameDatabase layout: {top} over {len(per_db)} databases")
+    return top[0][0]
 
 
 def db_loads(im, fn, n=400):
     """(global, shape) for each .data global loaded into a register: 'ref' for a TPdxRefDatabase
-    (capacity at +0x20 compared), 'game' for a TGameDatabase (+0x50 items / +0x5c count)."""
+    (capacity at +0x20 compared), 'game' for a TGameDatabase (GAME_DB items / count)."""
     d0, d1 = data_range(im)
     ins = im.disasm_fn(fn, 0x1000)[:n]
     out = []
@@ -183,7 +226,7 @@ def db_loads(im, fn, n=400):
         reg = i.op_str.split(",")[0].strip()
         win = " | ".join(f"{x.mnemonic} {x.op_str}" for x in ins[k + 1:k + 30])
         shape = ("ref" if f"[{reg} + 0x20]" in win else
-                 "game" if f"[{reg} + 0x50]" in win or f"[{reg} + 0x5c]" in win else "")
+                 "game" if f"[{reg} + {GAME_DB['items']:#x}]" in win or f"[{reg} + {GAME_DB['count']:#x}]" in win else "")
         out.append((t, shape))
     return out
 
@@ -204,7 +247,7 @@ def used_as_game_db(im, g, limit=400):
             continue
         reg = ins[0].op_str.split(",")[0].strip()
         win = " | ".join(i.op_str for i in ins[1:12])
-        if f"[{reg} + 0x5c]" in win or f"[{reg} + 0x50]" in win:
+        if f"[{reg} + {GAME_DB['count']:#x}]" in win or f"[{reg} + {GAME_DB['items']:#x}]" in win:
             return True
     return False
 
@@ -282,7 +325,12 @@ def databases_by_folder(im, linux):
             continue
         if meth == cls:
             sym = f"TGameDatabase<{cls}>::_pInstance"
-            hits = {alloc_store(im, f) for f in xrefs[p]} - {None}
+            # 4.6.0: CreateInstance first destroys the old instance (a longer prologue), and often calls the
+            # constructor instead of inlining it: then the instance is stored by the constructor's caller
+            hits = {alloc_store(im, f, 40) for f in xrefs[p]} - {None}
+            if not hits:
+                callers = {im.fn_of(c) for f in xrefs[p] for c in wx["find_calls_to"](im, f)}
+                hits = {alloc_store(im, c, 40) for c in callers - {None}} - {None}
         elif meth in ("Init", "InitInstance"):
             # the loader reads its own instance first; a singleton is allocated and stored somewhere
             sym = f"{cls}::_pInstance"
@@ -366,6 +414,9 @@ def perf_layouts(im, funcs, globs, result, failures):
         and tail-jump to CInGameIdler::Select with `lea rdx, [fleet + BASE]`. That lookup is every reference
         database's: `and eax, MASK; cmp eax, [db + CAPACITY]; ...; mov rax, [db + SLOTS]; add rcx, rcx;
         mov rcx, [rax + rcx*8 + OBJECT]` (slots of 16 bytes).
+      * the unit a ship design's upkeep is asked of (CShipGrowthStageEconomicUnit: country id, growth stage, modifier),
+        from the loads at the start of CalcResource<upkeep>; the result object CCountry::GetLatestShipDesign fills
+        (design id, growth stage index), from the "no design" it starts with.
     """
     D = r"(0x[0-9a-f]+|\d+)"  # a displacement or immediate as capstone prints it
 
@@ -781,6 +832,30 @@ def perf_layouts(im, funcs, globs, result, failures):
         return ({"CFleet_selectable": base, "TPdxRef_index_mask": mask, "TPdxRefDatabase_capacity": capacity,
                  "TPdxRefDatabase_slots": slots, "TPdxRefDatabase_slot_size": 16, "TPdxRefDatabase_slot_object": obj}, {}, {})
 
+    def design():
+        # the unit a design's upkeep is asked of. CalcResource<upkeep> loads its growth stage, builds the stage's scope
+        # (a local object, type 0x8000000000) and the owner's from its country id, then swaps the unit for its
+        # modifier and asks that a virtual
+        _, o = ops(fn("CShipGrowthStageEconomicUnit_CalcUpkeepResource"), 500, 0x1000)
+        m = re.search(r"mov r\w+, qword ptr \[(r\w+) \+ " + D + r"\] \| movabs rax, 0x8000000000 \| (?:[^|]+ \| ){0,8}?"
+                      r"mov eax, dword ptr \[\1(?: \+ " + D + r")?\] \| (?:[^|]+ \| ){0,10}?"
+                      r"mov \1, qword ptr \[\1 \+ " + D + r"\] \| mov rax, qword ptr \[\1\] \| mov rcx, \1 \| call qword ptr \[rax \+ ",
+                      " | ".join(o))
+        if not m:
+            raise Fail("no `stage = [unit + S]; scope 0x8000000000; eax = [unit + C]; unit = [unit + M]` in CalcResource<upkeep>")
+        stage, country, modifier = num(m.group(2)), num(m.group(3)) if m.group(3) else 0, num(m.group(4))
+        if sorted((country, stage, modifier)) != [country, stage, modifier] or stage - country != 8 or modifier - stage != 8:
+            raise Fail(f"the unit's fields: country +0x{country:X}, stage +0x{stage:X}, modifier +0x{modifier:X}")
+        # GetLatestShipDesign's result (the hidden return object in rdx) starts as "no design": id -1, growth stage 0
+        _, p = ops(fn("CCountry_GetLatestShipDesign"), 40, 0x100)
+        stores = sorted((num(s.group(2)) if s.group(2) else 0, {"dword": 4, "qword": 8}[s.group(1)], s.group(3)) for x in p
+                        for s in [re.match(r"^mov (dword|qword) ptr \[rdx(?: \+ " + D + r")?\], (\w+)$", x)] if s)
+        if len(stores) != 2 or stores[0][:2] != (0, 4) or stores[0][2] != "0xffffffff" or stores[1][:2] != (4, 4):
+            raise Fail(f"the result's initial stores: {stores}")
+        return ({"CShipGrowthStageEconomicUnit_country": country, "CShipGrowthStageEconomicUnit_stage": stage,
+                 "CShipGrowthStageEconomicUnit_modifier": modifier, "SLatestShipDesign_design": stores[0][0],
+                 "SLatestShipDesign_stage": stores[1][0], "SLatestShipDesign_size": stores[1][0] + stores[1][1]}, {}, {})
+
     group("parallel-for descriptor, AI update slot", parallel_for)
     group("colony modifier node", colony)
     group("modifier node", nodes)
@@ -791,6 +866,7 @@ def perf_layouts(im, funcs, globs, result, failures):
     group("scripted rule, UseSavedRandom", misc)
     group("tooltip manager", tooltip)
     group("fleet selection", selection)
+    group("design upkeep unit, latest design result", design)
 
 
 def main():
@@ -803,6 +879,17 @@ def main():
     funcs = json.loads((OUT / "functions.json").read_text(encoding="utf-8"))
     result = {"vtables": {}, "slots": {}, "globals": {}, "fields": {}, "functions": {}}
     failures = []
+
+    # script databases by their "common/<folder>" loader, and the TGameDatabase layout they show
+    linux = json.loads((OUT / "linux_anchors.json").read_text(encoding="utf-8"))
+    found = databases_by_folder(im, linux)
+    try:
+        items, count = game_db_layout(im, [g for k, g in found.items() if k.startswith("TGameDatabase<")])
+        GAME_DB.update(items=items, count=count)
+        result["fields"].update({"TGameDatabase_items": items, "TGameDatabase_count": count})
+        print(f"TGameDatabase layout: items 0x{items:X}, count 0x{count:X}")
+    except Fail as e:
+        failures.append(str(e))
 
     try:
         token_slot, vts = buildable_vtables(im, tokens)
@@ -827,7 +914,7 @@ def main():
             print(f"slots: CalcCost {t - 2}, CalcProgressionSpeed {t - 1}, CalcProgressionTimeNeeded {t}")
             # CBuildingType::CalcBuildSpeed (the speed slot's callee) loads the database first
             # (it reads a per-type table at +0x90); confirm the global is used as a
-            # TGameDatabase (+0x50 items / +0x5c count) somewhere in the image.
+            # TGameDatabase (GAME_DB items / count) somewhere in the image.
             speed_calls = calls_of(im, slot_fn(im, bvt, t - 1), 40)
             first = [loads[0][0] for loads in (db_loads(im, c, 20) for c in speed_calls) if loads]
             bdb = [g for g in dict.fromkeys(first) if used_as_game_db(im, g)]
@@ -894,18 +981,17 @@ def main():
     else:
         failures.append("CConsole_RunCommandNow not in functions.json")
 
-    # CStrategicResourceDatabase: `mov rax, [rip+X]` then `mov r8, [rax + 0x70]` (unity)
+    # CStrategicResourceDatabase (a TGameDatabase since 4.6.0; the folder rule below names it): in
+    # CanChangeGovernment, `mov rax, [rip+X]` then `mov r8, [rax + K]` (unity; 0x70 in 4.5, 0xE8 in 4.6.0).
+    # Kept as a cross-check of the folder rule.
     ccg = funcs.get("CCountry_CanChangeGovernment", {}).get("rva")
     if ccg:
         ins = im.disasm_fn(ccg, 0x800)
-        res = [rip_target(im, a) for a, b in zip(ins, ins[1:])
-               if a.mnemonic == "mov" and "rip + " in a.op_str and b.op_str.endswith("[rax + 0x70]")]
-        if len(res) != 1:
-            failures.append(f"CStrategicResourceDatabase: {[hex(x) for x in res if x]}")
-        else:
-            result["globals"]["CStrategicResourceDatabase::_pInstance"] = res[0]
-            print(f"CStrategicResourceDatabase: 0x{res[0]:X}")
+        strategic_resource_db = {rip_target(im, a) for a, b in zip(ins, ins[1:])
+                                 if a.mnemonic == "mov" and a.op_str.startswith("rax, qword ptr [rip + ")
+                                 and re.fullmatch(r"r8, qword ptr \[rax \+ 0x[0-9a-f]+\]", b.op_str)}
     else:
+        strategic_resource_db = None
         failures.append("CCountry_CanChangeGovernment not in functions.json")
 
     # CGalacticObject owner: the id HasAutoSurveyedSystem looks up in TPdxRef<CCountry>
@@ -1124,10 +1210,12 @@ def main():
                             and rip_target(im, a) == rip_target(im, b):
                         glob = rip_target(im, a)
         # node fields (CModifierNodeBase::Update): dirty byte, embedded CModifier (`lea rcx, [rbx + X]`
-        # right before the vcall +0x80 Clear)
+        # right before a vcall on it)
         nops = [f"{i.mnemonic} {i.op_str}" for i in im.disasm_fn(nupd, 0x100)[:30]]
         vals["CModifierNode_dirty"] = (disp(r"^movzx eax, byte ptr \[rcx \+ (0x[0-9a-f]+)\]$", nops) or [None])[0]
-        k = next((n for n, o in enumerate(nops) if o == "call qword ptr [rax + 0x80]"), None)
+        # (the vcall is slot +0x80 up to 4.5.4, +0x68 in 4.6.0: take the one made on `[rcx]` of that lea)
+        k = next((n for n, o in enumerate(nops) if re.fullmatch(r"call qword ptr \[rax \+ 0x[0-9a-f]+\]", o)
+                  and "mov rax, qword ptr [rcx]" in nops[max(n - 3, 0):n]), None)
         mod = [int(m.group(1), 16) for o in (nops[max(k - 4, 0):k] if k else [])
                for m in [re.search(r"^lea rcx, \[rbx \+ (0x[0-9a-f]+)\]$", o)] if m]
         vals["CModifierNode_modifier"] = mod[0] if len(mod) == 1 else None
@@ -1202,8 +1290,8 @@ def main():
     # `lea r8, [rbp + T]` (to); the vtables are the rip-relative leas stored to [rbp + P] (CFleetPath),
     # [rbp + P + 8] (its CPdxArray<SNode>) and [rbp + T] (CCelestialCoordinate). Node count is the
     # `cmp dword ptr [rbp + P + C], 0` after Create, the node array the `mov rcx, [rbp + P + D]` freed
-    # right after it, the node stride the `add R, S` after `inc reg` in the ETA-label loop. The fleet's
-    # position is a vcall `lea rcx, [rdi + B]; mov rax, [rcx]; call [rax + 8k]` whose result is copied at once (a secondary base)
+    # right after it (4.6.0: the first qword read between P + 8 and P + C), the node stride the
+    # `add R, S` after `inc reg` in the ETA-label loop. The fleet's position is a vcall `lea rcx, [rdi + B]; mov rax, [rcx]; call [rax + 8k]` whose result is copied at once (a secondary base)
     # A node's jump method (EPathJumpMethod) is what CalcEstimatedDays copies into its CFTLJump.
     ddl = funcs.get("DrawMovementDebugLines", {}).get("rva")
     create = funcs.get("CFleetPath_Create", {}).get("rva")
@@ -1235,6 +1323,12 @@ def main():
                 after = ops[k + 1:k + 12]
                 cnt = [int(m.group(1), 16) - p for o in after for m in [re.search(r"^cmp dword ptr \[rbp \+ (0x[0-9a-f]+)\], 0$", o)] if m]
                 data = [int(m.group(1), 16) - p for o in after for m in [re.search(r"^mov rcx, qword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)] if m]
+                if not data and cnt:
+                    # 4.6.0 no longer frees the array right after Create: the node array is the first
+                    # qword read from inside the path's CPdxArray (between its vtable and the count)
+                    data = [int(m.group(1), 16) - p for o in ops[k + 1:k + 200]
+                            for m in [re.search(r"^mov r\w+, qword ptr \[rbp \+ (0x[0-9a-f]+)\]$", o)] if m
+                            and 8 < int(m.group(1), 16) - p < cnt[0]][:1]
                 vals["CFleetPath_node_count"] = cnt[0] if cnt else None
                 vals["CFleetPath_nodes"] = data[0] if data else None
             stride = [int(m.group(1), 16) for a, b in zip(ops, ops[1:]) if re.match(r"^inc r\w+$", a)
@@ -1326,7 +1420,7 @@ def main():
     #     CSectionTemplate::GetComponentSlot call on `[sec + T]`)
     #   CSectionTemplate::GetComponentSlot: slots `mov r15, [tmpl + SD]` / `mov ebp, [tmpl + SC]`, `imul r, r, STRIDE`,
     #     name `lea rcx, [slot + N]`
-    #   CShipDesignerBase::SetComponentOnSlot: `mov rax, [component + SET]; mov rcx, [rax + 0xc8]` (component set)
+    #   CShipDesignerBase::SetComponentOnSlot: `mov rax, [component + SET]; mov rcx, [rax + K]` (component set)
     fn_names = ["CShipDesign_CalcLongName", "CShipGrowthStage_UpdateResources", "CShipDesignSection_SetComponentOnSlot",
                 "CShipDesignerBase_SetComponentOnSlot"]
     if all(funcs.get(n) for n in fn_names):
@@ -1400,7 +1494,8 @@ def main():
         ui = ops_of(funcs["CShipDesignerBase_SetComponentOnSlot"]["rva"], 80)
         for a, b in zip(ui, ui[1:]):
             m1 = re.search(r"^mov rax, qword ptr \[r\w+ \+ (0x[0-9a-f]+)\]$", a)
-            if m1 and b == "mov rcx, qword ptr [rax + 0xc8]":
+            # the set's field read next was +0xc8 up to 4.5.4, +0x110 in 4.6.0
+            if m1 and re.fullmatch(r"mov rcx, qword ptr \[rax \+ 0x[0-9a-f]+\]", b):
                 sd["CComponentTemplate_component_set"] = hexs(m1)
                 break
         # hull flags (is_designable is bit 1, CShipSize::ReadMember token 0x31fe): the save check
@@ -1488,14 +1583,43 @@ def main():
     else:
         failures.append("event target fields: CEventTarget_GetScope / CEventScope_Copy missing")
 
-    linux = json.loads((OUT / "linux_anchors.json").read_text(encoding="utf-8"))
-    found = databases_by_folder(im, linux)
     bdb = result["globals"].get("TGameDatabase<CBuildingTypeDatabase>::_pInstance")
     if bdb is not None and found.get("TGameDatabase<CBuildingTypeDatabase>::_pInstance") not in (None, bdb):
         failures.append("TGameDatabase<CBuildingTypeDatabase>: folder rule disagrees with CalcBuildSpeed")
     for sym, g in found.items():
         result["globals"].setdefault(sym, g)
     print(f"script databases by folder: {len(found)}")
+    srd = found.get("TGameDatabase<CStrategicResourceDatabase>::_pInstance")
+    if strategic_resource_db is not None and srd not in strategic_resource_db:
+        failures.append(f"CStrategicResourceDatabase: folder rule {srd and hex(srd)} not loaded by CanChangeGovernment "
+                        f"{[hex(x) for x in strategic_resource_db]}")
+    # The ship design templates database (a TGameDatabase since 4.6.0) reads common/section_templates,
+    # component_sets and component_templates in one method whose callers pass the instance as rcx
+    # (`mov rcx, [rip + G]; call loader`)
+    try:
+        sym = "TGameDatabase<CShipDesignTemplatesDatabase>::_pInstance"
+        xr = string_xrefs(im, {p: None for p in ("common/section_templates", "common/component_sets",
+                                                  "common/component_templates")})
+        loaders = set.intersection(*[set(v) for v in xr.values()]) if xr else set()
+        per_fn = collections.Counter(f for v in string_xrefs(im, {p: None for p in linux.get("db_paths", {})}).values() for f in v)
+        loaders = {f for f in loaders if per_fn[f] <= 3}  # not the registry naming every folder
+        d0, d1 = data_range(im)
+        hits = set()
+        for f in loaders:
+            for c in wx["find_calls_to"](im, f):
+                fn = im.fn_of(c)
+                prev = [i for i in im.disasm_fn(fn, 0x4000) if i.address - im.ib < c][-4:]
+                for i in prev:
+                    if i.mnemonic == "mov" and i.op_str.startswith("rcx, qword ptr [rip + "):
+                        g = rip_target(im, i)
+                        if d0 <= g < d1:
+                            hits.add(g)
+        if len(hits) != 1:
+            raise Fail(f"{sym}: {[hex(h) for h in hits]} from loaders {[hex(f) for f in loaders]}")
+        result["globals"].setdefault(sym, hits.pop())
+        print(f"{sym}: 0x{result['globals'][sym]:X}")
+    except Fail as e:
+        failures.append(str(e))
     try:
         known = {k: v["rva"] for k, v in globs.items()}
         known.update(result["globals"])
@@ -1593,7 +1717,7 @@ def main():
     # Event options, from CEventWindow::Setup's call of the shown-options loop:
     # `lea rcx, [window + S]` (its scope), `movzx edx, byte ptr [window + F]` (the flag it passes),
     # `lea r8, [event + O]` (the event's options array); and the option's name object, which the
-    # button builder passes to CEventOption::GetName as `lea rcx, [option + N]`
+    # button builder passes to CEventOption::GetName as `lea rcx, [option + N]` (4.6.0: the option itself, N = 0)
     setup = funcs.get("CEventWindow_Setup", {}).get("rva")
     each = funcs.get("CEventWindow_ForEachShownOption", {}).get("rva")
     got = {}
@@ -1620,9 +1744,12 @@ def main():
         for k, i in enumerate(ins):
             if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - im.ib == get_name:
                 for j in ins[max(0, k - 6):k]:
-                    m = re.match(r"^lea rcx, \[r\w+ \+ (0x[0-9a-f]+)\]$", j.op_str and f"{j.mnemonic} {j.op_str}")
+                    o = f"{j.mnemonic} {j.op_str}"
+                    m = re.match(r"^lea rcx, \[r\w+ \+ (0x[0-9a-f]+)\]$", o)
                     if m:
                         got["CEventOption_name"] = int(m.group(1), 16)
+                    elif re.match(r"^mov rcx, r\w+$", o):
+                        got["CEventOption_name"] = 0  # 4.6.0: GetName takes the option itself
                 break
     if len(got) != 4:
         failures.append(f"event options: {got}")
@@ -2024,11 +2151,36 @@ def main():
             design_db, arrays = rip_target(im, store), sorted(vt_stores)
             break
     if design_db is None:
+        # 4.6.0: CreateInstance (`mov rcx, [rip + G]` to destroy the old one, allocate, `mov [rip + G], rax`)
+        # calls the constructor, which references "default" and ends with the design arrays: `mov [rdi + X], rV`
+        # of one register (the array vtable) at each array, with zero stores in between. The short string is copied
+        # inline (`mov eax, dword ptr [rip + s]`, ...), so look for any reference to it, not a lea
+        for f in sorted(string_xrefs(im, {"default": None}).get("default", ())):
+            ins = im.disasm_fn(f, 0x1000)
+            ret = next((n for n, i in enumerate(ins) if i.mnemonic == "ret"), None)
+            if ret is None:
+                continue
+            tail = [m for i in ins[max(0, ret - 14):ret] if i.mnemonic == "mov"
+                    for m in [re.match(r"^qword ptr \[rdi \+ (0x[0-9a-f]+)\], (r\w+)$", i.op_str)] if m]
+            # each array: its vtable register first, then the zeroed data and size
+            vt_stores = [int(m.group(1), 16) for m in tail if tail and m.group(2) == tail[0].group(2)]
+            if len(vt_stores) < 2:
+                continue
+            for c in wx["find_calls_to"](im, f):
+                cf = im.fn_of(c)
+                body = im.disasm_fn(cf, 0x200)[:40]
+                first = next((i for i in body[:4] if i.mnemonic == "mov" and i.op_str.startswith("rcx, qword ptr [rip + ")), None)
+                store = next((i for i in body if i.mnemonic == "mov" and re.match(r"^qword ptr \[rip \+ 0x[0-9a-f]+\], rax$", i.op_str)), None)
+                if first and store and rip_target(im, first) == rip_target(im, store):
+                    design_db, arrays = rip_target(im, store), sorted(vt_stores)
+                    break
+            if design_db is not None:
+                break
+    if design_db is None:
         failures.append("CEmpireDesignDatabase: no CreateInstance")
     else:
         result["globals"]["CEmpireDesignDatabase::_pInstance"] = design_db
-        result["fields"]["CEmpireDesignDatabase_prescripted"] = arrays[0]
-        result["fields"]["CEmpireDesignDatabase_user"] = arrays[1]
+        # which array holds the user designs is decided by DeleteUserDesign (design saving, below)
         print(f"CEmpireDesignDatabase 0x{design_db:X}: arrays {[hex(a) for a in arrays]}")
 
     # the list: among the functions that load the design database, the one with that sequence
@@ -2061,8 +2213,13 @@ def main():
                 ctor = next(((tgt(i), n) for n, i in calls if n < regen[1] and ins[n - 1].op_str == lea_fc), None)
                 dtor = next(((tgt(i), n) for n, i in calls if n > vn and ins[n - 1].op_str == lea_fc
                              and tgt(i) not in (regen[0], ctor[0] if ctor else None)), None)
+                # the design: read from the array right before the call, or (4.6.0) the register the
+                # regeneration also passes as rdx
+                design_reg = next((m.group(1) for k in range(max(0, regen[1] - 5), regen[1])
+                                   for m in [re.match(r"^rdx, (r\w+)$", ins[k].op_str)] if ins[k].mnemonic == "mov" and m), None)
                 playable = next(((tgt(i), n) for n, i in reversed(calls) if n < regen[1]
-                                 and re.match(r"^rcx, qword ptr \[rax \+ r\w+\*8\]$", ins[n - 1].op_str)), None)
+                                 and (re.match(r"^rcx, qword ptr \[rax \+ r\w+\*8\]$", ins[n - 1].op_str)
+                                      or (design_reg and ins[n - 1].mnemonic == "mov" and ins[n - 1].op_str == f"rcx, {design_reg}"))), None)
                 if ctor: got["ctor"] = ctor
                 if dtor: got["dtor"] = dtor
                 if playable: got["playable"] = playable
@@ -2088,75 +2245,87 @@ def main():
             "signature": "void (*)(void* fake_country)"}
         print("design validation:", {k: hex(v[0]) for k, v in got.items()})
 
-    # Saving user designs. CEmpireDesignDatabase::Init enumerates "prescripted_countries" and reads
-    # each file with InitFromFile(db, path, false) (`xor r8d, r8d; call`), then the newest existing
-    # name of UserDesignsFileNames (a CPdxArray<CString>: data `mov rdi, [rip + A+8]`, size
-    # `movsxd .., [rip + A+0x14]`) with InitFromFile(db, path, true) (`mov r8b, 1; call`).
-    # SaveUserFile is the other function reading that size, and it is the tail of SaveDesign (the
-    # one allocating a design, `mov ecx, 0xC78`) and DeleteUserDesign (the one storing the user
-    # array's new size, then deletes the design through its vtable). The bridge keeps the file to
-    # itself: SaveUserFile rewrites every user design from memory and so drops the parts an unloaded
-    # mod defined
+    # Saving user designs. UserDesignsFileNames is the CPdxArray<CString> the static initializer naming
+    # "user_empire_designs.txt" sets up (`lea rcx, [rip + A]`, size at A + 0x14). SaveUserFile reads
+    # that size to write the newest name, and three functions end in it: DeleteUserDesign (stores the
+    # user array's new size, `mov dword ptr [db + U + 0x14], r`, and deletes the design through its
+    # vtable, `mov edx, 1; call [rax + 8k]`), SaveDesign (allocates a design, `mov ecx, SIZE`) and
+    # PostReadInit (CEmpireDesign::PostReadInit on every design, `mov rcx, [r + r*8]; call`). The user
+    # array is the one Delete shrinks (the second up to 4.5.4, the first in 4.6.0). InitFromFile is the
+    # function another reader of the size (Init up to 4.5.4, the newest-file helper in 4.6.0) calls that
+    # allocates a design of the same SIZE. The bridge keeps the file to itself: SaveUserFile rewrites
+    # every user design from memory and so drops the parts an unloaded mod defined
+    def rip_readers(target):
+        """Functions reading the dword/qword at target: `mov r, [rip + d]` / `movsxd r64, [rip + d]`,
+        scanned overlapping (every opcode byte)."""
+        text = im.img[im.text0:im.text1]
+        out = set()
+        for m in re.finditer(rb"(?=[\x8B\x63](.)(....))", text, re.S):
+            modrm, disp = m.group(1)[0], m.group(2)
+            if (modrm & 0xC7) == 0x05 and im.text0 + m.start() + 6 + struct.unpack("<i", disp)[0] == target:
+                f = im.fn_of(im.text0 + m.start())
+                if f is not None:
+                    out.add(f)
+        return out
+
+    def design_allocs(body):
+        return {int(m.group(1), 16) for i in body if i.mnemonic == "mov"
+                for m in [re.match(r"^ecx, (0x[0-9a-f]{3,})$", i.op_str)] if m}
+
     if design_db is not None:
-        user_size = arrays[1] + 0x14
         got = {}
-        for f in sorted(fns_with_strings("prescripted_countries")):
-            ins = im.disasm_fn(f, 0x1000)
-            ret = next((n for n, i in enumerate(ins) if i.mnemonic == "ret"), len(ins))
-            calls = [(n, int(i.op_str, 16) - im.ib) for n, i in enumerate(ins[:ret])
-                     if i.mnemonic == "call" and i.op_str.startswith("0x")]
-            pre = {t for n, t in calls if any(ins[k].op_str == "r8d, r8d" for k in range(max(0, n - 4), n))}
-            usr = {t for n, t in calls if any(ins[k].op_str == "r8b, 1" for k in range(max(0, n - 4), n))}
-            both = pre & usr
-            refs = {rip_target(im, i) for i in ins[:ret] if "[rip + " in i.op_str and i.mnemonic in ("mov", "movsxd")}
-            file_names = {t - 8 for t in refs if t + 0xC in refs}
-            if len(both) == 1 and len(file_names) == 1:
-                got["init_from_file"], got["names"] = both.pop(), file_names.pop()
-                break
-        if "names" in got:
-            text = im.img[im.text0:im.text1]
-            readers = set()
-            # `mov r32, [rip + d]` / `movsxd r64, [rip + d]`, scanned overlapping (every opcode byte)
-            for m in re.finditer(rb"(?=[\x8B\x63](.)(....))", text, re.S):
-                modrm, disp = m.group(1)[0], m.group(2)
-                if (modrm & 0xC7) == 0x05 and im.text0 + m.start() + 6 + struct.unpack("<i", disp)[0] == got["names"] + 0x14:
-                    f = im.fn_of(im.text0 + m.start())
-                    if f is not None:
-                        readers.add(f)
+        name_arrays = set()
+        for f in sorted(set().union(*string_xrefs(im, ["user_empire_designs.txt"]).values())):
+            for i in im.disasm_fn(f, 0x1000):
+                if i.mnemonic == "lea" and i.op_str.startswith("rcx, [rip + "):
+                    name_arrays.add(rip_target(im, i))
+        sizes = {arr + 0x14: arr for arr in arrays}
+        for name_arr in sorted(name_arrays):
+            readers = rip_readers(name_arr + 0x14)
             for f in sorted(readers):
-                callers = {im.fn_of(a) for a, _ in direct_callers(f)} - {None}
                 kinds = {}
-                for c in callers:
-                    # up to its tail call of SaveUserFile (the disassembly runs on into the next function)
+                for c in sorted({im.primary(im.fn_of(x)) for x, _ in direct_callers(f) if im.fn_of(x) is not None}):
+                    # up to its (tail) call of SaveUserFile (the disassembly runs on into the next function)
                     body = im.disasm_fn(c, 0x400)
                     body = body[:next((n for n, i in enumerate(body) if i.mnemonic in ("jmp", "call")
                                        and i.op_str == hex(im.ib + f)), len(body)) + 1]
-                    if any(i.mnemonic == "mov" and i.op_str == "ecx, 0xc78" for i in body):
-                        kinds["save"] = c
-                    elif any(i.mnemonic == "mov" and re.match(rf"^dword ptr \[r\w+ \+ {user_size:#x}\], r\w+$", i.op_str) for i in body):
-                        kinds["delete"] = c
-                        # the design's deleting destructor: `mov edx, 1; ... call [rax + 8*k]`
+                    shrunk = [sizes[int(m.group(1), 16)] for i in body if i.mnemonic == "mov"
+                              for m in [re.match(r"^dword ptr \[r\w+ \+ (0x[0-9a-f]+)\], r\w+$", i.op_str)]
+                              if m and int(m.group(1), 16) in sizes]
+                    if shrunk:
+                        kinds["delete"], kinds["user"] = c, shrunk[0]
                         for n, i in enumerate(body):
                             m = re.match(r"^qword ptr \[rax(?: \+ (0x[0-9a-f]+|\d+))?\]$", i.op_str)
                             if i.mnemonic == "call" and m and any(body[k].op_str == "edx, 1" for k in range(max(0, n - 3), n)):
                                 kinds["delete_slot"] = int(m.group(1) or "0", 0) // 8
+                    elif design_allocs(body):
+                        kinds["save"], kinds["design_size"] = c, max(design_allocs(body))
                     else:
-                        # CEmpireDesignDatabase::PostReadInit: CEmpireDesign::PostReadInit on every design
-                        # (`mov rcx, [rcx + rbx*8]; call`), SaveUserFile when one changed
                         per = {int(i.op_str, 16) - im.ib for n, i in enumerate(body) if n and i.mnemonic == "call"
                                and i.op_str.startswith("0x") and re.match(r"^rcx, qword ptr \[r\w+ \+ r\w+\*8\]$", body[n - 1].op_str)}
                         if len(per) == 1:
                             kinds["post_read"] = per.pop()
-                if {"save", "delete", "post_read"} <= set(kinds):
-                    got.update(kinds, save_file=f)
+                if {"save", "delete", "delete_slot", "post_read"} <= set(kinds):
+                    got.update(kinds, save_file=f, names=name_arr)
+                    loaders = {t for r in sorted(readers - {f}) for t in calls_of(im, r, 2000)
+                               if kinds["design_size"] in design_allocs(im.disasm_fn(t, 0x600)[:160])}
+                    if len(loaders) == 1:
+                        got["init_from_file"] = loaders.pop()
                     break
-        if set(got) != {"init_from_file", "names", "save_file", "save", "delete", "delete_slot", "post_read"}:
+            if "save_file" in got:
+                break
+        if set(got) != {"init_from_file", "names", "save_file", "save", "delete", "delete_slot", "post_read",
+                        "user", "design_size"}:
             failures.append(f"empire design saving: {sorted(got)}")
         else:
             result["globals"]["UserDesignsFileNames"] = got["names"]
+            result["fields"]["CEmpireDesignDatabase_user"] = got["user"]
+            result["fields"]["CEmpireDesignDatabase_prescripted"] = next(x for x in arrays if x != got["user"])
             result["functions"]["CEmpireDesignDatabase_InitFromFile"] = {
-                "rva": got["init_from_file"], "linux": "CEmpireDesignDatabase::InitFromFile(char const*, bool)",
-                "signature": "void (*)(void* db, const char* vfs_path, bool user)  -- appends each design in the file"}
+                "rva": got["init_from_file"], "linux": "CEmpireDesignDatabase::InitFromFile (unnamed in 4.6.0)",
+                "signature": "void (*)(void* db, const char* vfs_path, void* unused, bool suffixed)  -- appends each design "
+                             "in the file to the user designs (4.5.4: (db, path, bool user)); suffixed: the newest file name "
+                             "carried a suffix, handed to each design's constructor"}
             result["functions"]["CEmpireDesignDatabase_SaveUserFile"] = {
                 "rva": got["save_file"], "linux": "CEmpireDesignDatabase::SaveUserFile()",
                 "signature": "void (*)(void* db)  -- rewrites the whole newest UserDesignsFileNames from memory: drops what unloaded mods defined"}
@@ -2208,14 +2377,15 @@ def main():
         print(f"CInGameIdler auto-paused-by-popup flag 0x{result['fields']['CInGameIdler_auto_paused_by_popup']:X}")
 
     # Diplomatic actions. The diplomacy view lists them (CDiplomacyView::ShowDiplomaticActions, its
-    # window has "favors_container"): for each CDiplomaticActionType of the database,
+    # window has "favors_container" up to 4.5.4, "diplo_actions_window" in 4.6.0): for each CDiplomaticActionType of the database,
     # `call NDiplomacyUtil::CreateDiplomaticAction(type, country, target); test rax, rax`, then the
     # action's virtuals: `mov r8, [rcx + P]; xor edx, edx; call r8` (shown at all), deleted with
     # `mov edx, 1; call [r8 + D]` when not, else `xor edx, edx; call [r8 + Q]` (selectable)
     action_db = result["globals"].get("TGameDatabase<CDiplomaticActionTypeDatabase>::_pInstance") or \
         globs.get("TGameDatabase<CDiplomaticActionTypeDatabase>::_pInstance", {}).get("rva")
     got = {}
-    for f in sorted(fns_with_strings("favors_container")) if action_db else []:
+    views = set().union(*string_xrefs(im, ["favors_container", "diplo_actions_window"]).values())
+    for f in sorted(views) if action_db else []:
         ins = im.disasm_fn(f, 0x4000)
         loads = [n for n, i in enumerate(ins) if "[rip + " in i.op_str and rip_target(im, i) == action_db]
         if not loads:
@@ -2337,39 +2507,84 @@ def main():
             "signature": "void (*)(void* human, const void* design)  -- copies the design into the human's setup"}
         print("quick start:", {k: hex(v) for k, v in got.items()})
 
-    # the galaxy settings' enums, value -> name, from the Linux decompile (source-level switches,
-    # the same on every platform): the loc keys CGalaxyConfiguration::Get*LocKey returns, and the
-    # scaling tokens GetScalingTypeTokenFromEnum returns (scaling_off + value)
-    src = Path(__file__).resolve().parents[2] / "source" / "stellaris_4.5_source.cpp"
+    # the galaxy settings' enums, value -> name. The loc keys CGalaxyConfiguration::Get*LocKey returns
+    # come from the Windows switch (4.6.0's Linux decompile merges its cases and loses the strings),
+    # either a jump table (`cmp eax, N; ja; lea rdx, [image base]; mov ecx, [rdx + rax*4 + T];
+    # add rcx, rdx; jmp rcx`) or, for a few values, a compare chain on the loaded value (`test edx, edx;
+    # je; sub edx, 1; je; cmp edx, 1; je`). Each case block copies one key: the first rip-relative
+    # reference to a whole string with the enum's prefix. Cases past the last key (a value whose key is
+    # "RT_ERROR") are left out. The scaling tokens are scaling_off + value, read from the Linux decompile
+    # (GetScalingTypeTokenFromEnum, or its inverse GetScalingTypeEnumFromToken: `param_1 - BASE < N`)
+    src = Path(__file__).resolve().parents[2] / "source" / "stellaris_4.6_source.cpp"
     enums = {}
+    loc_keys = {"Difficulty": ("DIFFICULTY_CADET", "DIFFICULTY_"), "Aggressiveness": ("AGGRESSIVENESS_LOW", "AGGRESSIVENESS_"),
+                "CrisisType": ("CRISIS_TYPE_PRETHORYN", "CRISIS_TYPE_"), "TechScaling": ("DIFF_TECH_SCALING_OFF", "DIFF_TECH_SCALING_")}
+
+    def case_blocks(f):
+        """{case value: block rva} of the switch at the top of f."""
+        body = im.disasm_fn(f, 0x100)[:40]
+        bops = [f"{i.mnemonic} {i.op_str}" for i in body]
+        n = next((int(m.group(1), 0) for o in bops for m in [re.match(r"^cmp eax, (0x[0-9a-f]+|\d+)$", o)] if m), None)
+        tab = next((int(m.group(1), 16) for o in bops
+                    for m in [re.match(r"^mov ecx, dword ptr \[rdx \+ rax\*4 \+ (0x[0-9a-f]+)\]$", o)] if m), None)
+        if n is not None and tab is not None and any(re.match(r"^lea rdx, \[rip - 0x[0-9a-f]+\]$", o) for o in bops):
+            return {k: struct.unpack_from("<I", im.img, tab + 4 * k)[0] for k in range(n + 1)}
+        blocks, v, reg = {}, 0, None
+        for i, o in zip(body, bops):
+            m = re.match(r"^mov (e\w+), dword ptr \[rcx \+ 0x[0-9a-f]+\]$", o)
+            if reg is None:
+                reg = m.group(1) if m else None
+                continue
+            if o == f"test {reg}, {reg}":
+                last = v
+            elif m := re.match(rf"^sub {reg}, (0x[0-9a-f]+|\d+)$", o):
+                v += int(m.group(1), 0)
+                last = v
+            elif m := re.match(rf"^cmp {reg}, (0x[0-9a-f]+|\d+)$", o):
+                last = v + int(m.group(1), 0)
+            elif i.mnemonic == "je" and i.op_str.startswith("0x"):
+                blocks.setdefault(last, int(i.op_str, 16) - im.ib)
+            elif i.mnemonic != "jne":
+                break
+        return blocks if blocks and sorted(blocks) == list(range(len(blocks))) else {}
+
+    owners = string_xrefs(im, [k for k, _ in loc_keys.values()])
+    for enum, (key, prefix) in loc_keys.items():
+        if len(owners[key]) != 1:
+            continue
+        vals = []
+        for k, block in sorted(case_blocks(next(iter(owners[key]))).items()):
+            name = None
+            for i in im.disasm_fn(block, 0x200)[:40]:
+                t = im.rip_target(i)
+                if t and im.img[t - 1] == 0 and im.cstr(t).startswith(prefix):
+                    name = im.cstr(t)
+                    break
+            vals.append(name)
+        while vals and vals[-1] is None:
+            vals.pop()
+        if vals and None not in vals and len(set(vals)) == len(vals):
+            enums[enum] = vals
     if src.exists():
         import mmap
         with open(src, "rb") as fh:
             mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
-            for enum, fn in (("Difficulty", "CGalaxyConfiguration::GetDifficultyLocKey"),
-                             ("Aggressiveness", "CGalaxyConfiguration::GetAggressivenessLocKey"),
-                             ("CrisisType", "CGalaxyConfiguration::GetCrisisTypeLocKey"),
-                             ("TechScaling", "CGalaxyConfiguration::GetTechCostDifficultyScaleLocKey")):
-                s = mm.find(b"\n/* " + fn.encode())
-                if s < 0:
-                    continue
-                body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
-                vals = {int(n): k for n, k in re.findall(r'case (\d+):\s*\w+ = "([A-Z_]+)"', body)}
-                vals.update({int(n): k for n, k in re.findall(r'== (\d+)\) \{\s*\w+ = "([A-Z_]+)"', body)})
-                rest = [k for k in re.findall(r'"([A-Z_]+)"', body) if k not in vals.values() and k != "RT_ERROR"]
-                zero = re.search(r"!= (\d+)\)", body)
-                if rest and zero and int(zero.group(1)) not in vals:
-                    vals[int(zero.group(1))] = rest[0]
-                vals = {n: k for n, k in vals.items() if k != "RT_ERROR"}
-                if vals and sorted(vals) == list(range(len(vals))):
-                    enums[enum] = [vals[n] for n in range(len(vals))]
+            linux_names = json.loads((HERE / "linux_tokens.json").read_text(encoding="utf-8"))["tokens"]
+            scaling = None  # (base token, count)
             s = mm.find(b"\n/* GetScalingTypeTokenFromEnum")
             if s >= 0:
                 body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
                 lim, base = re.search(r"param_1 < (\d+)", body), re.search(r"param_1 \+ (0x[0-9a-f]+)", body)
-                linux_names = json.loads((HERE / "linux_tokens.json").read_text(encoding="utf-8"))["tokens"]
                 if lim and base:
-                    enums["Scaling"] = [linux_names.get(hex(int(base.group(1), 16) + k), "") for k in range(int(lim.group(1)))]
+                    scaling = int(base.group(1), 16), int(lim.group(1))
+            s = mm.find(b"\n/* GetScalingTypeEnumFromToken") if scaling is None else -1
+            if s >= 0:
+                body = mm[s:mm.find(b"End ===", s)].decode("utf-8", "replace")
+                m = re.search(r"param_1 - (0x[0-9a-f]+)U? < (\d+)\)", body)
+                if m:
+                    scaling = int(m.group(1), 16), int(m.group(2))
+            if scaling:
+                enums["Scaling"] = [linux_names.get(hex(scaling[0] + k), "") for k in range(scaling[1])]
     # EEnvoyAssignment (a leader location's sub-kind for envoys), by the script tokens
     # TokenToEnum<EEnvoyAssignment> reads: `if (iVar1 == TOKEN) { return N; }`
     if src.exists():
@@ -2511,8 +2726,10 @@ def main():
         result["fields"]["CTrait_key"] = got["key"]
         print(f"CTraitSet traits data +0x{got['data']:X} count +0x{got['count']:X}; CTrait key +0x{got['key']:X}")
 
-    # CTraitDatabase::_pInstance: the trait array {data, capacity, size} its readers walk
-    tdb = result["globals"].get("CTraitDatabase::_pInstance") or globs.get("CTraitDatabase::_pInstance")
+    # the trait database (TGameDatabase<CTraitDatabase>::_pInstance since 4.6.0): the trait array {data, capacity, size}
+    # its readers walk
+    tdb = next((g for g in (result["globals"].get(k) or (globs.get(k) or {}).get("rva")
+                            for k in ("TGameDatabase<CTraitDatabase>::_pInstance", "CTraitDatabase::_pInstance")) if g), None)
     arr = collections.Counter()
     if tdb:
         text = im.img[im.text0:im.text1]
