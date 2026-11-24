@@ -931,7 +931,9 @@ void IPCServer::WorkerLoop() {
                         };
                     }
 
-                    std::string out_str = resp_json.dump() + "\n";
+                    // replace invalid UTF-8 (a misread game string) instead of throwing: an exception
+                    // here is outside every handler and std::terminate takes the game down
+                    std::string out_str = resp_json.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
                     DWORD written = 0;
                     WriteFile(pipe_handle_, out_str.data(), (DWORD)out_str.size(), &written, nullptr);
                     FlushFileBuffers(pipe_handle_);

@@ -127,14 +127,14 @@ std::string TechManager::LocalizeTechKey(const std::string& key) {
 uint32_t TechManager::ExtractTechTier(void* tech_ptr) {
     if (!tech_ptr) return 0;
     uint32_t tier = 0;
-    SafeReadU32((const void*)((uintptr_t)tech_ptr + 0x60), &tier);
+    SafeReadU32((const void*)((uintptr_t)tech_ptr + 0x98), &tier);
     return tier;
 }
 
 uint64_t TechManager::ExtractTechCost(void* tech_ptr) {
     if (!tech_ptr) return 0;
     uint64_t raw_cost = 0;
-    SafeReadU64((const void*)((uintptr_t)tech_ptr + 0x68), &raw_cost);
+    SafeReadU64((const void*)((uintptr_t)tech_ptr + 0xA0), &raw_cost);
     return raw_cost / 50000;
 }
 

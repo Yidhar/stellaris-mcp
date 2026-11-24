@@ -154,9 +154,9 @@ namespace designs {
 namespace rt = sdk::rt;
 // CShipSize::ReadMember stores the script flag is_designable (token 0x31fe) as bit 1 of the flags
 constexpr uint64_t kShipSizeDesignable = 1ull << 1;
-// script keys: a ship size's at +0x20, a component template's at +0x1B0 (as the catalog reads them)
+// script keys: a ship size's at +0x20, a component template's at +0x20 (4.6.0; +0x1B0 before)
 constexpr std::ptrdiff_t kShipSizeKey = 0x20;
-constexpr std::ptrdiff_t kComponentKey = 0x1B0;
+constexpr std::ptrdiff_t kComponentKey = 0x20;
 constexpr uint32_t kOwnerCountry = 0;  // EDesignOwner
 
 template <typename T>
@@ -551,6 +551,66 @@ nlohmann::json ShipDesigner::BuildShipJson(const nlohmann::json& params) {
     return out;
 }
 
+// TGameDatabase<CShipDesignTemplatesDatabase> (4.6.0, measured live): CPdxArrays of the component
+// sets (+0x38) and of the component templates by class: weapons (+0x50), utilities (+0x68), strike
+// craft (+0x80). A set: key +0x20, icon +0xC8, its templates +0x100. A template: key +0x20, power
+// +0x2F0, its modifier +0x2F8; the subclass fields (weapon/strike craft/utility stats) follow the base
+constexpr std::ptrdiff_t kDbComponentSets = 0x38, kDbWeapons = 0x50, kDbUtilities = 0x68, kDbStrikeCraft = 0x80;
+constexpr std::ptrdiff_t kSetKey = 0x20, kSetIcon = 0xC8, kSetComponents = 0x100;
+constexpr std::ptrdiff_t kTemplatePower = 0x2F0, kTemplateModifier = 0x2F8;  // key: designs::kComponentKey
+
+// a modifier type's key ("MOD_SHIP_ARMOR_ADD"): CModifier::_Definitions entry, key std::string at +0x10
+static std::string ModifierKey(uintptr_t base, uint32_t type) {
+    void* defs = nullptr;
+    uint32_t count = 0;
+    std::string key;
+    if (SafeReadPtr((const void*)(base + sdk::glob::CModifier_Definitions), &defs) && defs &&
+        SafeReadU32((const void*)(base + sdk::glob::CModifier_Definitions + sdk::rt::CModifierDefinitions_count), &count) &&
+        type < count) {
+        SafeReadPdxString((const void*)((uintptr_t)defs + type * sdk::rt::CModifierDefinition_size + 0x10), key);
+    }
+    return key;
+}
+
+// the stat name the catalog reports for a utility modifier: the old names for the common ones,
+// else the key in lower case without "MOD_"
+static std::string UtilityStatName(const std::string& key, uint32_t type) {
+    static constexpr std::pair<const char*, const char*> kNames[] = {
+        { "MOD_SHIP_HULL_ADD", "hull_add" }, { "MOD_SHIP_HULL_REGEN_ADD_PERC", "hull_regen" },
+        { "MOD_SHIP_ARMOR_ADD", "armor_add" }, { "MOD_SHIP_ARMOR_REGEN_ADD_PERC", "armor_regen" },
+        { "MOD_SHIP_SHIELD_ADD", "shield_add" }, { "MOD_SHIP_SHIELD_REGEN_ADD_PERC", "shield_regen" },
+        { "MOD_SHIP_WEAPON_RANGE_MULT", "weapon_range_mult" }, { "MOD_SHIP_FIRE_RATE_MULT", "fire_rate_mult" },
+        { "MOD_SHIP_EVASION_ADD", "evasion_add" }, { "MOD_SHIP_EVASION_MULT", "evasion_mult" },
+        { "MOD_SHIP_ACCURACY_ADD", "accuracy_add" }, { "MOD_SHIP_BASE_SPEED_MULT", "base_speed_mult" },
+        { "MOD_SHIP_SPEED_MULT", "speed_mult" } };
+    if (key.empty()) return "mod_" + std::to_string(type);
+    for (const auto& [k, name] : kNames) {
+        if (key == k) return name;
+    }
+    std::string out = key.rfind("MOD_", 0) == 0 ? key.substr(4) : key;
+    std::transform(out.begin(), out.end(), out.begin(), ::tolower);
+    return out;
+}
+
+enum class TemplateKind { Other, Weapon, StrikeCraft, Utility };
+
+// the template's class, by its vtable against the first template of each class array
+static TemplateKind KindOfTemplate(void* db, void* tmpl) {
+    void* vt = nullptr;
+    if (!db || !tmpl || !SafeReadPtr(tmpl, &vt) || !vt) return TemplateKind::Other;
+    for (auto [off, kind] : { std::pair{ kDbWeapons, TemplateKind::Weapon }, std::pair{ kDbStrikeCraft, TemplateKind::StrikeCraft },
+                              std::pair{ kDbUtilities, TemplateKind::Utility } }) {
+        void* arr = nullptr;
+        void* first = nullptr;
+        void* first_vt = nullptr;
+        if (SafeReadPtr((const void*)((uintptr_t)db + off), &arr) && arr && SafeReadPtr(arr, &first) && first &&
+            SafeReadPtr(first, &first_vt) && first_vt == vt) {
+            return kind;
+        }
+    }
+    return TemplateKind::Other;
+}
+
 ShipDesigner& ShipDesigner::Get() {
     static ShipDesigner instance;
     return instance;
@@ -611,12 +671,12 @@ void ShipDesigner::BuildComponentIndexIfNeeded() {
     if (!base_address_) return;
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) return;
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) return;
 
     void* arr = nullptr;
     uint32_t cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + 0x20), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)comp_db + 0x2C), &cnt) || cnt == 0) return;
+    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + kDbComponentSets), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)comp_db + kDbComponentSets + 0xC), &cnt) || cnt == 0) return;
 
     for (uint32_t i = 0; i < cnt; ++i) {
         void* set_ptr = nullptr;
@@ -624,15 +684,15 @@ void ShipDesigner::BuildComponentIndexIfNeeded() {
 
         void* c_vec = nullptr;
         uint32_t c_cnt = 0;
-        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + 0xB8), &c_vec) || !c_vec ||
-            !SafeReadU32((const void*)((uintptr_t)set_ptr + 0xC4), &c_cnt)) continue;
+        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + kSetComponents), &c_vec) || !c_vec ||
+            !SafeReadU32((const void*)((uintptr_t)set_ptr + kSetComponents + 0xC), &c_cnt)) continue;
 
         for (uint32_t j = 0; j < c_cnt; ++j) {
             void* p_tmpl = nullptr;
             if (!SafeReadPtr((const void*)((uintptr_t)c_vec + j * 8), &p_tmpl) || !p_tmpl) continue;
 
             std::string key;
-            if (SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x1B0), key) && !key.empty()) {
+            if (SafeReadPdxString((const void*)((uintptr_t)p_tmpl + designs::kComponentKey), key) && !key.empty()) {
                 component_cache_[key] = p_tmpl;
             }
         }
@@ -770,14 +830,14 @@ nlohmann::json ShipDesigner::GetShipDesignCatalogJson(const nlohmann::json& para
     }
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
     void* arr = nullptr;
     uint32_t cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + 0x20), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)comp_db + 0x2C), &cnt)) {
+    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + kDbComponentSets), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)comp_db + kDbComponentSets + 0xC), &cnt)) {
         return { {"error", "Failed to read component sets"} };
     }
 
@@ -788,14 +848,13 @@ nlohmann::json ShipDesigner::GetShipDesignCatalogJson(const nlohmann::json& para
         if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &set_ptr) || !set_ptr) continue;
 
         std::string set_key, loc_name, icon_gfx;
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x18), set_key);
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x50), loc_name);
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x80), icon_gfx);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetKey), set_key);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetIcon), icon_gfx);
 
         void* c_vec = nullptr;
         uint32_t c_cnt = 0;
-        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + 0xB8), &c_vec) || !c_vec ||
-            !SafeReadU32((const void*)((uintptr_t)set_ptr + 0xC4), &c_cnt)) continue;
+        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + kSetComponents), &c_vec) || !c_vec ||
+            !SafeReadU32((const void*)((uintptr_t)set_ptr + kSetComponents + 0xC), &c_cnt)) continue;
 
         nlohmann::json variants = nlohmann::json::array();
         for (uint32_t j = 0; j < c_cnt; ++j) {
@@ -803,7 +862,7 @@ nlohmann::json ShipDesigner::GetShipDesignCatalogJson(const nlohmann::json& para
             if (!SafeReadPtr((const void*)((uintptr_t)c_vec + j * 8), &p_tmpl) || !p_tmpl) continue;
 
             std::string t_key;
-            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x1B0), t_key);
+            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + designs::kComponentKey), t_key);
 
             bool is_unlocked = CanCountryUseComponent(p_tmpl, country);
             if (unlocked_only && !is_unlocked) {
@@ -869,14 +928,14 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
     void* country = GetPlayerCountry();
 
     void* comp_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CShipDesignTemplatesDatabase_pInstance), &comp_db) || !comp_db) {
         return { {"error", "Component database not found"} };
     }
 
     void* arr = nullptr;
     uint32_t cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + 0x20), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)comp_db + 0x2C), &cnt)) {
+    if (!SafeReadPtr((const void*)((uintptr_t)comp_db + kDbComponentSets), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)comp_db + kDbComponentSets + 0xC), &cnt)) {
         return { {"error", "Failed to read component sets"} };
     }
 
@@ -887,9 +946,8 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
         if (!set_ptr) return nullptr;
 
         std::string set_key, loc_name, icon_gfx;
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x18), set_key);
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x50), loc_name);
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x80), icon_gfx);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetKey), set_key);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetIcon), icon_gfx);
 
         std::string set_localized = LocalizeKey(set_key);
         if (set_localized.empty() || set_localized == set_key) {
@@ -898,8 +956,8 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
 
         void* c_vec = nullptr;
         uint32_t c_cnt = 0;
-        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + 0xB8), &c_vec) || !c_vec ||
-            !SafeReadU32((const void*)((uintptr_t)set_ptr + 0xC4), &c_cnt)) {
+        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + kSetComponents), &c_vec) || !c_vec ||
+            !SafeReadU32((const void*)((uintptr_t)set_ptr + kSetComponents + 0xC), &c_cnt)) {
             return {
                 {"set_key", set_key},
                 {"localized_name", set_localized},
@@ -916,18 +974,18 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
             if (!SafeReadPtr((const void*)((uintptr_t)c_vec + j * 8), &p_tmpl) || !p_tmpl) continue;
 
             std::string t_key;
-            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x1B0), t_key);
+            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + designs::kComponentKey), t_key);
             if (t_key.empty()) continue;
 
             std::string var_name = LocalizeKey(t_key);
             bool is_unlocked = CanCountryUseComponent(p_tmpl, country);
 
             int64_t power_raw = 0;
-            SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x2A8), &power_raw);
+            SafeReadI64((const void*)((uintptr_t)p_tmpl + kTemplatePower), &power_raw);
             double power = power_raw / 100000.0;
 
             uint8_t s_enum = 0;
-            SafeCopyChars((char*)&s_enum, (const char*)((uintptr_t)p_tmpl + 0x1E0), 1);
+            SafeCopyChars((char*)&s_enum, (const char*)((uintptr_t)p_tmpl + sdk::rt::CComponentTemplate_size_kind), 1);
             std::string size_str = "standard";
             switch (s_enum) {
                 case 1: size_str = "small"; break;
@@ -948,9 +1006,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                     break;
             }
 
-            uintptr_t vt = 0;
-            SafeReadPtr((const void*)p_tmpl, (void**)&vt);
-            uintptr_t vt_rva = (vt > base_address_) ? (vt - base_address_) : 0;
+            const TemplateKind kind = KindOfTemplate(comp_db, p_tmpl);
 
             nlohmann::json vj = {
                 {"component_key", t_key},
@@ -960,7 +1016,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                 {"is_unlocked", is_unlocked}
             };
 
-            if (vt_rva == 0x23714F0) {
+            if (kind == TemplateKind::Weapon) {
                 // CWeaponComponentTemplate
                 vj["type"] = "weapon";
 
@@ -969,23 +1025,23 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                 int64_t sh_pen_raw = 0, ar_pen_raw = 0, min_w_raw = 0, delta_w_raw = 0;
                 int64_t col_dmg_raw = 0, col_delta_raw = 0, col_rng_raw = 0;
 
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1218), &min_d_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1220), &delta_d_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11E8), &rng_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11F0), &min_rng_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11E0), &cd_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11F8), &acc_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1200), &trk_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1228), &hull_m_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1230), &armor_m_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1238), &shield_m_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1240), &sh_pen_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1248), &ar_pen_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11D0), &min_w_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11D8), &delta_w_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1268), &col_dmg_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1270), &col_delta_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1278), &col_rng_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11C0), &min_d_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11C8), &delta_d_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1190), &rng_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1198), &min_rng_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1188), &cd_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11A0), &acc_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11A8), &trk_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11D0), &hull_m_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11D8), &armor_m_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11E0), &shield_m_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11E8), &sh_pen_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11F0), &ar_pen_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1178), &min_w_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1180), &delta_w_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1210), &col_dmg_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1218), &col_delta_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1220), &col_rng_raw);
 
                 vj["weapon_stats"] = {
                     {"min_damage", min_d_raw / 100000.0},
@@ -1006,20 +1062,20 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                     {"aoe_damage", col_dmg_raw / 100000.0},
                     {"aoe_range", col_rng_raw / 100000.0}
                 };
-            } else if (vt_rva == 0x2371380) {
+            } else if (kind == TemplateKind::StrikeCraft) {
                 // CStrikeCraftComponentTemplate
                 vj["type"] = "strike_craft";
 
                 int32_t c_cnt_val = 0;
                 int64_t rng_raw = 0, cd_raw = 0, d_min_raw = 0, d_max_raw = 0, acc_raw = 0, trk_raw = 0;
 
-                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x11C8), &c_cnt_val);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11E8), &rng_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11D8), &cd_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1250), &d_min_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1258), &d_max_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11F8), &acc_raw);
-                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1200), &trk_raw);
+                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x1170), &c_cnt_val);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1190), &rng_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1180), &cd_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11F8), &d_min_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x1200), &d_max_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11A0), &acc_raw);
+                SafeReadI64((const void*)((uintptr_t)p_tmpl + 0x11A8), &trk_raw);
 
                 vj["strike_craft_stats"] = {
                     {"craft_count", c_cnt_val},
@@ -1030,14 +1086,14 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                     {"accuracy", acc_raw / 100000.0},
                     {"tracking", trk_raw / 100000.0}
                 };
-            } else if (vt_rva == 0x2371468) {
+            } else if (kind == TemplateKind::Utility) {
                 // CUtilityComponentTemplate
                 vj["type"] = "utility";
                 nlohmann::json uj = nlohmann::json::object();
 
                 void* p_entries = nullptr;
                 uint32_t m_cnt_val = 0;
-                uintptr_t mod_addr = (uintptr_t)p_tmpl + 0x2B0;
+                uintptr_t mod_addr = (uintptr_t)p_tmpl + kTemplateModifier;
                 if (SafeReadPtr((const void*)(mod_addr + 0x38), &p_entries) && p_entries &&
                     SafeReadU32((const void*)(mod_addr + 0x44), &m_cnt_val) && m_cnt_val > 0 && m_cnt_val < 32) {
                     for (uint32_t idx = 0; idx < m_cnt_val; ++idx) {
@@ -1046,37 +1102,19 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
                         SafeReadI64((const void*)((uintptr_t)p_entries + idx * 16 + 8), &type_raw);
                         double val = val_raw / 100000.0;
 
-                        switch (type_raw) {
-                            case 30: uj["hull_add"] = val; break;
-                            case 34: uj["hull_regen"] = val; break;
-                            case 36: uj["armor_add"] = val; break;
-                            case 41: uj["armor_regen"] = val; break;
-                            case 46: uj["shield_add"] = val; break;
-                            case 51: uj["shield_regen"] = val; break;
-                            case 59: uj["weapon_range_mult"] = val; break;
-                            case 64: uj["fire_rate_mult"] = val; break;
-                            case 73: uj["evasion_add"] = val; break;
-                            case 74: uj["evasion_mult"] = val; break;
-                            case 75: uj["accuracy_add"] = val; break;
-                            case 79: uj["base_speed_mult"] = val; break;
-                            case 80: uj["speed_mult"] = val; break;
-                            default: {
-                                std::string custom_mod = "mod_" + std::to_string(type_raw);
-                                uj[custom_mod] = val;
-                                break;
-                            }
-                        }
+                        // by the modifier's key (ids are renumbered between patches)
+                        uj[UtilityStatName(ModifierKey(base_address_, (uint32_t)type_raw), (uint32_t)type_raw)] = val;
                     }
                 }
 
                 int32_t sr = 0, hl = 0;
-                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x11C8), &sr);
-                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x11CC), &hl);
+                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x1170), &sr);
+                SafeReadI32((const void*)((uintptr_t)p_tmpl + 0x1174), &hl);
                 if (sr > 0) uj["sensor_range"] = sr;
                 if (hl > 0) uj["hyperlane_range"] = hl;
 
                 std::string beh;
-                SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x11E8), beh);
+                SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x1190), beh);
                 if (!beh.empty()) uj["ship_behavior"] = beh;
 
                 vj["utility_stats"] = uj;
@@ -1102,7 +1140,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
         if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &set_ptr) || !set_ptr) continue;
 
         std::string set_key;
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x18), set_key);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetKey), set_key);
         std::string set_key_upper = set_key;
         std::transform(set_key_upper.begin(), set_key_upper.end(), set_key_upper.begin(), ::toupper);
 
@@ -1118,15 +1156,15 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
 
         void* c_vec = nullptr;
         uint32_t c_cnt = 0;
-        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + 0xB8), &c_vec) || !c_vec ||
-            !SafeReadU32((const void*)((uintptr_t)set_ptr + 0xC4), &c_cnt)) continue;
+        if (!SafeReadPtr((const void*)((uintptr_t)set_ptr + kSetComponents), &c_vec) || !c_vec ||
+            !SafeReadU32((const void*)((uintptr_t)set_ptr + kSetComponents + 0xC), &c_cnt)) continue;
 
         for (uint32_t j = 0; j < c_cnt; ++j) {
             void* p_tmpl = nullptr;
             if (!SafeReadPtr((const void*)((uintptr_t)c_vec + j * 8), &p_tmpl) || !p_tmpl) continue;
 
             std::string t_key;
-            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + 0x1B0), t_key);
+            SafeReadPdxString((const void*)((uintptr_t)p_tmpl + designs::kComponentKey), t_key);
             std::string t_key_upper = t_key;
             std::transform(t_key_upper.begin(), t_key_upper.end(), t_key_upper.begin(), ::toupper);
 
@@ -1143,7 +1181,7 @@ nlohmann::json ShipDesigner::GetComponentDetailsJson(const nlohmann::json& param
         if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &set_ptr) || !set_ptr) continue;
 
         std::string set_key;
-        SafeReadPdxString((const void*)((uintptr_t)set_ptr + 0x18), set_key);
+        SafeReadPdxString((const void*)((uintptr_t)set_ptr + kSetKey), set_key);
         std::string set_key_upper = set_key;
         std::transform(set_key_upper.begin(), set_key_upper.end(), set_key_upper.begin(), ::toupper);
 

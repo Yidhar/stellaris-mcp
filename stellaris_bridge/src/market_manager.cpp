@@ -109,7 +109,7 @@ void* MarketManager::FindStrategicResource(const std::string& resource_key) {
     if (!base_address_) return nullptr;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return nullptr;
     }
     if (!res_db || (uintptr_t)res_db < 0x10000) {
@@ -118,8 +118,8 @@ void* MarketManager::FindStrategicResource(const std::string& resource_key) {
 
     uint32_t cnt = 0;
     void* arr = nullptr;
-    if (!SafeReadU32((const void*)((uintptr_t)res_db + 0x14), &cnt) || !cnt ||
-        !SafeReadPtr((const void*)((uintptr_t)res_db + 0x08), &arr) || !arr) {
+    if (!SafeReadU32((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_count), &cnt) || !cnt ||
+        !SafeReadPtr((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_items), &arr) || !arr) {
         return nullptr;
     }
 
@@ -131,7 +131,7 @@ void* MarketManager::FindStrategicResource(const std::string& resource_key) {
         if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &res_ptr) || !res_ptr) continue;
 
         std::string key;
-        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x30), key);
+        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x20), key);
         std::string key_lower = key;
         std::transform(key_lower.begin(), key_lower.end(), key_lower.begin(), ::tolower);
 
@@ -201,14 +201,14 @@ nlohmann::json MarketManager::GetMarketInfo() {
     }
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return { {"error", "Resource database not found"} };
     }
 
     uint32_t cnt = 0;
     void* arr = nullptr;
-    if (!SafeReadU32((const void*)((uintptr_t)res_db + 0x14), &cnt) || !cnt ||
-        !SafeReadPtr((const void*)((uintptr_t)res_db + 0x08), &arr) || !arr) {
+    if (!SafeReadU32((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_count), &cnt) || !cnt ||
+        !SafeReadPtr((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_items), &arr) || !arr) {
         return { {"error", "Failed to read resource database"} };
     }
 
@@ -225,7 +225,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
                     SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &res_ptr);
                     if (res_ptr) {
                         std::string k;
-                        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x30), k);
+                        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x20), k);
                         if (!k.empty()) {
                             stockpiles[k] = std::round((val_raw / 100000.0) * 100.0) / 100.0;
                         }
@@ -243,8 +243,8 @@ nlohmann::json MarketManager::GetMarketInfo() {
 
         int64_t base_amt_raw = 0;
         int64_t base_price_raw = 0;
-        SafeReadI64((const void*)((uintptr_t)res_ptr + 0x158), &base_amt_raw);
-        SafeReadI64((const void*)((uintptr_t)res_ptr + 0x160), &base_price_raw);
+        SafeReadI64((const void*)((uintptr_t)res_ptr + 0x190), &base_amt_raw);
+        SafeReadI64((const void*)((uintptr_t)res_ptr + 0x198), &base_price_raw);
 
         if (base_amt_raw <= 0 || base_price_raw <= 0) {
             // Not a tradable market resource
@@ -252,7 +252,7 @@ nlohmann::json MarketManager::GetMarketInfo() {
         }
 
         std::string key;
-        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x30), key);
+        SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x20), key);
         if (key.empty()) continue;
 
         double batch_size = base_amt_raw / 100000.0;
@@ -401,7 +401,7 @@ bool MarketManager::ExecuteInstantTrade(const std::string& resource_key, const s
     }
 
     int64_t base_amt_raw = 0;
-    SafeReadI64((const void*)((uintptr_t)res_ptr + 0x158), &base_amt_raw);
+    SafeReadI64((const void*)((uintptr_t)res_ptr + 0x190), &base_amt_raw);
     if (base_amt_raw <= 0) {
         out_message = "Resource '" + resource_key + "' is not tradable on the market";
         return false;

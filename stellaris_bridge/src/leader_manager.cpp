@@ -141,6 +141,60 @@ nlohmann::json TraitsJson(const std::vector<LeaderTraitDetail>& traits) {
     return arr;
 }
 
+// CCountryLeaderManager (at CCountry::type + 0x20): the candidate pool, a CPdxArray of leader ids
+// {data +0x28, capacity +0x30, size +0x34} (4.6.0, measured live)
+constexpr std::ptrdiff_t kPoolData = 0x28, kPoolSize = 0x34;
+constexpr uint32_t kHoursPerYear = 24 * 360;
+
+// the game date in hours (CGameState +0xC0), 0 when no game is loaded
+static uint32_t CurrentHours(uintptr_t base) {
+    void* state = nullptr;
+    uint32_t hours = 0;
+    if (SafeReadPtr((const void*)(base + sdk::glob::g_CurrentGameState), &state) && state && (uintptr_t)state >= 0x10000) {
+        SafeReadU32((const void*)((uintptr_t)state + 0xC0), &hours);
+    }
+    return hours;
+}
+
+// CFixedResourceTable pre-sized to every resource, as the engine builds it before costing a
+// leader: +0 points at {data, capacity, size}
+struct LeaderCostTable {
+    void* holder;
+    int64_t* data;
+    int32_t capacity;
+    int32_t size;
+    void* allocator;
+    int64_t values[256];
+};
+
+struct LeaderCostCtx {
+    uintptr_t fn;
+    const void* leader;
+    LeaderCostTable* table;
+};
+
+static void CallLeaderCost(void* p, void*) {
+    auto* x = (LeaderCostCtx*)p;
+    ((void (*)(const void*, void*, int64_t, bool))x->fn)(x->leader, x->table, 100000, false);
+}
+
+// the recruitment cost CCountry::CanHireLeader charges (CLeader::CalcTable<cost>), {resource: amount}
+static nlohmann::json HireCost(uintptr_t base, const void* leader) {
+    nlohmann::json out = nlohmann::json::object();
+    if (!leader || !CommandBuilder::Get().SdkMatchesExe()) return out;
+    const auto& names = GameState::Get().ResourceNames();
+    LeaderCostTable t{};
+    t.holder = &t.data;
+    t.data = t.values;
+    t.capacity = t.size = (int32_t)(std::min<size_t>)(names.size(), 256);
+    LeaderCostCtx ctx{ base + sdk::fn::CLeader_CalcCostTable, leader, &t };
+    if (!CommandBuilder::Get().CallGuarded(&CallLeaderCost, &ctx)) return out;
+    for (int32_t i = 0; i < t.size; ++i) {
+        if (t.values[i] > 0 && !names[i].empty()) out[names[i]] = std::round(t.values[i] / 1000.0) / 100.0;
+    }
+    return out;
+}
+
 LeaderManager& LeaderManager::Get() {
     static LeaderManager instance;
     return instance;
@@ -338,7 +392,7 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
 
     // 2. Class & Subclass
     void* class_ptr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0xE0), &class_ptr) && class_ptr) {
+    if (SafeReadPtr((const void*)((uintptr_t)leader + sdk::ent::CLeader::class_), &class_ptr) && class_ptr) {
         SafeReadPdxString((const void*)((uintptr_t)class_ptr + 0x20), detail.class_key);
         detail.class_name = LocalizeKey(detail.class_key);
     }
@@ -352,16 +406,23 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
         }
     }
 
-    // 3. Level (+0x9D8), Experience (+0xF0), Age (+0x108)
-    SafeReadU32((const void*)((uintptr_t)leader + 0x9D8), &detail.level);
+    // 3. Level, Experience (+0xF0), Age
+    SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::level), &detail.level);
     int64_t raw_xp = 0;
     if (SafeReadI64((const void*)((uintptr_t)leader + 0xF0), &raw_xp)) {
         detail.experience = std::round((double)raw_xp / 1000.0) / 100.0;
     }
-    SafeReadU32((const void*)((uintptr_t)leader + 0x108), &detail.age);
+    // CLeader::age is the age on CLeader::date: a hired leader stores its age when recruited, a
+    // pool candidate age 0 and its birth date. The game shows age + whole years since then.
+    SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::age), &detail.age);
+    uint32_t since = 0;
+    const uint32_t now = CurrentHours(base_address_);
+    if (SafeReadU32((const void*)((uintptr_t)leader + sdk::ent::CLeader::date), &since) && since && now > since) {
+        detail.age += (now - since) / kHoursPerYear;
+    }
 
     void* ethic_ptr = nullptr;
-    if (SafeReadPtr((const void*)((uintptr_t)leader + 0x6D8), &ethic_ptr) && ethic_ptr) {
+    if (SafeReadPtr((const void*)((uintptr_t)leader + sdk::ent::CLeader::ethic), &ethic_ptr) && ethic_ptr) {
         SafeReadPdxString((const void*)((uintptr_t)ethic_ptr + 0x20), detail.ethic_key);
         detail.ethic_name = LocalizeKey(detail.ethic_key);
     }
@@ -394,9 +455,9 @@ HiredLeaderDetail LeaderManager::ReadLeader(uint32_t leader_id) {
     }
 
     // 5. Traits. CPdxArray<CLeaderTrait*> fields: data pointer at the SDK offset, count 0xC
-    // further; the trait key is the std::string at trait+0x148 (CString at +0x138 on Linux).
+    // further; the trait key is the std::string at trait+0x20 (+0x148 before 4.6.0).
     namespace L = sdk::ent::CLeader;
-    constexpr std::ptrdiff_t kTraitKey = 0x148;
+    constexpr std::ptrdiff_t kTraitKey = 0x20;
     auto read_traits = [&](std::ptrdiff_t field, std::vector<LeaderTraitDetail>& out) {
         void* arr = nullptr;
         uint32_t cnt = 0;
@@ -442,7 +503,7 @@ LeaderSummary LeaderManager::GetSummary() {
     // 2. Leader capacity & pool count from CCountryLeaderManager [Country + sdk::ent::CCountry::type + 0x20]
     void* c_leader_mgr = nullptr;
     if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x20), &c_leader_mgr) && c_leader_mgr) {
-        SafeReadU32((const void*)((uintptr_t)c_leader_mgr + 0x30), &summary.pool_count);
+        SafeReadU32((const void*)((uintptr_t)c_leader_mgr + kPoolSize), &summary.pool_count);
         SafeReadU32((const void*)((uintptr_t)c_leader_mgr + 0x50), &summary.leader_capacity);
     }
 
@@ -529,14 +590,14 @@ nlohmann::json LeaderManager::GetLeadersJson() {
     }
     result["hired_leaders"] = hired_list;
 
-    // 2. Candidate pool from CCountryLeaderManager [Country + sdk::ent::CCountry::type + 0x20] + 0x28
+    // 2. Candidate pool from CCountryLeaderManager [Country + sdk::ent::CCountry::type + 0x20]
     nlohmann::json pool_list = nlohmann::json::array();
     void* c_leader_mgr = nullptr;
     if (SafeReadPtr((const void*)((uintptr_t)country + sdk::ent::CCountry::type + 0x20), &c_leader_mgr) && c_leader_mgr) {
         void* pool_arr = nullptr;
         uint32_t pool_cnt = 0;
-        SafeReadPtr((const void*)((uintptr_t)c_leader_mgr + 0x28), &pool_arr);
-        SafeReadU32((const void*)((uintptr_t)c_leader_mgr + 0x30), &pool_cnt);
+        SafeReadPtr((const void*)((uintptr_t)c_leader_mgr + kPoolData), &pool_arr);
+        SafeReadU32((const void*)((uintptr_t)c_leader_mgr + kPoolSize), &pool_cnt);
 
         if (pool_arr && pool_cnt > 0) {
             for (uint32_t i = 0; i < pool_cnt && i < 64; ++i) {
@@ -552,6 +613,7 @@ nlohmann::json LeaderManager::GetLeadersJson() {
                             {"class_name", d.class_name},
                             {"level", d.level},
                             {"age", d.age},
+                            {"hire_cost", HireCost(base_address_, FindLeaderPtr(cid))},
                             {"ethic", d.ethic_key},
                             {"ethic_name", d.ethic_name}
                         });
@@ -583,6 +645,22 @@ nlohmann::json LeaderManager::HireLeader(uint32_t candidate_id) {
 
     LOGF("[LEADER] Posting CHireLeaderCommand (0x4073) for candidate %u, country %u, tick %u...",
         candidate_id, country_id, tick_timestamp);
+
+    // CCountry::CanHireLeader(leader, CString* reason): the check the hire command makes, asked first
+    // for the engine's reason text
+    struct HireCheck {
+        uintptr_t fn;
+        void* country;
+        void* leader;
+        bool ok;
+    } check{ base_address_ + sdk::fn::CCountry_CanHireLeader, GetPlayerCountry(), leader, false };
+    std::string why;
+    if (CommandBuilder::Get().CallForText([](void* c, void* reason) {
+            auto* x = (HireCheck*)c;
+            x->ok = ((bool (*)(void*, void*, void*))x->fn)(x->country, x->leader, reason);
+        }, &check, &why) && !check.ok) {
+        return { {"error", {{"code", -32074}, {"message", why.empty() ? "The game refuses to hire this leader" : why}}} };
+    }
 
     namespace hire = sdk::cmd::hire_leader;
     auto cmd = CommandBuilder::Get().Create(hire::kSpec);

@@ -23,12 +23,13 @@ constexpr double kFixed = 100000.0;  // CFixedPoint
 constexpr int kMaxJumps = 12;
 
 // CPdxArray object {vtable, data @ +8, capacity @ +0x10, size @ +0x14} (ref_array fields such as
-// CGalacticObject::starbases / fleet_presence); CGalacticObject::hyperlane is a plain
-// {data, size @ +8} array of CHyperlane (0x20 bytes each).
+// CGalacticObject::starbases / fleet_presence); CGalacticObject::hyperlane points at the data of
+// such an array, {data, capacity @ +8, size @ +0xC} of CHyperlane (0x20 bytes each; +8 was the size
+// before 4.6.0, and reading the capacity there now adds stale lanes).
 constexpr std::ptrdiff_t kArrData = 0x8;
 constexpr std::ptrdiff_t kArrCapacity = 0x10;
 constexpr std::ptrdiff_t kArrSize = 0x14;
-constexpr std::ptrdiff_t kPlainSize = 0x8;
+constexpr std::ptrdiff_t kHyperlaneCount = 0xC;
 constexpr size_t kHyperlaneSize = 0x20;
 // A planet's CDepositHolder base (holder type at +0xB4 is 0 for planets; the id before it at +0x18);
 // what CCountry::_HasSurveyedDepositHolder and the survey command take.
@@ -38,11 +39,11 @@ constexpr std::ptrdiff_t kMetaRefType = 0x8;
 constexpr std::ptrdiff_t kMetaRefId = 0xC;
 constexpr uint32_t kHolderPlanet = 0;
 constexpr uint32_t kHolderNone = 3;
-// key strings of script types: planet class (+0x28), deposit type and starbase level (+0x20)
-constexpr std::ptrdiff_t kPlanetClassKey = 0x28;
+// key strings of script types (+0x20): planet class (+0x28 before 4.6.0), deposit type, starbase level
+constexpr std::ptrdiff_t kPlanetClassKey = 0x20;  // 4.6.0 (0x28 before)
 constexpr std::ptrdiff_t kTypeKey = 0x20;
-// CBypass::type -> CBypassType, key ("gateway", "wormhole", "relay_bypass", ...) at +0x28
-constexpr std::ptrdiff_t kBypassTypeKey = 0x28;
+// CBypass::type -> CBypassType, key ("gateway", "wormhole", "relay_bypass", ...)
+constexpr std::ptrdiff_t kBypassTypeKey = 0x20;  // 4.6.0 (0x28 before)
 // ESpatialObjectType (CSpatialObjectRefCaster::PointerFromTypeAndID): the kinds a spatial
 // reference {vtable, type +8, id +0xC} (CArchaeologicalSite::location) points at
 constexpr uint32_t kSpatialPlanet = 2;
@@ -365,7 +366,7 @@ GalaxyManager::Snapshot GalaxyManager::Take() {
         void* lanes = nullptr;
         int32_t n = 0;
         if (Read((const void*)((uintptr_t)obj + go::hyperlane), &lanes) && lanes &&
-            Read((const void*)((uintptr_t)obj + go::hyperlane + kPlainSize), &n) && n > 0 && n < 64) {
+            Read((const void*)((uintptr_t)obj + go::hyperlane + kHyperlaneCount), &n) && n > 0 && n < 64) {
             for (int32_t i = 0; i < n; ++i) {
                 uintptr_t e = (uintptr_t)lanes + i * kHyperlaneSize;
                 uint32_t to = ReadOr<uint32_t>(e + hl::to, kInvalidId);
@@ -454,8 +455,8 @@ std::ptrdiff_t GalaxyManager::LevelShipSizeField() {
         void* db = nullptr;
         void* arr = nullptr;
         int32_t n = 0;
-        if (!Read((const void*)(base_address_ + glob), &db) || !db || !Read((const void*)((uintptr_t)db + 0x50), &arr) ||
-            !arr || !Read((const void*)((uintptr_t)db + 0x5C), &n) || n <= 0 || n > 5000) {
+        if (!Read((const void*)(base_address_ + glob), &db) || !db || !Read((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) ||
+            !arr || !Read((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) || n <= 0 || n > 5000) {
             return;
         }
         for (int32_t i = 0; i < n; ++i) {
@@ -1775,7 +1776,7 @@ std::vector<void*> MegaTypes(uintptr_t base) {
     void* arr = nullptr;
     uint32_t n = 0;
     if (!Read((const void*)(base + sdk::glob::TGameDatabase_CMegaStructureTypeDatabase_pInstance), &db) || !db ||
-        !Read((const void*)((uintptr_t)db + 0x50), &arr) || !arr || !Read((const void*)((uintptr_t)db + 0x5C), &n) ||
+        !Read((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) || !arr || !Read((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) ||
         n > 4096) {
         return out;
     }

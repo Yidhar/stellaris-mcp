@@ -210,9 +210,29 @@ CouncilSummary GovernmentManager::GetSummary() {
         summary.ruler_name = ruler.name.empty() ? ruler.key : ruler.name;
     }
 
-    // 2. Council seats count
-    uint32_t seats_cnt = 0;
-    SafeReadU32((const void*)((uintptr_t)country + 0x0AAC), &seats_cnt);
+    // 2. Council seats count: the ruler and every CCouncilPosition the player owns, as the council
+    //    detail lists them
+    uint32_t seats_cnt = 1;
+    {
+        const uint32_t country_id = GetPlayerCountryId();
+        void* db = nullptr;
+        void* slots = nullptr;
+        uint32_t capacity = 0;
+        if (SafeReadPtr((const void*)(base_address_ + sdk::db::CCouncilPosition), &db) && db &&
+            SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TPdxRefDatabase_slots), &slots) && slots &&
+            SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TPdxRefDatabase_capacity), &capacity)) {
+            for (uint32_t i = 0; i < capacity && i < 65536; ++i) {
+                void* pos = nullptr;
+                uint32_t owner = 0xFFFFFFFF;
+                if (SafeReadPtr((const void*)((uintptr_t)slots + i * sdk::rt::TPdxRefDatabase_slot_size +
+                                              sdk::rt::TPdxRefDatabase_slot_object), &pos) && pos &&
+                    SafeReadU32((const void*)((uintptr_t)pos + sdk::ent::CCouncilPosition::country), &owner) &&
+                    owner == country_id) {
+                    ++seats_cnt;
+                }
+            }
+        }
+    }
     summary.councilor_count = seats_cnt;
 
     // 3. Council Agenda & Progress from CCountryCouncil
@@ -542,8 +562,8 @@ nlohmann::json GovernmentManager::AvailableAgendasJson() {
     void* items = nullptr;
     uint32_t count = 0;
     if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CCouncilAgendaDatabase_pInstance), &db) || !db ||
-        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &items) || !items ||
-        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &count)) {
+        !SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &items) || !items ||
+        !SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &count)) {
         return out;
     }
     namespace set = sdk::cmd::set_council_agenda_command;
@@ -710,8 +730,8 @@ void* GovernmentManager::FindCivicType(const std::string& key) {
     void* arr = nullptr;
     uint32_t n = 0;
     if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CGovernmentCivicTypeDatabase_pInstance), &db) || !db ||
-        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 10000) {
+        !SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) || n > 10000) {
         return nullptr;
     }
     for (uint32_t i = 0; i < n; ++i) {
@@ -841,8 +861,8 @@ nlohmann::json GovernmentManager::GetCivicsJson(const std::string& civic_key) {
         void* arr = nullptr;
         uint32_t n = 0;
         if (SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CGovernmentCivicTypeDatabase_pInstance), &db) && db &&
-            SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) && arr &&
-            SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) && n < 10000) {
+            SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) && arr &&
+            SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) && n < 10000) {
             for (uint32_t i = 0; i < n; ++i) {
                 void* civic = nullptr;
                 if (!SafeReadPtr((const void*)((uintptr_t)arr + i * 8), &civic) || !civic) continue;

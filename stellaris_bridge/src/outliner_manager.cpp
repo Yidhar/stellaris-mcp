@@ -31,8 +31,11 @@ constexpr uintptr_t kBuildableUpgradeBuildingVt = sdk::vt::CBuildableUpgradeBuil
 constexpr uintptr_t kBuildableClearDepositBlockerVt = sdk::vt::CBuildableClearDepositBlocker;
 constexpr uintptr_t kBuildableArmyVt = sdk::vt::CBuildableArmy;
 constexpr uintptr_t kBuildableDistrictVt = sdk::vt::CBuildableDistrict;
-constexpr uintptr_t kDistrictTypeDb = sdk::glob::TGameDatabase_CDistrictTypeDatabase_pInstance;  // +0x50 items, +0x5C count
-constexpr uintptr_t kBuildingTypeDb = sdk::glob::TGameDatabase_CBuildingTypeDatabase_pInstance;  // +0x50 items, +0x5C count
+constexpr uintptr_t kDistrictTypeDb = sdk::glob::TGameDatabase_CDistrictTypeDatabase_pInstance;
+constexpr uintptr_t kBuildingTypeDb = sdk::glob::TGameDatabase_CBuildingTypeDatabase_pInstance;
+// CJobType (4.6.0, measured live): the pop category (stratum) pointer and the flags word whose bits 0
+// and 1 together allow prioritizing (+0xAA0 / +0x928 in 4.5.4)
+constexpr std::ptrdiff_t kJobTypeCategory = 0xB80, kJobTypeFlags = 0x960;
 
 // Raw Clausewitz String Layout
 struct RawPdxString {
@@ -232,8 +235,8 @@ static void* FindDbElementByKey(uintptr_t base_address, uintptr_t db_rva, const 
     if (!SafeReadPtr((const void*)(base_address + db_rva), &db_ptr) || !db_ptr) return nullptr;
     uint32_t count = 0;
     void* arr = nullptr;
-    if (!SafeReadU32((const void*)((uintptr_t)db_ptr + 0x5C), &count) || count == 0 ||
-        !SafeReadPtr((const void*)((uintptr_t)db_ptr + 0x50), &arr) || !arr) return nullptr;
+    if (!SafeReadU32((const void*)((uintptr_t)db_ptr + sdk::rt::TGameDatabase_count), &count) || count == 0 ||
+        !SafeReadPtr((const void*)((uintptr_t)db_ptr + sdk::rt::TGameDatabase_items), &arr) || !arr) return nullptr;
 
     for (uint32_t i = 0; i < count; ++i) {
         void* elem = nullptr;
@@ -378,7 +381,7 @@ std::optional<ConstructionCard> OutlinerManager::ExtractColonyConstruction(void*
     if (!colony_obj || !base_address_) return std::nullopt;
 
     uint64_t f_f78 = 0;
-    if (!SafeReadU64((const void*)((uintptr_t)colony_obj + 0xf78), &f_f78)) {
+    if (!SafeReadU64((const void*)((uintptr_t)colony_obj + 0x10F8), &f_f78)) {
         return std::nullopt;
     }
     uint32_t slot = (uint32_t)(f_f78 & 0xFFFFFFFF);
@@ -582,8 +585,8 @@ std::vector<StatusAlertCard> OutlinerManager::ReadColonyStatus(void* colony_obj,
         void* fleet_db = nullptr;
         void* fleet_arr = nullptr;
         uint32_t fleet_cap = 0;
-        if (SafeReadPtr((const void*)((uintptr_t)planet_obj + 0x490), &orbit_ids) && orbit_ids &&
-            SafeReadU32((const void*)((uintptr_t)planet_obj + 0x49C), (uint32_t*)&orbit_count) && orbit_count > 0 && orbit_count < 4096 &&
+        if (SafeReadPtr((const void*)((uintptr_t)planet_obj + sdk::ent::CPlanet::planet_orbitals + 0x8), &orbit_ids) && orbit_ids &&
+            SafeReadU32((const void*)((uintptr_t)planet_obj + sdk::ent::CPlanet::planet_orbitals + 0x14), (uint32_t*)&orbit_count) && orbit_count > 0 && orbit_count < 4096 &&
             SafeReadPtr((const void*)(base_address_ + sdk::db::CFleet), &fleet_db) && fleet_db &&
             SafeReadPtr((const void*)((uintptr_t)fleet_db + 0x18), &fleet_arr) && fleet_arr &&
             SafeReadU32((const void*)((uintptr_t)fleet_db + 0x20), &fleet_cap)) {
@@ -703,7 +706,7 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         if (!colony_obj) continue;
 
         uint32_t planet_id = 0xFFFFFFFF;
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF78), &planet_id);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x10F8), &planet_id);
         if (planet_id == 0xFFFFFFFF) continue;
 
         void* p_obj = FindPlanet(planet_id);
@@ -723,8 +726,8 @@ void OutlinerManager::BuildSectorGroups(std::vector<SectorGroup>& out_sectors) {
         // Pops demographics
         void* sp_arr = nullptr;
         uint32_t sp_cnt = 0;
-        SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+        SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x10E8), &sp_arr);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x10F4), &sp_cnt);  // CPdxArray size (+0x10F0 is the capacity)
         uint32_t total_pops = 0;
         if (sp_arr && sp_cnt > 0 && sp_cnt < 256) {
             for (uint32_t si = 0; si < sp_cnt; ++si) {
@@ -1197,7 +1200,7 @@ nlohmann::json OutlinerManager::GetArmiesJson() {
         // stationed: the colony's planet (CColony +0xF78)
         uint32_t planet_id = 0xFFFFFFFF;
         if (void* colony = FindColony(army.colony)) {
-            SafeReadU32((const void*)((uintptr_t)colony + 0xF78), &planet_id);
+            SafeReadU32((const void*)((uintptr_t)colony + 0x10F8), &planet_id);
         }
         j["colony_id"] = army.colony;
         j["planet_id"] = planet_id;
@@ -1259,7 +1262,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
             SafeReadPdxString((const void*)((uintptr_t)desig_def + 0x20), desig_key);
             desig_name = LocalizeKey(desig_key);
         }
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1020), &desig_tier);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x11A8), &desig_tier);
         SafeReadU32((const void*)((uintptr_t)colony_obj + 0xFC), &gov_id);
     }
     // no colony (or no designation): nothing to show
@@ -1304,8 +1307,8 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     uint32_t pop_capacity = 0;
     uint32_t pop_groups = 0;
     if (colony_obj) {
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfc8), &pop_capacity);
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfe8), &pop_groups);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1148), &pop_capacity);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1170), &pop_groups);
         if (pop_groups == 0) {
             pop_groups = pop_capacity;
         }
@@ -1329,12 +1332,12 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     uint32_t growth_val = 0;
 
     if (colony_obj) {
-        SafeReadI64((const void*)((uintptr_t)colony_obj + 0xf98), &housing_raw);
-        SafeReadI64((const void*)((uintptr_t)colony_obj + 0xfa0), &amenities_raw);
-        SafeReadI64((const void*)((uintptr_t)colony_obj + 0xfb8), &stability_raw);
-        SafeReadI64((const void*)((uintptr_t)colony_obj + 0xfc0), &crime_raw);
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfd0), &unemployed_val);
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfd4), &growth_val);
+        SafeReadI64((const void*)((uintptr_t)colony_obj + 0x1118), &housing_raw);
+        SafeReadI64((const void*)((uintptr_t)colony_obj + 0x1120), &amenities_raw);
+        SafeReadI64((const void*)((uintptr_t)colony_obj + 0x1138), &stability_raw);
+        SafeReadI64((const void*)((uintptr_t)colony_obj + 0x1140), &crime_raw);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1154), &unemployed_val);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1158), &growth_val);
     }
 
     double housing_val = std::round((double)housing_raw / 1000.0) / 100.0;
@@ -1358,7 +1361,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     void* p_class_def = nullptr;
     if (SafeReadPtr((const void*)((uintptr_t)p_obj + 0x148), &p_class_def) && p_class_def) {
         std::string class_key;
-        if (SafeReadPdxString((const void*)((uintptr_t)p_class_def + 0x28), class_key)) {
+        if (SafeReadPdxString((const void*)((uintptr_t)p_class_def + 0x20), class_key)) {
             planet_type = LocalizePlanetClass(class_key);
         }
     }
@@ -1428,7 +1431,7 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
                 uint32_t d_built = 0;
                 uint32_t d_zone_slots = 0;
                 SafeReadU32((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::level), &d_built);
-                SafeReadU32((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::zones), &d_zone_slots);
+                SafeReadU32((const void*)((uintptr_t)d_obj + sdk::ent::CDistrict::zone_slots), &d_zone_slots);
 
                 nlohmann::json zones = nlohmann::json::array();
                 for (uint32_t zs = 0; zs < z_cap; ++zs) {
@@ -1500,9 +1503,9 @@ nlohmann::json OutlinerManager::GetPlanetDetailsJson(uint32_t planet_id) {
     // +0xEA0 upkeep, +0xEC0 profits = produced - upkeep, as CColony::GetResourceProfits reads).
     auto& gs = GameState::Get();
     nlohmann::json monthly_production = {
-        {"produced", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xE80))},
-        {"upkeep", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xEA0))},
-        {"net", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0xEC0))}
+        {"produced", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0x1000))},
+        {"upkeep", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0x1020))},
+        {"net", gs.ResourceTableJson((const void*)((uintptr_t)colony_obj + 0x1040))}
     };
 
     // 8. Dynamic Blockers
@@ -1800,8 +1803,8 @@ nlohmann::json OutlinerManager::GetAvailableDistrictZonesJson(uint32_t planet_id
     void* zarr = nullptr;
     uint32_t zn = 0;
     if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CZoneTypeDatabase_pInstance), &zdb) || !zdb ||
-        !SafeReadPtr((const void*)((uintptr_t)zdb + 0x50), &zarr) || !zarr ||
-        !SafeReadU32((const void*)((uintptr_t)zdb + 0x5C), &zn) || zn > 5000) {
+        !SafeReadPtr((const void*)((uintptr_t)zdb + sdk::rt::TGameDatabase_items), &zarr) || !zarr ||
+        !SafeReadU32((const void*)((uintptr_t)zdb + sdk::rt::TGameDatabase_count), &zn) || zn > 5000) {
         return { {"success", false}, {"error", "Zone type database not readable"} };
     }
 
@@ -2008,8 +2011,8 @@ nlohmann::json OutlinerManager::GetBuildableBuildingsJson(uint32_t planet_id, co
     void* arr = nullptr;
     uint32_t n = 0;
     if (!SafeReadPtr((const void*)(base_address_ + kBuildingTypeDb), &db) || !db ||
-        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 10000) {
+        !SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) || n > 10000) {
         return { {"success", false}, {"error", "Building database not readable"} };
     }
     nlohmann::json zones_json = nlohmann::json::array();
@@ -2097,8 +2100,8 @@ nlohmann::json OutlinerManager::GetBuildableDistrictsJson(uint32_t planet_id, co
     void* arr = nullptr;
     uint32_t n = 0;
     if (!SafeReadPtr((const void*)(base_address_ + kDistrictTypeDb), &db) || !db ||
-        !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 2000) {
+        !SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) || n > 2000) {
         return { {"success", false}, {"error", "District database not readable"} };
     }
     nlohmann::json buildable = nlohmann::json::array();
@@ -2442,32 +2445,31 @@ static nlohmann::json ReadDepositModifiers(uintptr_t base_address, void* tptr, O
     nlohmann::json mods_json = nlohmann::json::array();
     if (!tptr) return mods_json;
 
-    void* p_types = nullptr;
-    uint32_t cnt1 = 0;
-    void* p_vals = nullptr;
-    uint32_t cnt2 = 0;
+    // the deposit type's planet modifier (a CModifier at +0x7E0 in 4.6.0, measured live): its entries
+    // {CFixedPoint value, type id at sdk::rt::CModifierEntry_type}
+    constexpr std::ptrdiff_t kDepositTypeModifier = 0x7E0;
+    const uintptr_t modifier = (uintptr_t)tptr + kDepositTypeModifier;
+    void* entries = nullptr;
+    uint32_t count = 0;
+    SafeReadPtr((const void*)(modifier + sdk::rt::CModifier_entries), &entries);
+    SafeReadU32((const void*)(modifier + sdk::rt::CModifier_entry_count), &count);
 
-    SafeReadPtr((const void*)((uintptr_t)tptr + 0x858), &p_types);
-    SafeReadU32((const void*)((uintptr_t)tptr + 0x864), &cnt1);
-    SafeReadPtr((const void*)((uintptr_t)tptr + 0x880), &p_vals);
-    SafeReadU32((const void*)((uintptr_t)tptr + 0x88C), &cnt2);
-
-    if (p_types && p_vals && cnt1 > 0 && cnt1 <= 32) {
-        uint32_t limit = (std::min)(cnt1, cnt2);
-        for (uint32_t m = 0; m < limit; ++m) {
+    if (entries && count > 0 && count <= 32) {
+        for (uint32_t m = 0; m < count; ++m) {
             uint32_t mtype = 0;
             int64_t mval = 0;
-            if (SafeReadU32((const void*)((uintptr_t)p_types + m * 4), &mtype) &&
-                SafeReadI64((const void*)((uintptr_t)p_vals + m * 8), &mval)) {
+            const uintptr_t entry_at = (uintptr_t)entries + m * sdk::rt::CModifier_entry_size;
+            if (SafeReadU32((const void*)(entry_at + sdk::rt::CModifierEntry_type), &mtype) &&
+                SafeReadI64((const void*)entry_at, &mval)) {
                 double val = (double)mval / 100000.0;
 
                 std::string mod_key;
                 void* defs_arr = nullptr;
                 uint32_t defs_cnt = 0;
                 SafeReadPtr((const void*)(base_address + sdk::glob::CModifier_Definitions), &defs_arr);
-                SafeReadU32((const void*)(base_address + sdk::glob::CModifier_Definitions + 0xC), &defs_cnt);
+                SafeReadU32((const void*)(base_address + sdk::glob::CModifier_Definitions + sdk::rt::CModifierDefinitions_count), &defs_cnt);
                 if (defs_arr && mtype < defs_cnt) {
-                    void* entry = (void*)((uintptr_t)defs_arr + mtype * 0xB0);
+                    void* entry = (void*)((uintptr_t)defs_arr + mtype * sdk::rt::CModifierDefinition_size);
                     SafeReadPdxString((const void*)((uintptr_t)entry + 0x10), mod_key);
                 }
 
@@ -2497,11 +2499,11 @@ static nlohmann::json ReadDepositModifiers(uintptr_t base_address, void* tptr, O
 }
 
 static nlohmann::json ReadClearCost(void* tptr) {
-    // CDepositType +0xA8: the clearing cost, a per-resource CFixedPoint array indexed by the
+    // CDepositType +0xE0 (+0xA8 before 4.6.0): the clearing cost, a per-resource CFixedPoint array indexed by the
     // engine's resource index (vtable +0, data +8, size +0x14).
     nlohmann::json cost = nlohmann::json::object();
     void* p_econ = nullptr;
-    if (!tptr || !SafeReadPtr((const void*)((uintptr_t)tptr + 0xA8), &p_econ) || !p_econ) return cost;
+    if (!tptr || !SafeReadPtr((const void*)((uintptr_t)tptr + 0xE0), &p_econ) || !p_econ) return cost;
 
     void* p_res = nullptr;
     uint32_t res_cnt = 0;
@@ -2656,7 +2658,7 @@ nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t c
         SafeReadPdxString((const void*)((uintptr_t)type_ptr + 0x20), key);
 
         void* cat_ptr = nullptr;
-        SafeReadPtr((const void*)((uintptr_t)type_ptr + 0x80), &cat_ptr);
+        SafeReadPtr((const void*)((uintptr_t)type_ptr + 0xB8), &cat_ptr);
         std::string cat_key;
         if (cat_ptr) {
             SafeReadPdxString((const void*)((uintptr_t)cat_ptr + 0x20), cat_key);
@@ -2693,7 +2695,7 @@ nlohmann::json OutlinerManager::ExtractPlanetaryFeatures(void* p_obj, uint32_t c
         }
 
         uint32_t clear_time_val = 0;
-        SafeReadU32((const void*)((uintptr_t)type_ptr + 0xA64), &clear_time_val);
+        SafeReadU32((const void*)((uintptr_t)type_ptr + 0x9AC), &clear_time_val);
         int32_t clear_time = (clear_time_val == 0xFFFFFFFF || clear_time_val > 10000) ? 0 : (int32_t)clear_time_val;
 
         nlohmann::json clear_cost = ReadClearCost(type_ptr);
@@ -2938,13 +2940,13 @@ nlohmann::json OutlinerManager::ExtractMonthlyPopulationSummary(void* colony_obj
     }
 
     int32_t net_change = 0;
-    SafeReadI32((const void*)((uintptr_t)colony_obj + 0xFEC), &net_change);
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0x1174), &net_change);
 
     // Robin Hood table at colony_obj + 0x1010
     void* table_entries = nullptr;
     uint32_t mask = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1018), &table_entries);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1024), &mask);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x11A0), &table_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x11AC), &mask);
 
     int32_t growth_raw = 0;
     int32_t decline_raw = 0;
@@ -2984,8 +2986,8 @@ nlohmann::json OutlinerManager::ExtractMonthlyPopulationSummary(void* colony_obj
     nlohmann::json demographics = nlohmann::json::array();
     void* sp_arr = nullptr;
     uint32_t sp_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x10E8), &sp_arr);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x10F4), &sp_cnt);  // CPdxArray size (+0x10F0 is the capacity)
 
     uint64_t total_pops = 0;
     std::vector<std::pair<uint32_t, uint32_t>> species_pops; // (species_id, count)
@@ -3035,16 +3037,16 @@ nlohmann::json OutlinerManager::ExtractPopulationBreakdown(void* colony_obj) {
 
     void* sp_arr = nullptr;
     uint32_t sp_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x10E8), &sp_arr);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x10F4), &sp_cnt);  // CPdxArray size (+0x10F0 is the capacity)
     if (!sp_arr || sp_cnt == 0 || sp_cnt > 256) return breakdown;
 
     // Per-species net change table at colony_obj + 0xFF8
     std::unordered_map<uint32_t, int32_t> sp_net_map;
     void* table_sp_entries = nullptr;
     uint32_t sp_mask = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xFF8), &table_sp_entries);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1004), &sp_mask);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1180), &table_sp_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x118C), &sp_mask);
     if (table_sp_entries && sp_mask > 0 && sp_mask < 1024) {
         for (uint32_t i = 0; i <= sp_mask; ++i) {
             void* entry = (void*)((uintptr_t)table_sp_entries + i * 0x40);
@@ -3063,7 +3065,7 @@ nlohmann::json OutlinerManager::ExtractPopulationBreakdown(void* colony_obj) {
     }
 
     int32_t colony_net = 0;
-    SafeReadI32((const void*)((uintptr_t)colony_obj + 0xFEC), &colony_net);
+    SafeReadI32((const void*)((uintptr_t)colony_obj + 0x1174), &colony_net);
 
     uint64_t total_pops = 0;
     for (uint32_t i = 0; i < sp_cnt; ++i) {
@@ -3279,9 +3281,9 @@ nlohmann::json OutlinerManager::GetPlanetaryDecisionsJson(uint32_t planet_id) {
     }
 
     uint32_t dec_count = 0;
-    SafeReadU32((const void*)((uintptr_t)dec_mgr + 0x5C), &dec_count);
+    SafeReadU32((const void*)((uintptr_t)dec_mgr + sdk::rt::TGameDatabase_count), &dec_count);
     void* dec_arr = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)dec_mgr + 0x50), &dec_arr);
+    SafeReadPtr((const void*)((uintptr_t)dec_mgr + sdk::rt::TGameDatabase_items), &dec_arr);
     if (!dec_arr || dec_count == 0) {
         return {
             {"planet_id", planet_id},
@@ -3351,9 +3353,9 @@ nlohmann::json OutlinerManager::EnactDecisionJson(uint32_t planet_id, const std:
     if (!dec_mgr) return { {"error", "Decisions database not found"} };
 
     uint32_t dec_count = 0;
-    SafeReadU32((const void*)((uintptr_t)dec_mgr + 0x5C), &dec_count);
+    SafeReadU32((const void*)((uintptr_t)dec_mgr + sdk::rt::TGameDatabase_count), &dec_count);
     void* dec_arr = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)dec_mgr + 0x50), &dec_arr);
+    SafeReadPtr((const void*)((uintptr_t)dec_mgr + sdk::rt::TGameDatabase_items), &dec_arr);
     if (!dec_arr || dec_count == 0) return { {"error", "Decisions database empty"} };
 
     std::string norm_key = decision_key;
@@ -3438,7 +3440,7 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
     SafeReadPtr((const void*)((uintptr_t)p_obj + 0x148), &cur_class);
     std::string cur_class_key;
     if (cur_class) {
-        SafeReadPdxString((const void*)((uintptr_t)cur_class + 0x28), cur_class_key);
+        SafeReadPdxString((const void*)((uintptr_t)cur_class + 0x20), cur_class_key);
     }
     std::string cur_class_name = LocalizePlanetClass(cur_class_key);
 
@@ -3446,7 +3448,7 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
 
     // Check active terraforming process at planet + 0xB70
     void* proc = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xB70), &proc);
+    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xD00), &proc);
     bool is_terraforming = false;
     if (proc) {
         void** proc_vt = nullptr;
@@ -3472,9 +3474,9 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
         std::string to_class_key = "unknown";
         if (link) {
             void* to_cls = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)link + 0x268), &to_cls);
+            SafeReadPtr((const void*)((uintptr_t)link + 0x2E0), &to_cls);
             if (to_cls) {
-                SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x28), to_class_key);
+                SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x20), to_class_key);
             }
         }
         current_process = {
@@ -3487,15 +3489,15 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
         };
     }
 
-    // Read terraform links database at base + sdk::glob::CTerraformDatabase_pInstance
+    // Read terraform links database at base + sdk::glob::TGameDatabase_CTerraformDatabase_pInstance
     void* db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + sdk::glob::CTerraformDatabase_pInstance), &db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CTerraformDatabase_pInstance), &db);
     nlohmann::json options = nlohmann::json::array();
     if (db && cur_class) {
         uint32_t link_cnt = 0;
-        SafeReadU32((const void*)((uintptr_t)db + 0x1C), &link_cnt);
+        SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &link_cnt);
         void* link_arr = nullptr;
-        SafeReadPtr((const void*)((uintptr_t)db + 0x10), &link_arr);
+        SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &link_arr);
 
         if (link_arr && link_cnt > 0) {
             for (uint32_t i = 0; i < link_cnt; ++i) {
@@ -3505,21 +3507,21 @@ nlohmann::json OutlinerManager::GetTerraformingOptionsJson(uint32_t planet_id) {
                 }
 
                 void* from_cls = nullptr;
-                SafeReadPtr((const void*)((uintptr_t)link + 0x260), &from_cls);
+                SafeReadPtr((const void*)((uintptr_t)link + 0x2D8), &from_cls);
                 if (from_cls != cur_class) continue;
 
                 void* to_cls = nullptr;
-                SafeReadPtr((const void*)((uintptr_t)link + 0x268), &to_cls);
+                SafeReadPtr((const void*)((uintptr_t)link + 0x2E0), &to_cls);
                 if (!to_cls) continue;
 
                 std::string to_class_key;
-                SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x28), to_class_key);
+                SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x20), to_class_key);
 
                 uint32_t duration_days = 0;
-                SafeReadU32((const void*)((uintptr_t)link + 0x258), &duration_days);
+                SafeReadU32((const void*)((uintptr_t)link + 0x2D0), &duration_days);
 
                 uint32_t link_index = 0;
-                SafeReadU32((const void*)((uintptr_t)link + 0x3D0), &link_index);
+                SafeReadU32((const void*)((uintptr_t)link + 0x8), &link_index);
 
                 // Test validation via CStartTerraformationCommand
                 bool can_terraform = false;
@@ -3566,7 +3568,7 @@ nlohmann::json OutlinerManager::StartTerraformingJson(uint32_t planet_id, const 
     }
 
     void* proc = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xB70), &proc);
+    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xD00), &proc);
     bool is_terraforming = false;
     if (proc) {
         void** proc_vt = nullptr;
@@ -3587,13 +3589,13 @@ nlohmann::json OutlinerManager::StartTerraformingJson(uint32_t planet_id, const 
     uint32_t country_id = GetPlayerCountryId();
 
     void* db = nullptr;
-    SafeReadPtr((const void*)(base_address_ + sdk::glob::CTerraformDatabase_pInstance), &db);
+    SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CTerraformDatabase_pInstance), &db);
     if (!db) return { {"error", "Terraform database not found"} };
 
     uint32_t link_cnt = 0;
-    SafeReadU32((const void*)((uintptr_t)db + 0x1C), &link_cnt);
+    SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &link_cnt);
     void* link_arr = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)db + 0x10), &link_arr);
+    SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &link_arr);
     if (!link_arr || link_cnt == 0) return { {"error", "Terraform database empty"} };
 
     std::string norm_target = target_class;
@@ -3623,30 +3625,30 @@ nlohmann::json OutlinerManager::StartTerraformingJson(uint32_t planet_id, const 
         if (!SafeReadPtr((const void*)((uintptr_t)link_arr + i * sizeof(void*)), &link) || !link) continue;
 
         void* from_cls = nullptr;
-        SafeReadPtr((const void*)((uintptr_t)link + 0x260), &from_cls);
+        SafeReadPtr((const void*)((uintptr_t)link + 0x2D8), &from_cls);
         if (from_cls != cur_class) continue;
 
         uint32_t l_idx = 0;
-        SafeReadU32((const void*)((uintptr_t)link + 0x3D0), &l_idx);
+        SafeReadU32((const void*)((uintptr_t)link + 0x8), &l_idx);
 
         void* to_cls = nullptr;
-        SafeReadPtr((const void*)((uintptr_t)link + 0x268), &to_cls);
+        SafeReadPtr((const void*)((uintptr_t)link + 0x2E0), &to_cls);
         std::string to_k;
         if (to_cls) {
-            SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x28), to_k);
+            SafeReadPdxString((const void*)((uintptr_t)to_cls + 0x20), to_k);
         }
 
         if (link_index >= 0 && (uint32_t)link_index == l_idx) {
             target_link = link;
             target_link_idx = l_idx;
             matched_target_key = to_k;
-            SafeReadU32((const void*)((uintptr_t)link + 0x258), &duration_days);
+            SafeReadU32((const void*)((uintptr_t)link + 0x2D0), &duration_days);
             break;
         } else if (!norm_target.empty() && to_k == norm_target) {
             target_link = link;
             target_link_idx = l_idx;
             matched_target_key = to_k;
-            SafeReadU32((const void*)((uintptr_t)link + 0x258), &duration_days);
+            SafeReadU32((const void*)((uintptr_t)link + 0x2D0), &duration_days);
             break;
         }
     }
@@ -3700,7 +3702,7 @@ nlohmann::json OutlinerManager::CancelTerraformingJson(uint32_t planet_id) {
     }
 
     void* proc = nullptr;
-    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xB70), &proc);
+    SafeReadPtr((const void*)((uintptr_t)p_obj + 0xD00), &proc);
     bool is_terraforming = false;
     if (proc) {
         void** proc_vt = nullptr;
@@ -3758,7 +3760,7 @@ nlohmann::json OutlinerManager::ExtractWorkforceSummary(void* colony_obj) {
     }
 
     uint32_t unemployed = 0;
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xfd0), &unemployed);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1154), &unemployed);
 
     void* jobs_arr = nullptr;
     uint32_t jobs_cnt = 0;
@@ -3796,8 +3798,8 @@ nlohmann::json OutlinerManager::ExtractWorkforceSummary(void* colony_obj) {
 
     void* fav_map_entries = nullptr;
     uint32_t fav_map_mask = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xee8), &fav_map_entries);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xef4), &fav_map_mask);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1068), &fav_map_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1074), &fav_map_mask);
     if (fav_map_entries && (uintptr_t)fav_map_entries > 0x10000 && fav_map_mask < 1024) {
         for (uint32_t mi = 0; mi <= fav_map_mask; ++mi) {
             uint8_t occupied = 0;
@@ -3828,14 +3830,14 @@ nlohmann::json OutlinerManager::ExtractWorkforceSummary(void* colony_obj) {
             if (!SafeReadPtr((const void*)((uintptr_t)job_db_arr + slot * 16 + 8), &p_job) || !p_job) continue;
 
             int64_t raw_wf = 0, raw_max = 0, raw_bonus = 0;
-            SafeReadI64((const void*)((uintptr_t)p_job + 0x90), &raw_wf);
-            SafeReadI64((const void*)((uintptr_t)p_job + 0x98), &raw_max);
-            SafeReadI64((const void*)((uintptr_t)p_job + 0xa0), &raw_bonus);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::workforce), &raw_wf);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::max_workforce), &raw_max);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::bonus_workforce), &raw_bonus);
 
             if (raw_wf <= 0 && raw_max <= 0) continue;
 
             void* p_job_type = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job + 0x18), &p_job_type);
+            SafeReadPtr((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::type), &p_job_type);
             if (!p_job_type) continue;
 
             std::string job_key;
@@ -3843,12 +3845,14 @@ nlohmann::json OutlinerManager::ExtractWorkforceSummary(void* colony_obj) {
             if (job_key.empty()) continue;
 
             void* p_cat = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job_type + 0xaa0), &p_cat);
-            std::string stratum_key = "worker";
+            SafeReadPtr((const void*)((uintptr_t)p_job_type + kJobTypeCategory), &p_cat);
+            // jobs without a category (the paragon background jobs such as "researcher") point at an
+            // empty object with no key: report "none" rather than guessing a stratum
+            std::string stratum_key;
             if (p_cat) {
                 SafeReadPdxString((const void*)((uintptr_t)p_cat + 0x20), stratum_key);
             }
-            if (stratum_key.empty()) stratum_key = "worker";
+            if (stratum_key.empty()) stratum_key = "none";
 
             int64_t wf = raw_wf / 100000;
             int64_t bonus_wf = raw_bonus / 100000;
@@ -3970,8 +3974,8 @@ nlohmann::json OutlinerManager::GetPlanetJobsJson(uint32_t planet_id) {
 
     void* map_entries = nullptr;
     uint32_t map_mask = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xee8), &map_entries);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xef4), &map_mask);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1068), &map_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1074), &map_mask);
 
     if (jobs_arr && job_db_arr && jobs_cnt > 0 && jobs_cnt < 256) {
         for (uint32_t idx = 0; idx < jobs_cnt; ++idx) {
@@ -3984,15 +3988,15 @@ nlohmann::json OutlinerManager::GetPlanetJobsJson(uint32_t planet_id) {
             if (!SafeReadPtr((const void*)((uintptr_t)job_db_arr + slot * 16 + 8), &p_job) || !p_job) continue;
 
             int64_t raw_wf = 0, raw_max = 0, raw_bonus = 0, raw_limit = 0;
-            SafeReadI64((const void*)((uintptr_t)p_job + 0x90), &raw_wf);
-            SafeReadI64((const void*)((uintptr_t)p_job + 0x98), &raw_max);
-            SafeReadI64((const void*)((uintptr_t)p_job + 0xa0), &raw_bonus);
-            SafeReadI64((const void*)((uintptr_t)p_job + 0xa8), &raw_limit);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::workforce), &raw_wf);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::max_workforce), &raw_max);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::bonus_workforce), &raw_bonus);
+            SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::workforce_limit), &raw_limit);
 
             if (raw_wf <= 0 && raw_max <= 0) continue;
 
             void* p_job_type = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job + 0x18), &p_job_type);
+            SafeReadPtr((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::type), &p_job_type);
             if (!p_job_type) continue;
 
             std::string job_key;
@@ -4000,12 +4004,14 @@ nlohmann::json OutlinerManager::GetPlanetJobsJson(uint32_t planet_id) {
             if (job_key.empty()) continue;
 
             void* p_cat = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job_type + 0xaa0), &p_cat);
-            std::string stratum_key = "worker";
+            SafeReadPtr((const void*)((uintptr_t)p_job_type + kJobTypeCategory), &p_cat);
+            // jobs without a category (the paragon background jobs such as "researcher") point at an
+            // empty object with no key: report "none" rather than guessing a stratum
+            std::string stratum_key;
             if (p_cat) {
                 SafeReadPdxString((const void*)((uintptr_t)p_cat + 0x20), stratum_key);
             }
-            if (stratum_key.empty()) stratum_key = "worker";
+            if (stratum_key.empty()) stratum_key = "none";
 
             bool is_prioritized = false;
             if (map_entries && (uintptr_t)map_entries > 0x10000 && map_mask < 1024) {
@@ -4026,7 +4032,7 @@ nlohmann::json OutlinerManager::GetPlanetJobsJson(uint32_t planet_id) {
             }
 
             uint32_t jt_flags = 0;
-            SafeReadU32((const void*)((uintptr_t)p_job_type + 0x928), &jt_flags);
+            SafeReadU32((const void*)((uintptr_t)p_job_type + kJobTypeFlags), &jt_flags);
             bool can_prio = (jt_flags & 1) != 0 && (jt_flags & 2) != 0;
 
             int64_t cur_wf = raw_wf / 100000;
@@ -4157,7 +4163,7 @@ nlohmann::json OutlinerManager::SetJobPriorityJson(uint32_t planet_id, const std
             if (!SafeReadPtr((const void*)((uintptr_t)job_db_arr + slot * 16 + 8), &p_job) || !p_job) continue;
 
             void* jt = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job + 0x18), &jt);
+            SafeReadPtr((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::type), &jt);
             if (!jt) continue;
 
             std::string cur_key;
@@ -4204,8 +4210,8 @@ nlohmann::json OutlinerManager::SetJobPriorityJson(uint32_t planet_id, const std
     bool currently_prio = false;
     void* map_entries = nullptr;
     uint32_t map_mask = 0;
-    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xee8), &map_entries);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0xef4), &map_mask);
+    SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x1068), &map_entries);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1074), &map_mask);
     if (map_entries && (uintptr_t)map_entries > 0x10000 && map_mask < 1024) {
         for (uint32_t mi = 0; mi <= map_mask; ++mi) {
             uint8_t occupied = 0;
@@ -4291,7 +4297,7 @@ nlohmann::json OutlinerManager::SetJobWorkforceLimitJson(uint32_t planet_id, con
             if (!SafeReadPtr((const void*)((uintptr_t)job_db_arr + slot * 16 + 8), &p_job) || !p_job) continue;
 
             void* jt = nullptr;
-            SafeReadPtr((const void*)((uintptr_t)p_job + 0x18), &jt);
+            SafeReadPtr((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::type), &jt);
             if (!jt) continue;
 
             std::string cur_key;
@@ -4303,7 +4309,7 @@ nlohmann::json OutlinerManager::SetJobWorkforceLimitJson(uint32_t planet_id, con
                 target_p_job = p_job;
                 target_handle = h;
                 int64_t raw_max = 0;
-                SafeReadI64((const void*)((uintptr_t)p_job + 0x98), &raw_max);
+                SafeReadI64((const void*)((uintptr_t)p_job + sdk::ent::CPopJob::max_workforce), &raw_max);
                 max_wf = (raw_max > 0 && raw_max < 100000000000000LL) ? (raw_max / 100000) : 10000;
                 break;
             }
@@ -4421,13 +4427,13 @@ nlohmann::json OutlinerManager::ExtractArmiesSummary(void* p_obj, void* colony_o
     bool deploy_in_orbit = false;
     if (p_obj) {
         uint32_t c8c = 0;
-        SafeReadU32((const void*)((uintptr_t)p_obj + 0xC8C), &c8c);
+        SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::binary_flags), &c8c);
         deploy_in_orbit = (c8c & 0x40) != 0;
     }
 
     bool include_in_builder = false;
     uint32_t v1088 = 0;
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1088), &v1088);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1210), &v1088);
     include_in_builder = (v1088 & 8) != 0;
 
     uint32_t army_queue_id = 0xFFFFFFFF;
@@ -4504,8 +4510,8 @@ nlohmann::json OutlinerManager::GetPlanetArmiesJson(uint32_t planet_id) {
     if (army_type_db && (uintptr_t)army_type_db > 0x10000) {
         void* type_arr = nullptr;
         uint32_t type_cnt = 0;
-        SafeReadPtr((const void*)((uintptr_t)army_type_db + 0x50), &type_arr);
-        SafeReadU32((const void*)((uintptr_t)army_type_db + 0x5C), &type_cnt);
+        SafeReadPtr((const void*)((uintptr_t)army_type_db + sdk::rt::TGameDatabase_items), &type_arr);
+        SafeReadU32((const void*)((uintptr_t)army_type_db + sdk::rt::TGameDatabase_count), &type_cnt);
         if (type_arr && type_cnt > 0 && type_cnt < 200) {
             for (uint32_t ti = 0; ti < type_cnt; ++ti) {
                 void* p_type = nullptr;
@@ -4678,7 +4684,7 @@ nlohmann::json OutlinerManager::SetPlanetArmySettingsJson(uint32_t planet_id, st
     // 1. Checkbox 1: deploy_in_orbit
     if (deploy_in_orbit.has_value()) {
         uint32_t c8c = 0;
-        SafeReadU32((const void*)((uintptr_t)p_obj + 0xC8C), &c8c);
+        SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::binary_flags), &c8c);
         bool cur_deploy = (c8c & 0x40) != 0;
         if (cur_deploy != *deploy_in_orbit) {
             uint32_t planet_handle = 0;
@@ -4695,7 +4701,7 @@ nlohmann::json OutlinerManager::SetPlanetArmySettingsJson(uint32_t planet_id, st
     // 2. Checkbox 2: include_in_builder
     if (include_in_builder.has_value()) {
         uint32_t v1088 = 0;
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1088), &v1088);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1210), &v1088);
         bool cur_builder = (v1088 & 8) != 0;
         if (cur_builder != *include_in_builder) {
             uint32_t colony_handle = 0;
@@ -4711,8 +4717,8 @@ nlohmann::json OutlinerManager::SetPlanetArmySettingsJson(uint32_t planet_id, st
 
     // Re-read current states
     uint32_t final_c8c = 0, final_1088 = 0;
-    SafeReadU32((const void*)((uintptr_t)p_obj + 0xC8C), &final_c8c);
-    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1088), &final_1088);
+    SafeReadU32((const void*)((uintptr_t)p_obj + sdk::ent::CPlanet::binary_flags), &final_c8c);
+    SafeReadU32((const void*)((uintptr_t)colony_obj + 0x1210), &final_1088);
 
     return {
         {"success", true},
@@ -4906,8 +4912,8 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
 
     void* type_arr = nullptr;
     uint32_t type_cnt = 0;
-    SafeReadPtr((const void*)((uintptr_t)army_type_db + 0x50), &type_arr);
-    SafeReadU32((const void*)((uintptr_t)army_type_db + 0x5C), &type_cnt);
+    SafeReadPtr((const void*)((uintptr_t)army_type_db + sdk::rt::TGameDatabase_items), &type_arr);
+    SafeReadU32((const void*)((uintptr_t)army_type_db + sdk::rt::TGameDatabase_count), &type_cnt);
 
     void* target_p_type = nullptr;
     std::string q_key = army_key;
@@ -4944,8 +4950,8 @@ nlohmann::json OutlinerManager::RecruitArmyJson(uint32_t planet_id, const std::s
         // Fallback to colony's founder or dominant species
         void* sp_arr = nullptr;
         uint32_t sp_cnt = 0;
-        SafeReadPtr((const void*)((uintptr_t)colony_obj + 0xF68), &sp_arr);
-        SafeReadU32((const void*)((uintptr_t)colony_obj + 0xF70), &sp_cnt);
+        SafeReadPtr((const void*)((uintptr_t)colony_obj + 0x10E8), &sp_arr);
+        SafeReadU32((const void*)((uintptr_t)colony_obj + 0x10F4), &sp_cnt);  // CPdxArray size (+0x10F0 is the capacity)
         if (sp_arr && sp_cnt > 0) {
             SafeReadU32((const void*)((uintptr_t)sp_arr + 8), &target_species);
         }

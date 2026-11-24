@@ -18,7 +18,7 @@ namespace bridge {
 //   CPdxUnorderedMap (Robin Hood): +0 entries, +0xC index mask, +0x10 overflow slots; an entry is
 //                                  {+4 probe distance (0 = empty), +8 key, +0x10 value}
 constexpr std::ptrdiff_t kRefDbSlots = 0x18, kRefDbSlotCount = 0x20, kRefDbLive = 0x24;
-constexpr std::ptrdiff_t kGameDbItems = 0x50, kGameDbCount = 0x5C;
+constexpr std::ptrdiff_t kGameDbItems = sdk::rt::TGameDatabase_items, kGameDbCount = sdk::rt::TGameDatabase_count;
 constexpr std::ptrdiff_t kArrayData = 0x8, kArrayCapacity = 0x10, kArraySize = 0x14;
 constexpr std::ptrdiff_t kCStringText = 0x10;
 constexpr std::ptrdiff_t kMapMask = 0xC, kMapOverflow = 0x10, kMapProbe = 4, kMapKey = 8, kMapValue = 0x10;
@@ -371,7 +371,7 @@ void SpeciesManager::EnsureTraitsLoaded() {
     if (!traits_catalog_.empty() || !base_address_) return;
 
     void* db_ptr = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CTraitDatabase_pInstance), &db_ptr) || !db_ptr) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CTraitDatabase_pInstance), &db_ptr) || !db_ptr) {
         return;
     }
 

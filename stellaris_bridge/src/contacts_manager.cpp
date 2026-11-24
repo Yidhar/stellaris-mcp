@@ -107,8 +107,8 @@ std::vector<void*> ScriptTypes(uintptr_t db_global) {
     void* db = nullptr;
     void* arr = nullptr;
     uint32_t n = 0;
-    if (!SafeReadPtr((const void*)db_global, &db) || !db || !SafeReadPtr((const void*)((uintptr_t)db + 0x50), &arr) || !arr ||
-        !SafeReadU32((const void*)((uintptr_t)db + 0x5C), &n) || n > 4096) {
+    if (!SafeReadPtr((const void*)db_global, &db) || !db || !SafeReadPtr((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_items), &arr) || !arr ||
+        !SafeReadU32((const void*)((uintptr_t)db + sdk::rt::TGameDatabase_count), &n) || n > 4096) {
         return out;
     }
     for (uint32_t i = 0; i < n; ++i) {

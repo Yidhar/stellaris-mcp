@@ -132,8 +132,8 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
         uint32_t total_relics_cnt = 0;
         void* r_arr = nullptr;
         if (r_db) {
-            SafeReadU32((const void*)((uintptr_t)r_db + 0x5C), &total_relics_cnt);
-            SafeReadPtr((const void*)((uintptr_t)r_db + 0x50), &r_arr);
+            SafeReadU32((const void*)((uintptr_t)r_db + sdk::rt::TGameDatabase_count), &total_relics_cnt);
+            SafeReadPtr((const void*)((uintptr_t)r_db + sdk::rt::TGameDatabase_items), &r_arr);
         }
 
         // Player's held relics
@@ -193,8 +193,8 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
         uint32_t a_cnt = 0;
         void* a_arr = nullptr;
         if (a_db) {
-            SafeReadU32((const void*)((uintptr_t)a_db + 0x5C), &a_cnt);
-            SafeReadPtr((const void*)((uintptr_t)a_db + 0x50), &a_arr);
+            SafeReadU32((const void*)((uintptr_t)a_db + sdk::rt::TGameDatabase_count), &a_cnt);
+            SafeReadPtr((const void*)((uintptr_t)a_db + sdk::rt::TGameDatabase_items), &a_arr);
         }
 
         nlohmann::json actions_list = nlohmann::json::array();
@@ -227,8 +227,8 @@ nlohmann::json DiscoveriesManager::GetDiscoveriesInfo(const std::string& tab) {
         uint32_t art_cnt = 0;
         void* art_arr = nullptr;
         if (art_db) {
-            SafeReadU32((const void*)((uintptr_t)art_db + 0x5C), &art_cnt);
-            SafeReadPtr((const void*)((uintptr_t)art_db + 0x50), &art_arr);
+            SafeReadU32((const void*)((uintptr_t)art_db + sdk::rt::TGameDatabase_count), &art_cnt);
+            SafeReadPtr((const void*)((uintptr_t)art_db + sdk::rt::TGameDatabase_items), &art_arr);
         }
 
         nlohmann::json art_list = nlohmann::json::array();

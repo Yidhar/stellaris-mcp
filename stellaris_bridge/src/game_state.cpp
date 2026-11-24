@@ -239,16 +239,16 @@ void GameState::EnsureResourceNamesLoaded() {
     if (!cached_resource_names_.empty() || !base_address_) return;
 
     void* res_db = nullptr;
-    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
+    if (!SafeReadPtr((const void*)(base_address_ + sdk::glob::TGameDatabase_CStrategicResourceDatabase_pInstance), &res_db) || !res_db || (uintptr_t)res_db < 0x10000) {
         return;
     }
 
     uint32_t count = 0;
     void* res_arr = nullptr;
-    if (!SafeReadU32((const void*)((uintptr_t)res_db + 0x14), &count) || count == 0 || count > 256) {
+    if (!SafeReadU32((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_count), &count) || count == 0 || count > 256) {
         return;
     }
-    if (!SafeReadPtr((const void*)((uintptr_t)res_db + 0x08), &res_arr) || !res_arr) {
+    if (!SafeReadPtr((const void*)((uintptr_t)res_db + sdk::rt::TGameDatabase_items), &res_arr) || !res_arr) {
         return;
     }
 
@@ -265,7 +265,7 @@ void GameState::EnsureResourceNamesLoaded() {
             continue;
         }
         ptrs.push_back(res_ptr);
-        if (SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x30), name_buf, sizeof(name_buf))) {
+        if (SafeReadPdxString((const void*)((uintptr_t)res_ptr + 0x20), name_buf, sizeof(name_buf))) {
             names.push_back(name_buf);
         } else {
             names.push_back("");

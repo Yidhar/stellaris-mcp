@@ -139,8 +139,8 @@ void SocietyManager::RefreshTraditionCache() {
 
     void* tr_arr = nullptr;
     uint32_t tr_cnt = 0;
-    if (!SafeReadPtr((const void*)((uintptr_t)tr_db + 0x50), &tr_arr) || !tr_arr ||
-        !SafeReadU32((const void*)((uintptr_t)tr_db + 0x5C), &tr_cnt) || tr_cnt == 0) {
+    if (!SafeReadPtr((const void*)((uintptr_t)tr_db + sdk::rt::TGameDatabase_items), &tr_arr) || !tr_arr ||
+        !SafeReadU32((const void*)((uintptr_t)tr_db + sdk::rt::TGameDatabase_count), &tr_cnt) || tr_cnt == 0) {
         return;
     }
 
@@ -159,7 +159,7 @@ void SocietyManager::RefreshTraditionCache() {
 
             // Extract category if available
             void* cat_p = nullptr;
-            if (SafeReadPtr((const void*)((uintptr_t)tr_p + 0x50), &cat_p) && cat_p) {
+            if (SafeReadPtr((const void*)((uintptr_t)tr_p + 0x88), &cat_p) && cat_p) {
                 std::string cat_k;
                 if (SafeReadPdxString((const void*)((uintptr_t)cat_p + 0x20), cat_k) && !cat_k.empty()) {
                     category_cache_[cat_k] = cat_p;
@@ -289,7 +289,7 @@ nlohmann::json SocietyManager::GetTraditionsJson() {
 
             void* cat_p = nullptr;
             std::string cat_k;
-            if (SafeReadPtr((const void*)((uintptr_t)tr_p + 0x50), &cat_p) && cat_p) {
+            if (SafeReadPtr((const void*)((uintptr_t)tr_p + 0x88), &cat_p) && cat_p) {
                 SafeReadPdxString((const void*)((uintptr_t)cat_p + 0x20), cat_k);
             }
 

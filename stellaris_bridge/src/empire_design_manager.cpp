@@ -122,7 +122,9 @@ struct ReadFileCtx {
 
 void CallInitFromFile(void* p, void*) {
     auto* x = (ReadFileCtx*)p;
-    ((void (*)(void*, const char*, bool))x->fn)(x->db, x->path, true);
+    // 4.6.0: (db, path, unused, flag), appending to the user designs; the flag goes to each design's
+    // constructor as the old `user` argument did
+    ((void (*)(void*, const char*, void*, bool))x->fn)(x->db, x->path, nullptr, true);
 }
 
 // the design's deleting destructor (vtable slot, flag 1 = free), as DeleteUserDesign deletes one
@@ -314,7 +316,7 @@ nlohmann::json EmpireDesignManager::DetailJson(const std::string& key) {
     out["origin"] = KeyName(base_address_, KeyOfPtr(d + ed::origin));
     // the home world: planet class (its key sits at +0x28), system initializer, names
     void* pc = nullptr;
-    out["home"] = { {"planet_class", ReadVal(d + ed::planet_class, &pc) && pc ? KeyName(base_address_, Text((uintptr_t)pc + 0x28)) : nlohmann::json()},
+    out["home"] = { {"planet_class", ReadVal(d + ed::planet_class, &pc) && pc ? KeyName(base_address_, Text((uintptr_t)pc + 0x20)) : nlohmann::json()},
                     {"planet_name", PersistentNameText((const void*)(d + ed::planet_name))},
                     {"system_name", PersistentNameText((const void*)(d + ed::system_name))},
                     {"initializer", Text(d + ed::initializer)} };
