@@ -916,7 +916,7 @@ namespace fn {
     // CPopGroup::MoveSizeFrom(CPopGroup&, int, ...)  --  void (*)(void* dst, void* src, int amount, void* extra)
     inline constexpr uintptr_t CPopGroup_MoveSizeFrom = 0x748A50;
     // operator delete(void*)  --  void (*)(void* p)
-    inline constexpr uintptr_t CRT_operator_delete = 0x1C406B0;
+    inline constexpr uintptr_t CRT_operator_delete = 0x1D1C5D0;
     // __cxa_pure_virtual (MSVC: _purecall)  --  void (*)()  -- calls the registered purecall handler, then abort()
     inline constexpr uintptr_t CRT_purecall = 0x21DC2D0;
     // snprintf(char*, size_t, char const*, ...) (the UCRT inline: _vsnprintf_l with the standard snprintf option)  --  int (*)(char* buf, size_t n, const char* fmt, ...)

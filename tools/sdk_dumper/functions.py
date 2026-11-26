@@ -15,6 +15,8 @@ instead of guessing. Rule kinds (one per entry):
   * strings (+ require, + filters): the function referencing every given C string.
   * mnemonics + min_rdata_refs: the first mnemonics of a function referenced that often from .rdata.
   * call_near: the call next to an anchor inside the function that references the given strings.
+  * free_thunk: the most called `jmp` thunk whose chain ends in the CRT's free (the function that
+    starts `test rcx,rcx; je` and passes rcx to HeapFree).
   * call_in: the call next to an anchor inside a located function ("from"; "helper:<name>" names a
     helper from sdk.json; or a command's vtable slot), or its "call_index"-th direct call;
     "preceded_by" skips calls whose previous three instructions (joined by " | ") do not match
@@ -664,8 +666,8 @@ FUNCTIONS = {
         "linux": "operator delete(void*)",
         # frees engine allocations (kRvaEngineAlloc); here: the empty path's node array
         "signature": "void (*)(void* p)",
-        "call_near": {"strings": ["ETA %.1f days"], "anchor": r"^cmp dword ptr \[rbp \+ 0x[0-9a-f]+\], 0$",
-                      "pick": "first_call_after"},
+        # a `jmp` thunk whose chain ends in the CRT's free; the one with the most call sites
+        "free_thunk": True,
     },
     # --- helpers the bridge used through hand-written addresses (all calls go through the SDK)
     "PostCommand": {
@@ -1743,6 +1745,33 @@ def match_by_mnemonics(im, spec):
     return out
 
 
+# CRT free: test rcx,rcx; je; push rbx; sub rsp,20h; mov r8,rcx; xor edx,edx; mov rcx,[rip+heap]; call [rip+HeapFree]
+CRT_FREE = re.compile(rb"\x48\x85\xc9\x74.\x53\x48\x83\xec\x20\x4c\x8b\xc1\x33\xd2\x48\x8b\x0d....\xff\x15", re.S)
+# the stub the linker puts in front of free: mov [rsp+10h],0; mov eax,[rsp+10h]; jmp rel32
+FREE_STUB = bytes([0xC7, 0x44, 0x24, 0x10, 0, 0, 0, 0, 0x8B, 0x44, 0x24, 0x10, 0xE9])
+
+
+def match_free_thunk(im):
+    text = im.img[im.text0:im.text1]
+    frees = {im.text0 + m.start() for m in CRT_FREE.finditer(text)}
+
+    def end_of_chain(f):
+        for _ in range(6):
+            if not im.text0 <= f < im.text1 - 17:
+                break
+            if im.img[f] == 0xE9:
+                f += 5 + struct.unpack_from("<i", im.img, f + 1)[0]
+            elif im.img[f:f + 13] == FREE_STUB:
+                f += 17 + struct.unpack_from("<i", im.img, f + 13)[0]
+            else:
+                break
+        return f
+
+    calls, _ = call_index(im)
+    thunks = [(len(sites), t) for t, sites in calls.items() if im.img[t] == 0xE9 and end_of_chain(t) in frees]
+    return [max(thunks)[1]] if thunks else []
+
+
 def match_by_strings(im, spec):
     """Functions that reference every given C string through a rip-relative operand."""
     import numpy as np
@@ -2348,6 +2377,8 @@ def locate(im, spec, ctx):
         return match_vtable_call(im, spec)
     if "call_near" in spec:
         return match_call_near(im, spec)
+    if "free_thunk" in spec:
+        return match_free_thunk(im)
     return match_pattern(im, spec, ctx)
 
 
