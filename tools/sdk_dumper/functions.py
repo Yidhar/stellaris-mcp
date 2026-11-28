@@ -1722,6 +1722,217 @@ FUNCTIONS = {
         "window": 30,
         "filters": {"max_callers": 0, "min_lea_refs": 1, "calls": ["CModifierNodeBase_InvalidateChildren"]},
     },
+    # --- perf startup (perf_startup.cpp): the stretch between the full loading bar and the main menu
+    "CLogger_FormatLine": {
+        "linux": "the logger's line writer behind CPdxLogFileAndLine / CLogStream (no symbol: inlined into the sinks' caller)",
+        # rcx = logger, r8 = the message CString, r9d = line. Builds "[hh:mm:ss][file:line]: message" in a CString on
+        # its stack, then replaces every "\n" by "\r\n" one std::string::replace at a time (quadratic in the length:
+        # CModifier::LogDefinitions' one 4 MB message), then hands the text to the sinks
+        "signature": "void (*)(void* logger, ...)",
+        "strings": ["[%02d:%02d:%02d]", "[%s:%d]"],
+    },
+    "CString_Append": {
+        "linux": "CString::append(char const*, size_t) (std::basic_string append)",
+        # rcx = CString (MSVC string at +0x10), rdx = chars, r8 = length; grows through the engine's allocator
+        "signature": "void* (*)(void* cstring, const char* chars, size_t length)",
+        "pattern": [(r"^push rbx$", ""), (r"^push rsi$", ""), (r"^push rdi$", ""), (r"^push r13$", ""), (r"^sub rsp, 0x28$", ""),
+                    (r"^mov rsi, rcx$", ""), (r"^mov rdi, r8$", ""), (r"^mov rcx, qword ptr \[rcx \+ 0x20\]$", ""),
+                    (r"^mov r13, rdx$", ""), (r"^mov r8, qword ptr \[rsi \+ 0x28\]$", ""), (r"^lea rbx, \[rsi \+ 0x10\]$", "")],
+        "prefilter_bytes": [b"\x48\x8B\xF1\x49\x8B\xF8\x48\x8B\x49\x20"],
+        "window": 12,
+        "identical_ok": True,
+        "filters": {"called_from": "CLogger_FormatLine"},
+    },
+    "CString_Replace": {
+        "linux": "CString::replace(size_t pos, size_t count, char const*, size_t) (std::basic_string replace)",
+        # rcx = CString, rdx = position, r8 = count replaced, r9 = chars, [rsp+0x28] = their length
+        "signature": "void* (*)(void* cstring, size_t pos, size_t count, const char* chars, size_t length)",
+        "pattern": [(r"^push rbp$", ""), (r"^push rdi$", ""), (r"^push r15$", ""), (r"^sub rsp, 0x50$", ""), (r"^mov rdi, r8$", ""),
+                    (r"^mov r15, r9$", ""), (r"^mov r8, qword ptr \[rcx \+ 0x20\]$", ""), (r"^mov rbp, rcx$", ""),
+                    (r"^cmp r8, rdx$", ""), (r"^jb ", "")],
+        "prefilter_bytes": [b"\x49\x8B\xF8\x4D\x8B\xF9\x4C\x8B\x41\x20"],
+        "window": 11,
+        "identical_ok": True,
+        "filters": {"called_from": "CLogger_FormatLine"},
+    },
+    "CLogger_FormatLine_NewlineReplace": {
+        "linux": "the replace(pos, 1, \"\\r\\n\", 2) call of the line writer's newline loop (memchr for '\\n', replace, skip 2)",
+        "signature": "call CString_Replace",
+        "site": {"in": "CLogger_FormatLine", "target": "CString_Replace", "index": 0, "count": 1},
+    },
+    "CPdxModifier_TryReadMember": {
+        "linux": "CPdxModifier<ModifierType, ModifierCategory, CModifier, CDefaultPdxModifierValueReader>::TryReadMember(CReader&, int)",
+        # rcx = modifier, rdx = reader, r8d = token. Every entry of every modifier block read: a linear scan of
+        # CModifier::_Definitions for the definition whose token it is (about 47,000 in 4.6.0, 0xB0 bytes apart)
+        "signature": "bool (*)(void* modifier, void* reader, int token)",
+        "strings": ["Modifier has entry not allowed by category: %s"],
+        "require": [r"cmp r8d, 0x1b"],
+    },
+    "CReader_FindVariable": {
+        "linux": "(inlined into CReader::ParseAdvancedStatementWithVariables and the readers of @variables) the lookup of a "
+                 "scripted variable by its name's token in one variable array",
+        # ecx = token, rdx = the variable array (CPdxArray: data, count), r8 = the value out (CToken). A linear scan;
+        # with the global scripted variables (a static array) it runs over every @variable of the game and its mods
+        "signature": "bool (*)(int token, const void* variables, void* out_value)",
+        "pattern": [(r"^push r14$", ""), (r"^sub rsp, 0x20$", ""), (r"^movsxd rax, dword ptr \[rdx \+ 0x14\]$", ""),
+                    (r"^xor r9d, r9d$", ""), (r"^mov r14, r8$", ""), (r"^test eax, eax$", ""), (r"^jle ", ""),
+                    (r"^mov r8, qword ptr \[rdx \+ 8\]$", ""), (r"^mov r10, rax$", ""), (r"^mov edx, r9d$", ""),
+                    (r"^lea rax, \[r8 \+ 0x[0-9a-f]+\]$", ""), (r"^cmp dword ptr \[rax\], ecx$", ""), (r"^je ", ""),
+                    (r"^inc r9d$", ""), (r"^inc rdx$", ""), (r"^add rax, 0x[0-9a-f]+$", "")],
+        "prefilter_bytes": [b"\x48\x63\x42\x14\x45\x33\xC9\x4D\x8B\xF0"],
+        "window": 17,
+    },
+    "CEffectDatabase_RemoveInstance": {
+        "linux": "(inlined into CEffect::~CEffect) the removal of an effect instance from the effect database's instance list",
+        # rcx = the database (instance array: data, count; the count of instances PostInit has not reached yet), rdx =
+        # the effect. Scans the array from the front for the pointer, although a destroyed effect is mostly a recent one
+        # at the back (the temporary effects of the scripting documentation, of scripted effect expansion)
+        "signature": "void (*)(void* database, void* effect)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 8\], rbx$", ""), (r"^push rdi$", ""), (r"^sub rsp, 0x20$", ""), (r"^mov rdi, rdx$", ""),
+                    (r"^xor r8d, r8d$", ""), (r"^movsxd rdx, dword ptr \[rcx \+ 0x14\]$", ""), (r"^mov rbx, rcx$", ""),
+                    (r"^test edx, edx$", ""), (r"^jle ", ""), (r"^mov rax, qword ptr \[rcx \+ 8\]$", ""), (r"^xor r9d, r9d$", ""),
+                    (r"^cmp qword ptr \[rax\], rdi$", ""), (r"^je ", ""), (r"^inc r8d$", ""), (r"^inc r9$", ""),
+                    (r"^add rax, 8$", ""), (r"^cmp r9, rdx$", ""), (r"^jl ", ""), (r"^jmp ", ""), (r"^cmp r8d, -1$", ""),
+                    (r"^jle ", ""), (r"^mov ecx, dword ptr \[rcx \+ 0x[0-9a-f]+\]$", "")],
+        "prefilter_bytes": [b"\x48\x8B\xFA\x45\x33\xC0\x48\x63\x51\x14\x48\x8B\xD9"],
+        "window": 23,
+    },
+    "CDeferredResolver_Register": {
+        "linux": "CGlobalDeferredDatabaseObjectResolver::Register_Internal(CGlobalDeferredDatabaseObject const*, CString const&, "
+                 "CString const&, std::function<bool (CString const&)>&&)",
+        # rcx = the resolver, rdx = the object that owns the reference (may be null), r8 = key, r9 = database name,
+        # stack = the resolving function. While the resolver's "deferring" flag is set (script databases still loading)
+        # the reference is appended to the resolver's array; afterwards it is resolved at once. The only place that
+        # appends. The database loader inlines Run() and so references the string as well; it has one caller
+        "signature": "void (*)(void* resolver, const void* owner, const void* key, const void* database, void* resolve)",
+        "strings": ["Failed to deferred read key reference %s from database %s"],
+        "filters": {"min_callers": 50},
+    },
+    "CDeferredResolver_Unregister": {
+        "linux": "CGlobalDeferredDatabaseObjectResolver::Unregister(CGlobalDeferredDatabaseObject const&)",
+        # rcx = the resolver, rdx = the object being destroyed (every CTrigger, CEffect, ... destructor). Walks the
+        # whole array of pending references from the back and removes those the object owns: a full scan per
+        # destroyed object, while the array grows through the whole database load
+        "signature": "void (*)(void* resolver, const void* owner)",
+        "pattern": [(r"^mov r14d, dword ptr \[rcx \+ 0x14\]$", ""), (r"^sub r14d, 1$", ""), (r"^js ", ""), (r"^movsxd rax, r14d$", ""),
+                    (r"^imul r15, rax, 0x[0-9a-f]+$", ""), (r"^mov rax, qword ptr \[rcx \+ 8\]$", ""),
+                    (r"^cmp qword ptr \[rax \+ r15 \+ 0x[0-9a-f]+\], rdx$", ""), (r"^jne ", "")],
+        "prefilter_bytes": [b"\x44\x8B\x71\x14\x41\x83\xEE\x01"],
+        "window": 36,
+        "filters": {"min_callers": 20},
+    },
+    "CModifier_TryAddDynamicModifier": {
+        "linux": "CModifier::TryAddDynamicModifier(ModifierType&, CString const&, bool, bool, bool, int, bool, bool, "
+                 "ModifierCategory, bool, CFixedPoint, bool)",
+        # rcx = the type out, rdx = the modifier's name. Turns the name into a token, then scans all of
+        # CModifier::_Definitions for it (found: updates that definition's flags; absent: AddDefinition with the icon
+        # name "mod_" + name). Called for every generated modifier (per ship size, building, job, resource...)
+        "signature": "bool (*)(int* out_type, const void* name, ...)",
+        "pattern": [(r"^movsxd rax, dword ptr \[rip \+ 0x", ""), (r"^test eax, eax$", ""), (r"^jle ", ""), (r"^xor r9d, r9d$", ""),
+                    (r"^mov r8, qword ptr \[rip \+ 0x", ""), (r"^cmp dword ptr \[r8 \+ 0x[0-9a-f]+\], ebx$", ""), (r"^je ", ""),
+                    (r"^inc r9$", ""), (r"^add r8, 0x[0-9a-f]+$", ""), (r"^cmp r9, rax$", ""), (r"^jl ", ""),
+                    (r"^mov dword ptr \[rsi\], eax$", ""), (r"^mov dword ptr \[rsp \+ 0x[0-9a-f]+\], 0x5f646f6d$", "")],
+        "prefilter_bytes": [b"\x6D\x6F\x64\x5F", b"\x49\xFF\xC1\x49\x81\xC0"],
+        "window": 40,
+    },
+    # --- perf startup, group 3 (perf_startup_script.cpp): script parsing and scripted effect / trigger expansion
+    "CTraitDatabase_FindByName": {
+        "linux": "(inlined into CTraitDatabase::Get / the readers of trait keys) the lookup of a trait by its key",
+        # rcx = the trait database, rdx = the key (CString). The traits are kept per group in a hash table of arrays;
+        # the lookup walks every slot of the table and compares the key with every trait's of every array: a full scan
+        # with a string comparison per trait, for every trait read (is the key taken?) and every trait reference
+        "signature": "void* (*)(const void* database, const void* key)",
+        "pattern": [(r"^mov qword ptr \[rsp \+ 0x10\], rdx$", ""), (r"^push rbx$", ""), (r"^sub rsp, 0x50$", ""),
+                    (r"^mov r9, qword ptr \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^mov r8, rcx$", ""), (r"^mov rbx, r9$", ""),
+                    (r"^cmp byte ptr \[r9 \+ 4\], 0$", ""), (r"^jne ", ""), (r"^nop", ""), (r"^mov rax, rbx$", ""),
+                    (r"^add rbx, 0x[0-9a-f]+$", ""), (r"^cmp byte ptr \[rax \+ 0x[0-9a-f]+\], 0$", ""), (r"^je ", ""),
+                    (r"^movzx ecx, byte ptr \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^mov eax, dword ptr \[r8 \+ 0x[0-9a-f]+\]$", "")],
+        "prefilter_bytes": [b"\x4C\x8B\xC1\x49\x8B\xD9\x41\x80\x79\x04\x00"],
+        "window": 16,
+        "filters": {"min_callers": 15},
+    },
+    "CMetaScriptTemplate_ProcessSourceForArguments": {
+        "linux": "CMetaScriptTemplate::ProcessSourceForArguments(CString&, CPdxArray<std::pair<CString, CString>, int> const&, "
+                 "CPdxArray<CMetaScriptTemplate::SArgumentData, int> const&)",
+        # rcx = the source text being generated, rdx = the call's arguments, r8 = the template's $ARGUMENT$ places
+        # (name, start, end), ascending. From the last place to the first: source = source[0, start) + value +
+        # source[end, ...), each through three temporary strings and two strlen passes over the whole text: quadratic
+        # in the template's size for every instance of a scripted effect or trigger that takes arguments
+        "signature": "void (*)(void* source_cstring, const void* arguments, const void* places)",
+        "pattern": [(r"^mov r13, r8$", ""), (r"^mov r12, rdx$", ""), (r"^mov r14, rcx$", ""), (r"^xor edi, edi$", ""),
+                    (r"^mov dword ptr \[rbp \+ 0x[0-9a-f]+\], edi$", ""), (r"^mov esi, dword ptr \[r8 \+ 0x14\]$", ""),
+                    (r"^sub esi, 1$", ""), (r"^js ", ""), (r"^movsxd rax, esi$", ""), (r"^imul r15, rax, 0x[0-9a-f]+$", "")],
+        "prefilter_bytes": [b"\x41\x8B\x70\x14\x83\xEE\x01"],
+        "window": 22,
+    },
+    "CMetaScriptTemplate_GetArgumentValue": {
+        "linux": "CMetaScriptTemplate::GetArgumentValue(CPdxArray<std::pair<CString, CString>, int> const&, "
+                 "CPdxArray<CMetaScriptTemplate::SArgumentData, int> const&, CMetaScriptTemplate::SArgumentData const&)",
+        # rcx = the value out (a CString it constructs), rdx = the call's arguments, r8 = the places, r9 = the place.
+        # The argument's value, else the place's default, else another place's value; writes nothing but the result
+        "signature": "void* (*)(void* out_cstring, const void* arguments, const void* places, const void* place)",
+        "call_in": {"from": "CMetaScriptTemplate_ProcessSourceForArguments", "call_index": 0},
+    },
+    "CModifier_TryReadMember": {
+        "linux": "CModifier::TryReadMember(CReader&, int) (the override that first tries the entry as a static modifier's key)",
+        "signature": "bool (*)(void* modifier, void* reader, int token)",
+        "caller_of": "CPdxModifier_TryReadMember",
+        "emit": False,
+    },
+    "CStaticModifierDatabase_Find": {
+        "linux": "(inlined into the users of TGameDatabase<CStaticModifierDatabase>) the lookup of a static modifier by its key",
+        # rcx = the database (the array of its objects), rdx = the key (CString). Compares the key with every static
+        # modifier's in turn; the first with that key is the answer, unless it is marked removed (then the null object)
+        "signature": "void* (*)(const void* database, const void* key)",
+        "pattern": [(r"^mov ebp, dword ptr \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^xor ebx, ebx$", ""), (r"^test ebp, ebp$", ""), (r"^jle ", ""),
+                    (r"^mov r15, qword ptr \[rdx \+ 0x28\]$", ""), (r"^lea rsi, \[rdx \+ 0x10\]$", ""),
+                    (r"^mov r14, qword ptr \[rcx \+ 0x[0-9a-f]+\]$", ""), (r"^mov r12, qword ptr \[rdx \+ 0x20\]$", "")],
+        "prefilter_bytes": [b"\x33\xDB\x85\xED\x7E", b"\x4C\x8B\x7A\x28\x48\x8D\x72\x10"],
+        "window": 18,
+        "filters": {"called_from": "CModifier_TryReadMember"},
+    },
+    "CStaticLexer_RebuildLookup": {
+        "linux": "CStaticLexer::RebuildLookup()",
+        # no arguments. The token -> name table behind CStaticLexer::GetString: empties every name, resizes the table
+        # to the token count, then copies the name of every static token (about 10,000) and of every dynamic token.
+        # GetString calls it whenever it is asked for a token past the table's end, so after every new dynamic token
+        "signature": "void (*)()",
+        "pattern": [(r"^add rsi, 0x120$", ""), (r"^cmp rsi, 0x[0-9a-f]+$", ""), (r"^jl ", ""), (r"^mov esi, r14d$", ""),
+                    (r"^cmp dword ptr \[rdi \+ 0x[0-9a-f]+\], r14d$", ""), (r"^jle ", "")],
+        "prefilter_bytes": [b"\x48\x81\xC6\x20\x01\x00\x00\x48\x81\xFE"],
+        "window": 60,
+        "filters": {"min_callers": 100},
+    },
+    "CStaticLexer_Get": {
+        "linux": "CStaticLexer::GetStaticLexer() / AccessStaticLexer()",
+        "signature": "void* (*)()",
+        "call_in": {"from": "CStaticLexer_RebuildLookup", "call_index": 0},
+    },
+    "CPdxArray_CString_SetSize": {
+        "linux": "CPdxArray<CString, int>::SetSizeAndEmplace<>(int)",
+        # rcx = the array, edx = the new size; new elements are empty strings
+        "signature": "void (*)(void* array, int size)",
+        "call_in": {"from": "CStaticLexer_RebuildLookup", "call_index": 1},
+    },
+    "CReader_ReadVariable": {
+        "linux": "CReader::ParseAdvancedStatementWithVariables(...) (the reader of an @variable reference)",
+        # looks the variable up in the reader's own array through CReader_FindVariable and then, inline, in the global
+        # scripted variables: a second copy of the linear scan
+        "signature": "void (*)(void* out_token, void* reader, ...)",
+        "strings": ["unknown variable [%s]. %s"],
+    },
+    "CString_ReplaceAll": {
+        "linux": "CString::ReplaceAll(char const*, char const*)",
+        # rcx = CString, rdx = what to find, r8 = what to put there. Finds the next occurrence, std::string::replace,
+        # searches on behind the replacement: every replacement of another length moves the rest of the text. An
+        # inline_script's text goes through it once per parameter (CreateInlineScriptReader), a generated scripted
+        # effect's four times (CMetaScriptTemplate::GenerateSource, the escapes)
+        "signature": "void (*)(void* cstring, const char* from, const char* to)",
+        "pattern": [(r"^mov rbx, r8$", ""), (r"^mov rdi, rdx$", ""), (r"^mov r13, rcx$", ""), (r"^mov rsi, 0xffffffffffffffff$", "")],
+        "prefilter_bytes": [b"\x49\x8B\xD8\x48\x8B\xFA\x4C\x8B\xE9\x48\xC7\xC6\xFF\xFF\xFF\xFF"],
+        "window": 14,
+        "filters": {"calls": ["CString_Replace"]},
+    },
 }
 
 

@@ -856,6 +856,110 @@ def perf_layouts(im, funcs, globs, result, failures):
                  "CShipGrowthStageEconomicUnit_modifier": modifier, "SLatestShipDesign_design": stores[0][0],
                  "SLatestShipDesign_stage": stores[1][0], "SLatestShipDesign_size": stores[1][0] + stores[1][1]}, {}, {})
 
+    def startup():
+        # the variable lookup's scan: `movsxd rax, [arr + COUNT]; ...; mov r8, [arr + DATA]; ...; lea rax, [r8 + TOKEN];
+        # cmp [rax], ecx; ...; add rax, SIZE`; the effect database's instance removal reads the same array layout
+        _, o = ops(fn("CReader_FindVariable"), 17, 0x100)
+        count = first("variable count", r"^movsxd rax, dword ptr \[rdx \+ " + D + r"\]$", o)
+        data = first("variable data", r"^mov r8, qword ptr \[rdx \+ " + D + r"\]$", o)
+        token = first("variable token", r"^lea rax, \[r8 \+ " + D + r"\]$", o)
+        size = first("variable size", r"^add rax, " + D + r"$", o)
+        _, e = ops(fn("CEffectDatabase_RemoveInstance"), 23, 0x100)
+        ecount = first("instance count", r"^movsxd rdx, dword ptr \[rcx \+ " + D + r"\]$", e)
+        edata = first("instance data", r"^mov rax, qword ptr \[rcx \+ " + D + r"\]$", e)
+        if (ecount, edata) != (count, data):
+            raise Fail(f"array layouts differ: variables data +0x{data:X} count +0x{count:X}, instances +0x{edata:X} +0x{ecount:X}")
+        # the deferred resolver: Unregister walks its array of pending references from the back, `mov r14d, [res + COUNT];
+        # ...; imul r15, rax, SIZE; ...; mov rax, [res + DATA]; cmp [rax + r15 + OWNER], rdx`
+        _, u = ops(fn("CDeferredResolver_Unregister"), 40, 0x200)
+        ucount = first("reference count", r"^mov r14d, dword ptr \[rcx \+ " + D + r"\]$", u)
+        udata = first("reference data", r"^mov rax, qword ptr \[rcx \+ " + D + r"\]$", u)
+        rsize = first("reference size", r"^imul r15, rax, " + D + r"$", u)
+        owner = first("reference owner", r"^cmp qword ptr \[rax \+ r15 \+ " + D + r"\], rdx$", u)
+        if (ucount, udata) != (count, data):
+            raise Fail(f"array layouts differ: variables data +0x{data:X} count +0x{count:X}, references +0x{udata:X} +0x{ucount:X}")
+        return ({"CPdxArray_data": data, "CPdxArray_count": count, "CScriptedVariable_token": token,
+                 "CScriptedVariable_size": size, "SDatabaseObjectReference_size": rsize,
+                 "SDatabaseObjectReference_owner": owner}, {}, {})
+
+    def script():
+        text = result["fields"]["CString_text"]
+        data, count = result["fields"]["CPdxArray_data"], result["fields"]["CPdxArray_count"]
+
+        def rip_load(ins, o, rx, label):
+            hits = [rip_target(im, i) for i, x in zip(ins, o) if re.match(rx, x)]
+            return one(label, hits)
+
+        # the trait lookup: `mov r9, [db + GROUPS]` (the table's slots), `cmp byte ptr [r9 + USED], 0`, `add rbx, SLOT`,
+        # the end = slots + ([db + MASK] + byte [db + EXTRA] + 1) * SLOT, per slot `movsxd rax, [slot + COUNT]`,
+        # `mov rsi, [slot + DATA]`, per trait `add rcx, KEY + text`; absent: `mov rax, [the null trait]`
+        tins, t = ops(fn("CTraitDatabase_FindByName"), 90, 0x200)
+        groups = first("trait groups", r"^mov r9, qword ptr \[rcx \+ " + D + r"\]$", t)
+        used = first("slot used", r"^cmp byte ptr \[r9 \+ " + D + r"\], 0$", t)
+        slot = first("slot size", r"^add rbx, " + D + r"$", t)
+        extra = first("table extra", r"^movzx ecx, byte ptr \[rcx \+ " + D + r"\]$", t)
+        mask = first("table mask", r"^mov eax, dword ptr \[r8 \+ " + D + r"\]$", t)
+        tcount = first("slot trait count", r"^movsxd rax, dword ptr \[rbx \+ " + D + r"\]$", t)
+        tdata = first("slot trait data", r"^mov rsi, qword ptr \[rbx \+ " + D + r"\]$", t)
+        tkey = first("trait key text", r"^add rcx, " + D + r"$", t)
+        if tcount - tdata != count - data or "lea rcx, [rax + rax*4]" not in t or "shl rcx, 4" not in t or slot != 0x50:
+            raise Fail(f"trait table: slot 0x{slot:X}, traits data +0x{tdata:X} count +0x{tcount:X}")
+        null_trait = rip_load(tins, t, r"^mov rax, qword ptr \[rip \+ ", "the null trait")
+        if result["fields"].get("CTrait_key", tkey) != tkey:  # the key's text (CTraitSet readers)
+            raise Fail(f"a trait's key text: +0x{tkey:X} here, CTrait_key is 0x{result['fields']['CTrait_key']:X}")
+
+        # ProcessSourceForArguments: `imul r15, rax, PLACE` (from the last place), `mov r9d, [place + START]` (the
+        # prefix's length), `mov ecx, [place + END]` (where the rest starts)
+        _, p = ops(fn("CMetaScriptTemplate_ProcessSourceForArguments"), 60, 0x200)
+        place = first("place size", r"^imul r15, rax, " + D + r"$", p)
+        start = first("place start", r"^mov r9d, dword ptr \[rbx \+ " + D + r"\]$", p)
+        end = first("place end", r"^mov ecx, dword ptr \[rbx \+ " + D + r"\]$", p)
+        if end != start + 4:
+            raise Fail(f"argument place: start +0x{start:X}, end +0x{end:X}")
+
+        # RebuildLookup: the lexer from its getter; `mov rdx, [lexer + NAMES.data]; movsxd rcx, [lexer + NAMES.count];
+        # lea r9, [rcx + rcx*2]; shl r9, 4` (a name = one CString), `mov edx, [lexer + TOTAL]; lea rcx, [lexer + NAMES]`
+        # for the resize, then the dynamic tokens `cmp [lexer + DYNAMIC.count], r14d`, `mov rax, [lexer + DYNAMIC.data]`,
+        # each a pointer to (id at +0, text at +TEXT)
+        _, r = ops(fn("CStaticLexer_RebuildLookup"), 80, 0x200)
+        names = first("lexer names", r"^lea rcx, \[rdi \+ " + D + r"\]$", r)
+        ndata = first("lexer names data", r"^mov rdx, qword ptr \[rax \+ " + D + r"\]$", r)
+        ncount = first("lexer names count", r"^movsxd rcx, dword ptr \[rax \+ " + D + r"\]$", r)
+        total = first("lexer token count", r"^mov edx, dword ptr \[rdi \+ " + D + r"\]$", r)
+        dcount = first("dynamic count", r"^cmp dword ptr \[rdi \+ " + D + r"\], r14d$", r)
+        ddata = first("dynamic data", r"^mov rax, qword ptr \[rdi \+ " + D + r"\]$", r)
+        dtext = first("dynamic token text", r"^mov rdx, qword ptr \[rcx \+ " + D + r"\]$", r)
+        if (ndata, ncount) != (names + data, names + count) or dcount - ddata != count - data:
+            raise Fail(f"lexer: names +0x{names:X} (data +0x{ndata:X}, count +0x{ncount:X}), dynamic data +0x{ddata:X} count +0x{dcount:X}")
+        k = next((n for n, x in enumerate(r) if x == "lea r9, [rcx + rcx*2]"), None)
+        if k is None or r[k + 1] != "shl r9, 4" or "movsxd rax, dword ptr [rcx]" not in r:
+            raise Fail("lexer: no `lea r9, [rcx + rcx*2]; shl r9, 4` (a name's size) or `movsxd rax, dword ptr [rcx]` (a token's id)")
+
+        # the static modifier lookup: `mov ebp, [db + OBJECTS.count]`, `mov r14, [db + OBJECTS.data]`, per object
+        # `lea rcx, [obj + KEY + text]`, found `cmp byte ptr [obj + REMOVED], 0`, else `mov rax, [the null object]`
+        sins, s = ops(fn("CStaticModifierDatabase_Find"), 50, 0x100)
+        ocount = first("object count", r"^mov ebp, dword ptr \[rcx \+ " + D + r"\]$", s)
+        odata = first("object data", r"^mov r14, qword ptr \[rcx \+ " + D + r"\]$", s)
+        okey = first("object key text", r"^lea rcx, \[rdi \+ " + D + r"\]$", s)
+        removed = first("object removed", r"^cmp byte ptr \[rdi \+ " + D + r"\], 0$", s)
+        if ocount - odata != count - data:
+            raise Fail(f"game database objects: data +0x{odata:X}, count +0x{ocount:X}")
+        null_static = rip_load(sins, s, r"^mov rax, qword ptr \[rip \+ ", "the null static modifier")
+
+        # the @variable reader: after its call to the lookup, `lea rax, [the global variables]; cmp rbx, rax`
+        look = fn("CReader_FindVariable")
+        vins = im.disasm_fn(fn("CReader_ReadVariable"), 0x1000)
+        glob = [rip_target(im, b) for a, b, c in zip(vins, vins[3:], vins[4:]) if target(a) == look and b.mnemonic == "lea"
+                and b.op_str.startswith("rax, [rip") and f"{c.mnemonic} {c.op_str}" == "cmp rbx, rax"]
+        return ({"CTraitDatabase_groups": groups, "CTraitDatabase_groups_mask": mask, "CTraitDatabase_groups_extra": extra,
+                 "CTraitGroupSlot_size": slot, "CTraitGroupSlot_used": used, "CTraitGroupSlot_traits": tdata - data,
+                 "SArgumentData_size": place, "SArgumentData_start": start, "SArgumentData_end": end,
+                 "CString_size": 0x30, "CStaticLexer_names": names, "CStaticLexer_token_count": total,
+                 "CStaticLexer_dynamic": ddata - data, "CToken_text": dtext, "CGameDatabase_objects": odata - data,
+                 "CGameDatabaseObject_key": okey - text, "CGameDatabaseObject_removed": removed}, {},
+                {"TPdxNullObject<CTrait>::_pInstance": null_trait, "TPdxNullObject<CStaticModifier>::_pInstance": null_static,
+                 "CReader::_GlobalVariables": one("the global scripted variables", glob)})
+
     group("parallel-for descriptor, AI update slot", parallel_for)
     group("colony modifier node", colony)
     group("modifier node", nodes)
@@ -867,6 +971,8 @@ def perf_layouts(im, funcs, globs, result, failures):
     group("tooltip manager", tooltip)
     group("fleet selection", selection)
     group("design upkeep unit, latest design result", design)
+    group("startup lookups (variables, effect instances)", startup)
+    group("script reading (traits, argument places, lexer names, static modifiers, global variables)", script)
 
 
 def main():

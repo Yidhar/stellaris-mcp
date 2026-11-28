@@ -28,6 +28,7 @@ namespace glob {
     inline constexpr uintptr_t CModifier_Definitions = 0x2A29CF0;  // CModifier::_Definitions  score=anchor live=anchor
     inline constexpr uintptr_t CPdxModifierName_EmptyName = 0x2A1C7B0;  // CPdxModifierName::_EmptyName  score=anchor live=anchor
     inline constexpr uintptr_t CRandom_Forbidden = 0x2A29660;  // CRandom_Forbidden  score=anchor live=anchor
+    inline constexpr uintptr_t CReader_GlobalVariables = 0x2AC3398;  // CReader::_GlobalVariables  score=anchor live=anchor
     inline constexpr uintptr_t CScriptedRule_TokenByIndex = 0x2A47F70;  // CScriptedRule_TokenByIndex  score=anchor live=anchor
     inline constexpr uintptr_t CSettings_pInstance = 0x3457B18;  // CSettings::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t CStaticLexer_Instance = 0x3830150;  // CStaticLexer_Instance  score=anchor live=anchor
@@ -244,6 +245,8 @@ namespace glob {
     inline constexpr uintptr_t TPdxNullObject_CSpecies_pInstance = 0x333EE00;  // TPdxNullObject<CSpecies>::_pInstance  score=0.533 live=not-checked
     inline constexpr uintptr_t TPdxNullObject_CSpyNetwork_pInstance = 0x33400F0;  // TPdxNullObject<CSpyNetwork>::_pInstance  score=0.5 live=swapped with its database
     inline constexpr uintptr_t TPdxNullObject_CStarbase_pInstance = 0x333FD50;  // TPdxNullObject<CStarbase>::_pInstance  score=0.889 live=not-checked
+    inline constexpr uintptr_t TPdxNullObject_CStaticModifier_pInstance = 0x3340860;  // TPdxNullObject<CStaticModifier>::_pInstance  score=anchor live=anchor
+    inline constexpr uintptr_t TPdxNullObject_CTrait_pInstance = 0x333EC90;  // TPdxNullObject<CTrait>::_pInstance  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CAmbientObject_pDatabase = 0x3340FD8;  // TPdxRef<CAmbientObject>::_pDatabase  score=anchor live=anchor
     inline constexpr uintptr_t TPdxRef_CArchaeologicalSite_pDatabase = 0x3340E58;  // TPdxRef<CArchaeologicalSite>::_pDatabase  score=0.75 live=ok
     inline constexpr uintptr_t TPdxRef_CArmy_pDatabase = 0x3340F60;  // TPdxRef<CArmy>::_pDatabase  score=1.0 live=ok
@@ -439,6 +442,9 @@ namespace rt {
     inline constexpr std::ptrdiff_t CFrontEndIdler_launch = 0x218;
     inline constexpr std::ptrdiff_t CGalacticObject_id = 0x8;
     inline constexpr std::ptrdiff_t CGalacticObject_owner = 0x1598;
+    inline constexpr std::ptrdiff_t CGameDatabaseObject_key = 0x10;
+    inline constexpr std::ptrdiff_t CGameDatabaseObject_removed = 0x71;
+    inline constexpr std::ptrdiff_t CGameDatabase_objects = 0x50;
     inline constexpr std::ptrdiff_t CGameIdler_gui = 0xF0;
     inline constexpr std::ptrdiff_t CGameIdler_input = 0xF8;
     inline constexpr std::ptrdiff_t CGameIdler_is_multiplayer = 0x180;
@@ -499,6 +505,8 @@ namespace rt {
     inline constexpr std::ptrdiff_t CNaturalWormhole_id = 0x8;
     inline constexpr std::ptrdiff_t COrbitalLine_id = 0x8;
     inline constexpr std::ptrdiff_t CPatronRelation_id = 0x10;
+    inline constexpr std::ptrdiff_t CPdxArray_count = 0x14;
+    inline constexpr std::ptrdiff_t CPdxArray_data = 0x8;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_count = 0x1C;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_days = 0x40;
     inline constexpr std::ptrdiff_t CPdxIntegerFlags_ids = 0x10;
@@ -512,6 +520,8 @@ namespace rt {
     inline constexpr std::ptrdiff_t CRandomLog_config = 0x38;
     inline constexpr std::ptrdiff_t CResolution_id = 0x8;
     inline constexpr std::ptrdiff_t CScriptedRule_index = 0x0;
+    inline constexpr std::ptrdiff_t CScriptedVariable_size = 0x158;
+    inline constexpr std::ptrdiff_t CScriptedVariable_token = 0x30;
     inline constexpr std::ptrdiff_t CSectionTemplate_slot_count = 0x1CC;
     inline constexpr std::ptrdiff_t CSectionTemplate_slots = 0x1C0;
     inline constexpr std::ptrdiff_t CSector_id = 0x8;
@@ -551,17 +561,28 @@ namespace rt {
     inline constexpr std::ptrdiff_t CSpyNetwork_id = 0x8;
     inline constexpr std::ptrdiff_t CStarbase_id = 0x8;
     inline constexpr std::ptrdiff_t CStaticLexer_built = 0x7C;
+    inline constexpr std::ptrdiff_t CStaticLexer_dynamic = 0x50;
     inline constexpr std::ptrdiff_t CStaticLexer_entries = 0x70;
     inline constexpr std::ptrdiff_t CStaticLexer_entry_size = 0x30;
+    inline constexpr std::ptrdiff_t CStaticLexer_names = 0x68;
+    inline constexpr std::ptrdiff_t CStaticLexer_token_count = 0x80;
     inline constexpr std::ptrdiff_t CStaticLexer_wanted = 0x80;
     inline constexpr std::ptrdiff_t CStrikeCraft_id = 0x8;
+    inline constexpr std::ptrdiff_t CString_size = 0x30;
     inline constexpr std::ptrdiff_t CString_text = 0x10;
+    inline constexpr std::ptrdiff_t CToken_text = 0x10;
     inline constexpr std::ptrdiff_t CToolTip_size = 0xD0;
     inline constexpr std::ptrdiff_t CToolTip_state = 0xC0;
     inline constexpr std::ptrdiff_t CToolTip_string_count = 0x4;
     inline constexpr std::ptrdiff_t CToolTip_strings = 0x0;
     inline constexpr std::ptrdiff_t CTradeDeal_id = 0x10;
+    inline constexpr std::ptrdiff_t CTraitDatabase_groups = 0xA8;
+    inline constexpr std::ptrdiff_t CTraitDatabase_groups_extra = 0xB8;
+    inline constexpr std::ptrdiff_t CTraitDatabase_groups_mask = 0xB4;
     inline constexpr std::ptrdiff_t CTraitDatabase_traits = 0x58;
+    inline constexpr std::ptrdiff_t CTraitGroupSlot_size = 0x50;
+    inline constexpr std::ptrdiff_t CTraitGroupSlot_traits = 0x38;
+    inline constexpr std::ptrdiff_t CTraitGroupSlot_used = 0x4;
     inline constexpr std::ptrdiff_t CTraitSet_traits_count = 0x1C;
     inline constexpr std::ptrdiff_t CTraitSet_traits_data = 0x10;
     inline constexpr std::ptrdiff_t CTrait_key = 0x20;
@@ -576,6 +597,11 @@ namespace rt {
     inline constexpr std::ptrdiff_t CWriter_token_fixed_point = 0x167;
     inline constexpr std::ptrdiff_t CWriter_token_indent = 0x11;
     inline constexpr std::ptrdiff_t CZone_id = 0x8;
+    inline constexpr std::ptrdiff_t SArgumentData_end = 0x34;
+    inline constexpr std::ptrdiff_t SArgumentData_size = 0x68;
+    inline constexpr std::ptrdiff_t SArgumentData_start = 0x30;
+    inline constexpr std::ptrdiff_t SDatabaseObjectReference_owner = 0x60;
+    inline constexpr std::ptrdiff_t SDatabaseObjectReference_size = 0xA8;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_colonizable_planet_odds = 0x98;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_command_limit_galaxy_mult = 0xD0;
     inline constexpr std::ptrdiff_t SGalaxyConfigSettings_cosmic_storm_devastation = 0x168;
@@ -739,10 +765,16 @@ namespace fn {
     inline constexpr uintptr_t CCountry_InvalidateRelayNetworkModifier = 0x5D53C0;
     // CCreateOrUpdateShipDesignCommand::CCreateOrUpdateShipDesignCommand(CShipDesign const*, TPdxRef<CCountry>)  --  void* (*)(void* command, const void* design, uint32_t country)
     inline constexpr uintptr_t CCreateOrUpdateShipDesignCommand_CtorCountry = 0x1EBC460;
+    // CGlobalDeferredDatabaseObjectResolver::Register_Internal(CGlobalDeferredDatabaseObject const*, CString const&, CString const&, std::function<bool (CString const&)>&&)  --  void (*)(void* resolver, const void* owner, const void* key, const void* database, void* resolve)
+    inline constexpr uintptr_t CDeferredResolver_Register = 0x1D6CA30;
+    // CGlobalDeferredDatabaseObjectResolver::Unregister(CGlobalDeferredDatabaseObject const&)  --  void (*)(void* resolver, const void* owner)
+    inline constexpr uintptr_t CDeferredResolver_Unregister = 0x1D6CD00;
     // CEconomicUnitBase<T>::ApplyEconomicGlobalMultModifiers<(NEconomicUnitTable::EEconomicUnitTableType)2>(CEconomicCategory const&, CEventScope const&, CModifier const&, CFixedPoint&, STooltipFormatConfig*) const  --  uint64_t (*)(void* unit, const void* category, const void* scope, const void* modifier, int64_t* sum, void* tooltip)
     inline constexpr uintptr_t CEconomicUnitBase_ApplyGlobalMultModifiers_Upkeep = 0x461E90;
     // CEconomicUnitBase<T>::ApplyEconomicPerResourceMultModifiers<(NEconomicUnitTable::EEconomicUnitTableType)2>(CEconomicCategory const&, CEventScope const&, CStrategicResource const&, CModifier const&, CFixedPoint&, STooltipFormatConfig*) const  --  uint64_t (*)(void* unit, const void* category, const void* scope, const void* resource, const void* modifier, int64_t* sum, void* tooltip)
     inline constexpr uintptr_t CEconomicUnitBase_ApplyPerResourceMultModifiers_Upkeep = 0x462530;
+    // (inlined into CEffect::~CEffect) the removal of an effect instance from the effect database's instance list  --  void (*)(void* database, void* effect)
+    inline constexpr uintptr_t CEffectDatabase_RemoveInstance = 0x43B690;
     // CEmpireDesignDatabase::DeleteUserDesign(CEmpireDesign const*)  --  void (*)(void* db, const void* design)  -- removes and deletes it; then SaveUserFile
     inline constexpr uintptr_t CEmpireDesignDatabase_DeleteUserDesign = 0x586C80;
     // CEmpireDesignDatabase::InitFromFile (unnamed in 4.6.0)  --  void (*)(void* db, const char* vfs_path, void* unused, bool suffixed)  -- appends each design in the file to the user designs (4.5.4: (db, path, bool user)); suffixed: the newest file name carried a suffix, handed to each design's constructor
@@ -859,6 +891,8 @@ namespace fn {
     inline constexpr uintptr_t CIsMultiplayerTrigger_ActualEvaluate = 0x1B22C40;
     // CLeader::CalcTable<(NEconomicUnitTable::EEconomicUnitTableType)0>(CResourceTable&, CFixedPoint, bool) const  --  void (*)(const void* leader, void* cost, int64_t multiplier, bool flag)
     inline constexpr uintptr_t CLeader_CalcCostTable = 0x84A5F0;
+    // the logger's line writer behind CPdxLogFileAndLine / CLogStream (no symbol: inlined into the sinks' caller)  --  void (*)(void* logger, ...)
+    inline constexpr uintptr_t CLogger_FormatLine = 0x1CF2F90;
     // CMeanTimeToHappen::GetRawFactor(CFixedPoint*, CEventScope const&) const  --  int64_t* (*)(const void* mtth, int64_t* out, const void* scope)
     inline constexpr uintptr_t CMeanTimeToHappen_GetRawFactor = 0x3D7640;
     // CEconomicUnit<CStandardEconomicUnit<CMegaStructureType, CCountry, CEconomicUnitScopeRef<CCountry, void>>>::CalcTable<0>(CResourceTable&, CFixedPoint, bool) const  --  void (*)(const void* unit, void* cost, int64_t multiplier, bool flag)
@@ -877,6 +911,10 @@ namespace fn {
     inline constexpr uintptr_t CMemoryFile_WriteData = 0x1CFD200;
     // CMessage::LeftClick()  --  void (*)(void* message)
     inline constexpr uintptr_t CMessage_LeftClick = 0x3C0EB0;
+    // CMetaScriptTemplate::GetArgumentValue(CPdxArray<std::pair<CString, CString>, int> const&, CPdxArray<CMetaScriptTemplate::SArgumentData, int> const&, CMetaScriptTemplate::SArgumentData const&)  --  void* (*)(void* out_cstring, const void* arguments, const void* places, const void* place)
+    inline constexpr uintptr_t CMetaScriptTemplate_GetArgumentValue = 0xC08750;
+    // CMetaScriptTemplate::ProcessSourceForArguments(CString&, CPdxArray<std::pair<CString, CString>, int> const&, CPdxArray<CMetaScriptTemplate::SArgumentData, int> const&)  --  void (*)(void* source_cstring, const void* arguments, const void* places)
+    inline constexpr uintptr_t CMetaScriptTemplate_ProcessSourceForArguments = 0xC08510;
     // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Clear()  --  void (*)(void* node)
     inline constexpr uintptr_t CModifierNodeBase_Clear = 0x3AEAE0;
     // NModifierNode::CModifierNodeBase<CModifier, EModifierNodeCategory>::Invalidate(unsigned int) (InvalidateChildren's per-child step)  --  bool (*)(void* node, uint32_t mask)
@@ -891,14 +929,20 @@ namespace fn {
     inline constexpr uintptr_t CModifierNodeManager_Update = 0x33BE00;
     // CModifier's virtual Clear (the node modifier's vtable slot 16; the first step of every rebuild)  --  void (*)(void* modifier)
     inline constexpr uintptr_t CModifier_ClearEntries = 0x4023A0;
+    // CModifier::TryAddDynamicModifier(ModifierType&, CString const&, bool, bool, bool, int, bool, bool, ModifierCategory, bool, CFixedPoint, bool)  --  bool (*)(int* out_type, const void* name, ...)
+    inline constexpr uintptr_t CModifier_TryAddDynamicModifier = 0x4029F0;
     // COutlinerPlanetStatusController::ShouldShowStatusFrame(EOutlinerPlanetStatusFrame, CColony const&, TPdxRef<CCountry>, EPlanetBuildingOwnerType)  --  bool (*)(void* controller, int frame, void* colony, uint32_t country, int owner_type)
     inline constexpr uintptr_t COutlinerPlanetStatusController_ShouldShowStatusFrame = 0x16357F0;
+    // CPdxArray<CString, int>::SetSizeAndEmplace<>(int)  --  void (*)(void* array, int size)
+    inline constexpr uintptr_t CPdxArray_CString_SetSize = 0x41DA90;
     // CPdxIntegerFlags::UpdateFlags()  --  void (*)(void* flags)
     inline constexpr uintptr_t CPdxIntegerFlags_UpdateFlags = 0x1C2FD70;
     // CPdxModifier<...>::AddModifierInternal(CModifier const&, CPdxPooledModifierAllocator<CModifier>&, CFixedPoint, ModifierCategory, ModifierCategory, CPdxModifierName const*)  --  void (*)(void* dst, const void* src, void* alloc, int64_t mult, uint32_t incl, uint32_t excl, const void* const* name)
     inline constexpr uintptr_t CPdxModifier_AddModifierInternal = 0x2C8C00;
     // CPdxModifier<CModifier, ...>::Clear()  --  void (*)(void* modifier)
     inline constexpr uintptr_t CPdxModifier_Clear = 0x402300;
+    // CPdxModifier<ModifierType, ModifierCategory, CModifier, CDefaultPdxModifierValueReader>::TryReadMember(CReader&, int)  --  bool (*)(void* modifier, void* reader, int token)
+    inline constexpr uintptr_t CPdxModifier_TryReadMember = 0x2D3520;
     // CPdxParallelForDescriptor::CPdxParallelForDescriptor(int, int, int, int, std::pair<CPdxTaskScheduler*, int>*)  --  void* (*)(void* descriptor, int begin, int end, int job_type, int max_tasks, const void* scheduler_priority)
     inline constexpr uintptr_t CPdxParallelForDescriptor_Ctor = 0x1D03350;
     // CPersistentName::BuildString() const  --  void* (*)(const void* persistent_name, void* out_cstring)
@@ -929,6 +973,10 @@ namespace fn {
     inline constexpr uintptr_t CRT_stdio_printf_options = 0x173720;
     // CRandomLog::Get() (the random-number log whose config the flush ORs with 2)  --  void* (*)()
     inline constexpr uintptr_t CRandomLog_Get = 0x1CFB4B0;
+    // (inlined into CReader::ParseAdvancedStatementWithVariables and the readers of @variables) the lookup of a scripted variable by its name's token in one variable array  --  bool (*)(int token, const void* variables, void* out_value)
+    inline constexpr uintptr_t CReader_FindVariable = 0x1D64750;
+    // CReader::ParseAdvancedStatementWithVariables(...) (the reader of an @variable reference)  --  void (*)(void* out_token, void* reader, ...)
+    inline constexpr uintptr_t CReader_ReadVariable = 0x1D63A70;
     // CSaveGameTaskManager::Start(CString const&, bool, bool)  --  int (*)(void* manager, const void* name_cstring, bool cloud, bool overwrite)  -- 0 queued, 1 exists, 2 too many saves
     inline constexpr uintptr_t CSaveGameTaskManager_Start = 0xB7E410;
     // CSaveGameTaskManager::StartSaveToPath(CString const&, bool, bool, bool)  --  int (*)(void* manager, const void* path_cstring, bool cloud, bool overwrite, bool dump)
@@ -973,18 +1021,32 @@ namespace fn {
     inline constexpr uintptr_t CStarbase_GetShipsBuildQueueRef = 0x8AE210;
     // CStartScreenWindow::Close()  --  void (*)(void* window)
     inline constexpr uintptr_t CStartScreenWindow_Close = 0x140BC20;
+    // CStaticLexer::GetStaticLexer() / AccessStaticLexer()  --  void* (*)()
+    inline constexpr uintptr_t CStaticLexer_Get = 0x1D6A430;
+    // CStaticLexer::RebuildLookup()  --  void (*)()
+    inline constexpr uintptr_t CStaticLexer_RebuildLookup = 0x1D6A4A0;
     // rebuilds the token table's strings when its counts differ  --  void (*)()
     inline constexpr uintptr_t CStaticLexer_RebuildTable = 0x1D6A4A0;
     // CStaticLexer's token table accessor (a thread-safe static: strings +0x70, count +0x7c, built count +0x80)  --  void* (*)()
     inline constexpr uintptr_t CStaticLexer_Table = 0x1D6A430;
+    // (inlined into the users of TGameDatabase<CStaticModifierDatabase>) the lookup of a static modifier by its key  --  void* (*)(const void* database, const void* key)
+    inline constexpr uintptr_t CStaticModifierDatabase_Find = 0x407460;
     // CStrategicResource::GetMaximumForCountry(CCountry const&) const  --  int64_t* (*)(const void* resource, int64_t* out, const void* country)
     inline constexpr uintptr_t CStrategicResource_GetMaximumForCountry = 0x9B0640;
+    // CString::append(char const*, size_t) (std::basic_string append)  --  void* (*)(void* cstring, const char* chars, size_t length)
+    inline constexpr uintptr_t CString_Append = 0x1CE2220;
     // CString::assign(char const*, size_t) (std::basic_string assign)  --  void* (*)(void* cstring, const char* chars, size_t length)
     inline constexpr uintptr_t CString_Assign = 0x173DD0;
     // CString::~CString() (frees the heap buffer, back to an empty inline string)  --  void (*)(void* cstring)
     inline constexpr uintptr_t CString_Free = 0x173F50;
+    // CString::replace(size_t pos, size_t count, char const*, size_t) (std::basic_string replace)  --  void* (*)(void* cstring, size_t pos, size_t count, const char* chars, size_t length)
+    inline constexpr uintptr_t CString_Replace = 0x1CE23E0;
+    // CString::ReplaceAll(char const*, char const*)  --  void (*)(void* cstring, const char* from, const char* to)
+    inline constexpr uintptr_t CString_ReplaceAll = 0x1CE1680;
     // CTooltipManager::Update()  --  void (*)(void* manager)
     inline constexpr uintptr_t CTooltipManager_Update = 0x11432B0;
+    // (inlined into CTraitDatabase::Get / the readers of trait keys) the lookup of a trait by its key  --  void* (*)(const void* database, const void* key)
+    inline constexpr uintptr_t CTraitDatabase_FindByName = 0x5564F0;
     // CTraitSet::SetTraits(CPdxArray<CSpeciesTrait const*, int> const&)  --  void (*)(void* trait_set, const void* traits_array)
     inline constexpr uintptr_t CTraitSet_SetTraits = 0x4F5150;
     // CTrait::GetCost(CCountry const*) const  --  int (*)(const void* trait, const void* country)
@@ -1087,6 +1149,8 @@ namespace site {
     inline constexpr uintptr_t CGalacticObjectMapIcon_UpdateHoverIndicator_CalcCanMoveTo = 0x178D193;
     // the CalcCanMoveTo call inside CInGameIdler::UpdateCursor (no cache, no reason: only the cursor depends on it)  --  call CFleetMovementManager_CalcCanMoveTo
     inline constexpr uintptr_t CInGameIdler_UpdateCursor_CalcCanMoveTo = 0xA31203;
+    // the replace(pos, 1, "\r\n", 2) call of the line writer's newline loop (memchr for '\n', replace, skip 2)  --  call CString_Replace
+    inline constexpr uintptr_t CLogger_FormatLine_NewlineReplace = 0x1CF3298;
     // the AddInvalid call inside CModifierNodeBase::Invalidate (its return address marks a cascaded invalidation)  --  call CModifierNodeManager_AddInvalid
     inline constexpr uintptr_t CModifierNodeBase_Invalidate_AddInvalid = 0x2D2C1E;
     // the ApplyEconomicGlobalMultModifiers call inside a design's CalcResource<upkeep> (once per table with a value)  --  call CEconomicUnitBase_ApplyGlobalMultModifiers_Upkeep
